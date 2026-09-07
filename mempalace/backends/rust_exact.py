@@ -46,7 +46,13 @@ class RustExactCollection(SQLiteExactCollection):
         self._native_version: Optional[tuple[int, int]] = None
 
     def _ensure_native_index(self, cur):
-        if _NativeVectorIndex is None:
+        if (
+            _NativeVectorIndex is None
+            or not self._handle.has_dimension_column
+            or not self._handle.has_locus_columns
+        ):
+            # Legacy palaces remain searchable without a write/migration lease.
+            # The next normal writable open upgrades the schema for native use.
             return None
         db_file = os.path.join(self._handle.palace_path, _DB_FILENAME)
         if not os.path.isfile(db_file):

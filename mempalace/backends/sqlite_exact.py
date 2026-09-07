@@ -228,9 +228,9 @@ _LOCUS_INDEX = "idx_documents_coll_wing_room_hall"
 _SOURCE_FILE_INDEX = "idx_documents_coll_source_file"
 
 
-def _json_field_sql(key: str) -> str:
+def _json_field_sql(key: str, *, locus_columns: bool = True) -> str:
     """SQL expression for a metadata key; locus fields are real columns."""
-    if key in _LOCUS_FIELDS:
+    if locus_columns and key in _LOCUS_FIELDS:
         return key
     return f"json_extract(metadata_json, '$.{key}')"
 
@@ -266,7 +266,9 @@ def _where_uses_only_cached_keys(where: Optional[dict]) -> bool:
     return True
 
 
-def _equality_where_sql(where: Optional[dict]) -> Optional[tuple[str, list]]:
+def _equality_where_sql(
+    where: Optional[dict], *, locus_columns: bool = True
+) -> Optional[tuple[str, list]]:
     """Push equality / ``$and``-of-equality filters into SQL, else ``None``.
 
     ``None`` means the filter needs the Python ``_matches_where`` path
@@ -280,7 +282,7 @@ def _equality_where_sql(where: Optional[dict]) -> Optional[tuple[str, list]]:
         clauses = []
         params: list = []
         for child in where["$and"] or []:
-            part = _equality_where_sql(child)
+            part = _equality_where_sql(child, locus_columns=locus_columns)
             if part is None:
                 return None
             sql, child_params = part
@@ -292,7 +294,7 @@ def _equality_where_sql(where: Optional[dict]) -> Optional[tuple[str, list]]:
     for key, expected in where.items():
         if key.startswith("$") or isinstance(expected, dict) or not _FACET_FIELD_RE.match(key):
             return None
-        clauses.append(f"{_json_field_sql(key)} = ?")
+        clauses.append(f"{_json_field_sql(key, locus_columns=locus_columns)} = ?")
         params.append(expected)
     return (" AND ".join(clauses) if clauses else "1=1"), params
 
@@ -464,9 +466,12 @@ class _SQLiteExactHandle:
         self.palace_path = palace_path
         self.read_only = read_only
         # True when opened with ``immutable=1`` because no WAL existed at connect
-        # time. A later writer can create WAL sidecars that this connection will
-        # never see, so the backend must reopen once those files appear.
+        # time. Reopen after an active WAL appears or the main file changes;
+        # a writer may commit and remove its sidecars between searches.
         self.immutable = immutable
+        self.immutable_signature = None
+        self.has_dimension_column = True
+        self.has_locus_columns = True
         self.closed = False
         # collection_id -> (ids, float32 matrix, mini-metadata). Filled lazily
         # by query() so a long-lived hub does not re-read every embedding blob
@@ -538,6 +543,12 @@ class SQLiteExactCollection(BaseCollection):
         return int(row[0])
 
     def _collection_dimension(self, cur, collection_id: int) -> Optional[int]:
+        if not self._handle.has_dimension_column:
+            row = cur.execute(
+                "SELECT dim FROM documents WHERE collection_id = ? ORDER BY rowid LIMIT 1",
+                (collection_id,),
+            ).fetchone()
+            return int(row[0]) if row is not None else None
         row = cur.execute(
             "SELECT dimension FROM collections WHERE id = ?",
             (collection_id,),
@@ -760,7 +771,11 @@ class SQLiteExactCollection(BaseCollection):
         _validate_where(where_document)
         spec = spec or _IncludeSpec.resolve(None, default_distances=False)
         collection_id = self._collection_id(cur)
-        push = None if where_document else _equality_where_sql(where)
+        push = (
+            None
+            if where_document
+            else _equality_where_sql(where, locus_columns=self._handle.has_locus_columns)
+        )
         python_where = where is not None and push is None
         need_doc = spec.documents or bool(where_document)
         need_meta = spec.metadatas or python_where
@@ -1010,9 +1025,11 @@ class SQLiteExactCollection(BaseCollection):
     def _load_all_vectors(
         self, cur, collection_id: int, expected: Optional[int]
     ) -> tuple[list[str], np.ndarray, np.ndarray, list[dict]]:
+        wing_expr = _json_field_sql("wing", locus_columns=self._handle.has_locus_columns)
+        room_expr = _json_field_sql("room", locus_columns=self._handle.has_locus_columns)
         rows = cur.execute(
-            """
-            SELECT id, embedding, wing, room,
+            f"""
+            SELECT id, embedding, {wing_expr}, {room_expr},
                    json_extract(metadata_json, '$.source_file')
             FROM documents
             WHERE collection_id = ?
@@ -1118,7 +1135,8 @@ class SQLiteExactCollection(BaseCollection):
         # Negative bounds stay on the Python slice path — SQLite does not
         # honor a negative LIMIT/OFFSET the way a Python slice does.
         python_where = bool(where_document) or (
-            where is not None and _equality_where_sql(where) is None
+            where is not None
+            and _equality_where_sql(where, locus_columns=self._handle.has_locus_columns) is None
         )
         push_page = (
             not python_where
@@ -1191,13 +1209,13 @@ class SQLiteExactCollection(BaseCollection):
         _validate_where(where)
         if not _FACET_FIELD_RE.match(field):
             raise UnsupportedCapabilityError(f"facet field {field!r} is not a JSON key")
-        push = _equality_where_sql(where)
+        push = _equality_where_sql(where, locus_columns=self._handle.has_locus_columns)
         if push is None:
             raise UnsupportedCapabilityError("facet_counts does not support local-only filters")
         extra_sql, params = push
         with self._cursor() as cur:
             collection_id = self._collection_id(cur)
-            expr = _json_field_sql(field)
+            expr = _json_field_sql(field, locus_columns=self._handle.has_locus_columns)
             rows = cur.execute(
                 f"""
                 SELECT {expr} AS k, COUNT(*)
@@ -1406,6 +1424,19 @@ class SQLiteExactBackend(BaseBackend):
         return os.path.join(palace_path, _DB_FILENAME)
 
     @staticmethod
+    def _database_signature(db_path: str) -> tuple:
+        """Detect completed writer/checkpoint cycles, even with unchanged size.
+
+        The SQLite header includes the change counter; stat identity and times
+        also detect replacement and updates between checkpoints. Never return a
+        cached snapshot after a failed filesystem read.
+        """
+        stat = os.stat(db_path)
+        with open(db_path, "rb") as database:
+            header = database.read(100)
+        return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, header)
+
+    @staticmethod
     def _wal_sidecar_state(db_path: str) -> tuple[bool, bool]:
         return (
             os.path.isfile(f"{db_path}-wal"),
@@ -1487,17 +1518,20 @@ class SQLiteExactBackend(BaseBackend):
             if cached is not None and not cached.closed:
                 if read_only and cached.immutable:
                     # An immutable snapshot freezes the clean-database view.
-                    # Reopen only when the complete WAL sidecar pair is present
-                    # (active writer). A partial pair is a transient mid-open
-                    # state — keep the immutable handle rather than forcing a
-                    # reconnect that would raise on the incomplete set.
+                    # An active WAL or a completed writer/checkpoint cycle makes
+                    # the immutable snapshot stale. A lone sidecar with an
+                    # unchanged database remains a transient mid-open state.
                     wal_exists, shm_exists = self._wal_sidecar_state(db_path)
-                    if wal_exists and shm_exists:
+                    changed = self._database_signature(db_path) != cached.immutable_signature
+                    if (wal_exists and shm_exists) or changed:
                         self._retire_read_only_handle(palace_path, cached)
                         cached = None
                 if cached is not None:
                     return cached
             if read_only:
+                # Capture before opening/reading so a concurrent writer cannot
+                # make an old snapshot appear to have the new file's signature.
+                signature = self._database_signature(db_path)
                 conn, immutable = self._connect_read_only(db_path)
             else:
                 conn = sqlite3.connect(db_path, check_same_thread=False)
@@ -1512,6 +1546,7 @@ class SQLiteExactBackend(BaseBackend):
                     read_only=read_only,
                     immutable=immutable,
                 )
+                handle.immutable_signature = signature if immutable else None
                 with handle.lock:
                     if read_only:
                         # ``mode=ro`` prevents filesystem writes. ``query_only``
@@ -1524,6 +1559,10 @@ class SQLiteExactBackend(BaseBackend):
 
                         with mine_palace_lock(palace_path):
                             self._init_schema(conn)
+                    handle.has_dimension_column = "dimension" in {
+                        row[1] for row in conn.execute("PRAGMA table_info(collections)")
+                    }
+                    handle.has_locus_columns = _documents_has_locus_columns(conn)
             except BaseException:
                 conn.close()
                 raise
