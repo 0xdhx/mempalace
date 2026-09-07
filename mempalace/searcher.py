@@ -2088,7 +2088,7 @@ def search_memories(
     # Gather closet hits (best-per-source) to build a boost lookup.
     closet_boost_by_source: dict = {}  # source_file -> (rank, closet_dist, preview)
     try:
-        closets_col = get_closets_collection(palace_path, create=False)
+        closets_col = get_closets_collection(palace_path, create=False, read_only=True)
         closet_boost_by_source = _closet_boosts(
             closets_col, query=query, n_results=n_results, where=where
         )

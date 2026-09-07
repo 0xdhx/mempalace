@@ -351,6 +351,8 @@ def get_closets_collection(
     palace_path: str,
     create: bool = True,
     backend: Optional[str] = None,
+    *,
+    read_only: bool = False,
 ):
     """Get the closets collection — the searchable index layer."""
     return get_collection(
@@ -358,6 +360,7 @@ def get_closets_collection(
         collection_name="mempalace_closets",
         create=create,
         backend=backend,
+        **({"read_only": True} if read_only else {}),
     )
 
 

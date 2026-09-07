@@ -1629,3 +1629,46 @@ with mine_palace_lock(sys.argv[1]):
         holder.stdin.close()
         holder.wait(timeout=10)
         get_backend(backend_name).close_palace(str(tmp_path))
+
+
+@pytest.mark.parametrize("backend_name", ["sqlite_exact", "rust_exact"])
+def test_hybrid_search_keeps_closet_boost_under_writer_lease(tmp_path, monkeypatch, backend_name):
+    from mempalace.backends import get_backend
+    from mempalace.searcher import search_memories
+    import mempalace.backends.embedding_wrapper as embedding_wrapper
+
+    backend, drawers = _collection(tmp_path)
+    closets = backend.get_collection(str(tmp_path), "mempalace_closets", create=True)
+    meta = {"source_file": "fixture.md", "wing": "project", "room": "notes", "chunk_index": 0}
+    drawers.add(
+        ids=["a"], documents=["meshguard memory"], metadatas=[meta], embeddings=[[1.0, 0.0]]
+    )
+    closets.add(ids=["c"], documents=["meshguard index"], metadatas=[meta], embeddings=[[1.0, 0.0]])
+    backend.close()
+    monkeypatch.setenv("MEMPALACE_BACKEND_EXPLICIT", backend_name)
+    monkeypatch.setattr(
+        embedding_wrapper, "_embed_texts", lambda texts: [[1.0, 0.0] for _ in texts]
+    )
+    holder_code = """
+import sys
+from mempalace.palace import mine_palace_lock
+with mine_palace_lock(sys.argv[1]):
+    print("ready", flush=True)
+    sys.stdin.read()
+"""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", holder_code, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "ready"
+        result = search_memories("meshguard", str(tmp_path), n_results=1)
+        assert "error" not in result
+        assert result["results"][0]["matched_via"] == "drawer+closet"
+        assert result["results"][0]["closet_boost"] > 0
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=10)
+        get_backend(backend_name).close_palace(str(tmp_path))

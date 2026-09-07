@@ -161,7 +161,13 @@ impl VectorIndex {
         // unscoped scan that mixes drawers, closets, and embedding dimensions.
         let col_name = collection_name.unwrap_or("mempalace_drawers");
         let row: Result<(i64, Option<i64>), rusqlite::Error> = conn.query_row(
-            "SELECT id, dimension FROM collections WHERE name = ?1",
+            // Older migrations add a nullable dimension column. Infer from
+            // the first encoded vector; every blob is validated below, so
+            // mixed dimensions and truncated floats still fail explicitly.
+            "SELECT id, COALESCE(dimension, (
+                SELECT length(embedding) / 4 FROM documents
+                WHERE collection_id = collections.id ORDER BY rowid LIMIT 1
+            )) FROM collections WHERE name = ?1",
             [col_name],
             |r| Ok((r.get(0)?, r.get(1)?)),
         );
@@ -479,6 +485,40 @@ mod tests {
         ));
         conn.execute(
             "UPDATE documents SET embedding=x'0001' WHERE collection_id=1",
+            [],
+        )
+        .unwrap();
+        assert!(VectorIndex::load_from_sqlite(&path, None).is_err());
+    }
+
+    #[test]
+    fn migrated_null_dimension_is_inferred_and_validated() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy.sqlite3");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE collections(id INTEGER, name TEXT, dimension INTEGER);
+            CREATE TABLE documents(id TEXT, embedding BLOB, wing TEXT, room TEXT, collection_id INTEGER);
+            INSERT INTO collections VALUES(1, 'mempalace_drawers', NULL);
+            INSERT INTO documents VALUES('a', x'0000803f00000000', NULL, NULL, 1);").unwrap();
+        let index = VectorIndex::load_from_sqlite(&path, None).unwrap();
+        assert_eq!(index.dim(), 2);
+        assert_eq!(index.query(&[1.0, 0.0], 1, None).unwrap()[0].id, "a");
+        let dimension: Option<i64> = conn
+            .query_row("SELECT dimension FROM collections", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(dimension, None); // Inference must not migrate a read-only database.
+        conn.execute(
+            "INSERT INTO documents VALUES('b', x'0000803f', NULL, NULL, 1)",
+            [],
+        )
+        .unwrap();
+        assert!(VectorIndex::load_from_sqlite(&path, None).is_err());
+        conn.execute("DELETE FROM documents", []).unwrap();
+        assert!(VectorIndex::load_from_sqlite(&path, None)
+            .unwrap()
+            .is_empty());
+        conn.execute(
+            "INSERT INTO documents VALUES('bad', x'0000803f00', NULL, NULL, 1)",
             [],
         )
         .unwrap();

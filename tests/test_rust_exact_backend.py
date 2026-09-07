@@ -190,3 +190,16 @@ def test_native_matches_python_ranking_and_filters(native_backend, count):
         assert col._native_index is not None
     finally:
         python_backend.close()
+
+
+def test_migrated_null_dimension_uses_native_index(native_backend):
+    backend, palace = native_backend
+    col = backend.get_collection(palace=palace, collection_name="test", create=True)
+    col.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    # A pre-dimension palace receives a nullable column on writable open.
+    with col._cursor(write=True) as cur:
+        cur.execute("UPDATE collections SET dimension=NULL WHERE name='test'")
+    result = col.query(query_embeddings=[[1.0, 0.0]])
+    assert result.ids == [["a"]]
+    assert col._native_index is not None
+    assert col._native_index.dim() == 2
