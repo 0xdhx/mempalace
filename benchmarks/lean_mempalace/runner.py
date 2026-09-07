@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+from pathlib import Path
 
 def run_proc(cmd, cwd=None):
     t0 = time.perf_counter()
@@ -30,14 +31,16 @@ def main():
     print("=================================================================")
     print("  MEMPALACE ENGINE PERFORMANCE & RESOURCE USAGE BENCHMARK SUITE  ")
     print("=================================================================")
-    print("Data: C:\\Users\\igorl\\.mempalace\\palace\\sqlite_exact.sqlite3 (1.75 GB)")
-    print()
-
+    root = Path(__file__).resolve().parent
+    db_path = Path(os.environ["MEMPALACE_DB_PATH"]).expanduser().resolve(strict=True)
+    os.environ["MEMPALACE_DB_PATH"] = str(db_path)
+    print(f"Data: {db_path}")
+    suffix = ".exe" if os.name == "nt" else ""
     implementations = [
-        ("Python 3.14.5 (numpy)", ["python", r"p:\MemPalace\mempalace\benchmarks\lean_mempalace\bench_python.py"]),
-        ("TypeScript (Bun 1.4.1)", ["bun", "run", r"p:\MemPalace\mempalace\benchmarks\lean_mempalace\ts_bun\bench.ts"]),
-        ("Rust 1.97.0-nightly", [r"p:\MemPalace\mempalace\benchmarks\lean_mempalace\rust\target\release\lean_mempalace_rust.exe"]),
-        ("Go 1.27.1", [r"p:\MemPalace\mempalace\benchmarks\lean_mempalace\go\lean_mempalace_go.exe"]),
+        ("Python (numpy)", [sys.executable, str(root / "bench_python.py")]),
+        ("TypeScript (Bun)", ["bun", "run", str(root / "ts_bun/bench.ts")]),
+        ("Rust", [str(root / "rust/target/release" / f"lean_mempalace_rust{suffix}")]),
+        ("Go", [str(root / "go" / f"lean_mempalace_go{suffix}")]),
     ]
 
     all_results = {}
@@ -65,7 +68,7 @@ def main():
             else:
                 print(f"  FAILED to execute {name}")
 
-    with open(r"p:\MemPalace\mempalace\benchmarks\lean_mempalace\benchmark_results.json", "w", encoding="utf-8") as f:
+    with open(root / "benchmark_results.json", "w", encoding="utf-8") as f:
         json.dump(all_results, f, indent=2)
 
     print("\nBenchmark completed. Results saved to benchmark_results.json")

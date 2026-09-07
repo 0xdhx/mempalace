@@ -112,7 +112,7 @@ self.onmessage = (e) => {
 `;
 
 async function runBench(mode = "drawers") {
-  const dbPath = "C:/Users/igorl/.mempalace/palace/sqlite_exact.sqlite3";
+  const dbPath = process.env.MEMPALACE_DB_PATH!;
   const rssStart = getRssMb();
   const tStart = performance.now();
 
@@ -120,7 +120,7 @@ async function runBench(mode = "drawers") {
   db.run("PRAGMA busy_timeout=2000;");
 
   // Query vector sample
-  const sampleRow = db.query("SELECT embedding FROM documents WHERE id = 'drawer_44fb808c93188a039e5ce4ef712ebe0a'").get() as { embedding: Uint8Array };
+  const sampleRow = db.query("SELECT embedding FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid LIMIT 1").get() as { embedding: Uint8Array };
   const queryVec = new Float32Array(sampleRow.embedding.buffer, sampleRow.embedding.byteOffset, 384);
 
   // Load
@@ -128,8 +128,8 @@ async function runBench(mode = "drawers") {
   let countSql = "SELECT count(*) as count FROM documents";
   let loadSql = "SELECT collection_id, id, embedding, wing FROM documents ORDER BY rowid";
   if (mode === "drawers") {
-    countSql = "SELECT count(*) as count FROM documents WHERE collection_id = 1";
-    loadSql = "SELECT collection_id, id, embedding, wing FROM documents WHERE collection_id = 1 ORDER BY rowid";
+    countSql = "SELECT count(*) as count FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers')";
+    loadSql = "SELECT collection_id, id, embedding, wing FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid";
   }
 
   const count = (db.query(countSql).get() as any).count;

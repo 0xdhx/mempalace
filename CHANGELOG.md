@@ -10,21 +10,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Performance & Architecture (Dual-Track Rust Engine)
 
-- **77% memory reduction and 16x faster exact vector queries via native Rust engine (`rust_exact`).**
-  Large palaces with hundreds of thousands of vectors previously suffered severe Python memory bloat (holding 2.43 GB RSS for 513 MB of raw float32 vectors due to millions of CPython object headers and numpy array wrappers). The new compiled `rust_exact` backend (`crates/mempalace-core` and PyO3 bindings in `crates/mempalace-py`) loads and scans contiguous 64-byte aligned SIMD vectors directly from the same `sqlite_exact.sqlite3` database.
-  - **Memory:** Drops process memory from **2,430 MB down to 557 MB** for 334k documents, saving **1.87 GB of RAM**.
-  - **Latency:** Warm multi-core parallel queries drop from **191.6 ms to 7.2 ms – 11.8 ms** (16x speedup).
-  - **Zero-Copy Ingest:** Vectors are read directly from SQLite blob buffers (`as_blob()`), avoiding intermediate Python allocations.
-  - **Zero-Allocation Category Filtering:** Locus wings and rooms are interned into `u16` tokens, allowing exact-match filtering in Rust without allocating strings.
-  - **GIL-Released Rayon Parallelism:** Rust multi-threading via Rayon runs with GIL released (`py.allow_threads`), ensuring heavy vector queries never stall concurrent MCP requests or background threads.
-  - **100% Binary On-Disk Interchangeability:** `rust_exact` reads and writes the exact same `sqlite_exact.sqlite3` file format. Users can switch between `sqlite_exact` and `rust_exact` without data migration or re-indexing.
-  - **Graceful Fallback:** In-tree Python fallback ensures systems without a Rust toolchain continue running seamlessly, while queries with complex metadata operators (`$in`, `$gt`) fall back gracefully to the base implementation.
+- **Optional native Rust exact-vector acceleration (`rust_exact`).**
+  Reads the existing SQLite format into a contiguous float buffer, uses Rayon
+  for large scans, and releases the Python GIL. Local and external writes
+  invalidate the native cache. Loading is collection-scoped and decodes blobs
+  safely; serial and parallel scans preserve deterministic tie ordering.
+  The initial Windows benchmark reported 557 MB RSS versus 2,430 MB for the
+  Python baseline, with 7.2-11.8 ms native warm latency across 168k/334k-row
+  workloads. These historical numbers have not been rerun after hardening.
+  Complex filters and absent native extensions fall back to Python.
 
-- **Standalone Static CLI Executable (`crates/mempalace-cli`).**
-  `mempalace-native` compiles to a single, standalone **2.2 MB static binary** with zero Python or runtime dependencies. It provides direct query execution, database taxonomy inspection (`stats`), and benchmarking (`bench`) with cold queries running in 22 ms, warm queries in 6–11 ms, and a total memory ceiling of 526 MB.
+- **Standalone native vector CLI and optional wheels.**
+  GitHub releases include native wheels and platform executables. The CLI
+  accepts JSON embedding vectors via `--vector` or stdin; it does not embed
+  text or require Python. Platform runtime libraries may still be required.
 
-- **NumPy Top-K Vector Optimization (Milestone 1A Pure-Python Quick Win).**
-  For installations running the pure-Python `sqlite_exact` backend, vector norms are now pre-normalized and cached upon loading, and $O(N \log N)$ mergesort of hundreds of thousands of floats is replaced with $O(N)$ `np.argpartition`. Pure-Python exact search latency improves by **13.0x** (from 191 ms down to 14.7 ms on 334k items).
+- **NumPy top-k optimization.**
+  Cache vector norms and partition distances before sorting the selected
+  results, preserving row-order ties at the cutoff.
 
 - **Read-only search operations stop contending with palace writer leases.**
   `searcher.py` and `_open_search_collection` now explicitly open collections with `read_only=True`. Read-only queries connect in SQLite WAL reader mode without attempting schema initialization or writer lease locks, allowing CLI and agent searches to run concurrently with an active background MCP server or writer process without raising `MineAlreadyRunning`.

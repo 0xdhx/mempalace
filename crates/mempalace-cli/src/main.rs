@@ -15,7 +15,11 @@ struct Cli {
 enum Commands {
     /// Show statistics and taxonomy for a palace database
     Stats {
-        #[arg(short, long, default_value = "~/.mempalace/palace/sqlite_exact.sqlite3")]
+        #[arg(
+            short,
+            long,
+            default_value = "~/.mempalace/palace/sqlite_exact.sqlite3"
+        )]
         db: String,
 
         #[arg(short, long)]
@@ -23,7 +27,11 @@ enum Commands {
     },
     /// Benchmark query latency and memory usage on live data
     Bench {
-        #[arg(short, long, default_value = "~/.mempalace/palace/sqlite_exact.sqlite3")]
+        #[arg(
+            short,
+            long,
+            default_value = "~/.mempalace/palace/sqlite_exact.sqlite3"
+        )]
         db: String,
 
         #[arg(short, long)]
@@ -37,7 +45,14 @@ enum Commands {
     },
     /// Search palace using an input vector
     Search {
-        #[arg(short, long, default_value = "~/.mempalace/palace/sqlite_exact.sqlite3")]
+        /// JSON array of embedding floats, or '-' to read the array from stdin
+        #[arg(long)]
+        vector: String,
+        #[arg(
+            short,
+            long,
+            default_value = "~/.mempalace/palace/sqlite_exact.sqlite3"
+        )]
         db: String,
 
         #[arg(short, long)]
@@ -91,7 +106,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("  ... and {} more wings", sorted_wings.len() - 15);
             }
         }
-        Commands::Bench { db, collection, k, iterations } => {
+        Commands::Bench {
+            db,
+            collection,
+            k,
+            iterations,
+        } => {
+            if k == 0 || iterations == 0 {
+                return Err("bench requires k > 0 and iterations > 0".into());
+            }
             let path = resolve_path(&db);
             println!("==================================================");
             println!(" MemPalace Native Rust Benchmark");
@@ -117,7 +140,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let t_cold = Instant::now();
             let hits = index.query(&q, k, None)?;
             let cold_ms = t_cold.elapsed().as_secs_f64() * 1000.0;
-            println!("Cold 1st Query: {:.2} ms (top hit: {} dist: {:.6})", cold_ms, hits[0].id, hits[0].distance);
+            println!(
+                "Cold 1st Query: {:.2} ms (top hit: {} dist: {:.6})",
+                cold_ms, hits[0].id, hits[0].distance
+            );
 
             // Warm single-thread queries
             let mut warm_times = Vec::with_capacity(iterations);
@@ -130,7 +156,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let p50 = warm_times[warm_times.len() / 2];
             let p95 = warm_times[(warm_times.len() as f64 * 0.95) as usize];
             let p99 = warm_times[(warm_times.len() as f64 * 0.99) as usize];
-            println!("Warm Query (Single-thread): p50={:.2} ms, p95={:.2} ms, p99={:.2} ms", p50, p95, p99);
+            println!(
+                "Warm Query (Single-thread): p50={:.2} ms, p95={:.2} ms, p99={:.2} ms",
+                p50, p95, p99
+            );
 
             // Warm multi-thread (parallel) queries
             let mut par_times = Vec::with_capacity(iterations);
@@ -142,15 +171,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             par_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let par_p50 = par_times[par_times.len() / 2];
             let par_p95 = par_times[(par_times.len() as f64 * 0.95) as usize];
-            println!("Warm Query (Multi-thread):   p50={:.2} ms, p95={:.2} ms", par_p50, par_p95);
+            println!(
+                "Warm Query (Multi-thread):   p50={:.2} ms, p95={:.2} ms",
+                par_p50, par_p95
+            );
             println!("==================================================");
         }
-        Commands::Search { db, collection, k, wing } => {
+        Commands::Search {
+            db,
+            collection,
+            k,
+            wing,
+            vector,
+        } => {
             let path = resolve_path(&db);
             let index = VectorIndex::load_from_sqlite(&path, collection.as_deref())?;
-            let mut q = vec![0.0f32; index.dim()];
-            q[0] = 1.0;
-
+            let input = if vector == "-" {
+                std::io::read_to_string(std::io::stdin())?
+            } else {
+                vector
+            };
+            let q: Vec<f32> = serde_json::from_str(&input)?;
             let hits = index.query_parallel(&q, k, wing.as_deref())?;
             let json = serde_json::to_string_pretty(&hits)?;
             println!("{}", json);

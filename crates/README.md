@@ -1,77 +1,64 @@
-# MemPalace Rust Native Engine (`crates/`)
+# MemPalace native exact-vector engine
 
-This directory contains the high-performance native Rust implementation of the MemPalace vector search engine. It operates alongside the Python core in a **Dual-Track** architecture, providing a 77% memory reduction and sub-10ms query latencies on databases with hundreds of thousands of vectors.
+The optional Rust accelerator shares `sqlite_exact.sqlite3` with the Python
+`sqlite_exact` backend. No database migration is needed. Python still handles
+writes, document hydration, and complex filters; Rust loads an owned contiguous
+float buffer and performs cosine scans. Wing names are interned; rooms remain
+strings. The implementation does not guarantee 64-byte alignment or particular
+SIMD instructions.
 
----
+- `mempalace-core`: safe little-endian SQLite decoding, collection-scoped loading,
+  deterministic top-k ranking, and Rayon parallel scans.
+- `mempalace-py`: PyO3 bindings that release the GIL while loading and scanning.
+- `mempalace-cli`: standalone executable for vector search, stats, and benchmarks.
+  It needs no Python, but platform runtime libraries may be required; the Linux
+  GNU build is not a static executable suitable for a scratch container.
 
-## Workspace Structure
+## Install without a Rust compiler
 
-```
-crates/
-├── mempalace-core/   # Pure domain library: zero-copy SQLite reading, SIMD cosine math, Rayon parallelism
-├── mempalace-py/     # PyO3 C-extension bindings (exposing NativeVectorIndex to Python)
-└── mempalace-cli/    # Standalone, zero-dependency static CLI binary (mempalace-native)
-```
+Install MemPalace normally. From the matching GitHub release, download the
+`mempalace_native_core` wheel for your OS and CPU, then install the downloaded
+wheel with `python -m pip install <wheel-file>`. Release builds attach wheels and
+executables directly to the release; manual workflow runs retain Actions
+artifacts. Wheels are distributed separately from the ordinary Python package.
 
-### 1. `mempalace-core`
-- **Zero-Copy SQLite Blob Reading**: Uses `rusqlite` to read raw `float32` byte blobs directly via `row.get_ref(idx)?.as_blob()?`, preventing intermediate Python object allocations.
-- **Memory Alignment**: Stores vectors in a contiguous, 64-byte aligned buffer (`Vec<f32>`) maximizing L1/L2 cache line utilization.
-- **SIMD Cosine Distance**: Unrolls 384-dimensional vector dot-products into 8-wide float accumulators.
-- **Zero-Allocation Category Interning**: Maps string taxonomy values (`wing`, `room`) to compact `u16` integers so filtered queries perform integer comparisons with zero heap allocations.
-- **Bounded Min-Heap**: Maintains a top-$k$ min-heap using `peek_mut()`, performing $O(N \log k)$ candidate selection without full array sorting.
-- **Multi-Core Parallel Scanning**: Chunks large vector matrices across CPU cores using `rayon`.
+Verify `python -c "import mempalace_core_rs"`, then select `--backend rust_exact`
+or set `MEMPALACE_BACKEND=rust_exact`. The disk format continues to autodetect as
+`sqlite_exact`; native acceleration is an explicit selection. If the extension
+is unavailable, the adapter uses the Python backend. Complex filters and requests
+for returned embeddings also use Python and may consume its larger vector cache.
 
-### 2. `mempalace-py`
-- Exposes `NativeVectorIndex` as a native Python extension class (`mempalace_core_rs`).
-- Releases the Python Global Interpreter Lock (GIL) via `py.allow_threads` during parallel scans so background MCP requests or worker threads never stall.
-- Integrated into `mempalace.backends.rust_exact.RustExactBackend`.
+## Build and test from source
 
-### 3. `mempalace-cli`
-- Standalone static binary (`mempalace-native.exe`, 2.2 MB).
-- Runs with zero Python, CPython, or pip dependencies.
-- Ideal for resource-constrained edge deployments, Docker scratch containers, or fast health probes.
-
----
-
-## Performance Benchmarks
-
-Benchmarked against a **live 1.75 GB database** containing 334,224 rows (384-dimensional embeddings):
-
-| Implementation | RSS Memory (334k items) | Query Latency (Warm p50) | QPS (100 sequential) |
-| -------------- | ----------------------- | ------------------------ | -------------------- |
-| **Python Baseline** | 2,430 MB | 191.6 ms | ~5 QPS |
-| **Python `sqlite_exact` (Optimized)** | 2,430 MB | 14.7 ms | ~68 QPS |
-| **Python `rust_exact` (PyO3)** | **557 MB (-77%)** | **7.2 ms - 11.8 ms** | **140 QPS** |
-| **`mempalace-native` (Rust CLI)** | **526 MB (-78%)** | **6.1 ms - 11.6 ms** | **160 QPS** |
-
----
-
-## Building and Testing
-
-### Build Everything
-```bash
-cargo build --release
+```sh
+python -m pip install ./crates/mempalace-py
+cargo test -p mempalace-core -p mempalace-cli --locked
+cargo build --release --locked --bin mempalace-native
 ```
 
-### Run Rust Unit Tests
-```bash
-cargo test --workspace
+Run the Python backend suites with `MEMPALACE_REQUIRE_NATIVE=1` to require the
+installed extension instead of accepting fallback-only coverage. CI does this
+on Linux, Windows, and macOS.
+
+## Use the executable
+
+```sh
+mempalace-native stats --db /path/to/sqlite_exact.sqlite3
+mempalace-native bench --db /path/to/sqlite_exact.sqlite3
+mempalace-native search --db /path/to/sqlite_exact.sqlite3 --vector '[1,0]' -k 5
+mempalace-native search --db /path/to/sqlite_exact.sqlite3 --vector - < query.json
 ```
 
-### Run Python Extension Build
-Using Maturin:
-```bash
-uv run maturin develop -m crates/mempalace-py/Cargo.toml
-```
+Supply a JSON float array with the collection's embedding dimension, produced by
+the same embedding model used for ingestion. The example `[1,0]` is for a
+2-dimensional fixture. This executable does not embed text. The default collection
+is `mempalace_drawers`; use `--collection` to select another explicitly.
 
-### Run Standalone Native CLI
-```bash
-# Show database stats
-./target/release/mempalace-native stats
+## Performance evidence
 
-# Run benchmark
-./target/release/mempalace-native bench
-
-# Search
-./target/release/mempalace-native search "my search term"
-```
+The initial Windows benchmark reported 557 MB RSS for the Python/Rust engine
+versus 2,430 MB for the Python baseline on a database with 334,224 rows. Reported
+warm native latencies were 7.2-11.8 ms across 168k and 334k-row workloads. These
+are historical measurements, not guarantees for this revision, other machines,
+or queries that fall back to Python. Correctness tests use synthetic data; the
+private corpus benchmark has not been rerun for the hardening changes.

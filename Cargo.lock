@@ -303,8 +303,10 @@ version = "3.9.0"
 dependencies = [
  "clap",
  "mempalace-core",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

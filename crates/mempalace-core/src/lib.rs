@@ -1,9 +1,9 @@
-use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
-use std::path::Path;
 use rayon::prelude::*;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
+use std::path::Path;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -39,7 +39,7 @@ struct Candidate {
 
 impl PartialEq for Candidate {
     fn eq(&self, other: &Self) -> bool {
-        self.distance == other.distance
+        self.distance == other.distance && self.id_idx == other.id_idx
     }
 }
 
@@ -53,7 +53,9 @@ impl PartialOrd for Candidate {
 
 impl Ord for Candidate {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.distance.partial_cmp(&other.distance).unwrap_or(Ordering::Equal)
+        self.distance
+            .total_cmp(&other.distance)
+            .then_with(|| self.id_idx.cmp(&other.id_idx))
     }
 }
 
@@ -93,9 +95,9 @@ pub struct VectorIndex {
     vectors: Vec<f32>,
     norms: Vec<f32>,
     dim: usize,
-    wing_ids: Vec<u16>,
+    wing_ids: Vec<usize>,
     wing_names: Vec<String>,
-    wing_map: HashMap<String, u16>,
+    wing_map: HashMap<String, usize>,
     rooms: Vec<Option<String>>,
 }
 
@@ -125,14 +127,14 @@ impl VectorIndex {
         self.dim
     }
 
-    fn intern_wing(&mut self, wing: Option<&str>) -> u16 {
+    fn intern_wing(&mut self, wing: Option<&str>) -> usize {
         match wing {
             None => 0,
             Some(w) => {
                 if let Some(&id) = self.wing_map.get(w) {
                     id
                 } else {
-                    let new_id = self.wing_names.len() as u16;
+                    let new_id = self.wing_names.len();
                     self.wing_names.push(w.to_string());
                     self.wing_map.insert(w.to_string(), new_id);
                     new_id
@@ -155,55 +157,56 @@ impl VectorIndex {
              PRAGMA cache_size=-131072;",
         )?;
 
-        let (collection_id, dim) = if let Some(col_name) = collection_name {
-            let row: (i64, Option<i64>) = conn
-                .query_row(
-                    "SELECT id, dimension FROM collections WHERE name = ?1",
-                    [col_name],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .map_err(|_| MemPalaceError::CollectionNotFound(col_name.to_string()))?;
-            (Some(row.0), row.1.unwrap_or(384) as usize)
-        } else {
-            let dim: Option<i64> = conn
-                .query_row("SELECT dimension FROM collections LIMIT 1", [], |r| r.get(0))
-                .unwrap_or(Some(384));
-            (None, dim.unwrap_or(384) as usize)
+        // The public default is the verbatim drawer collection, never an
+        // unscoped scan that mixes drawers, closets, and embedding dimensions.
+        let col_name = collection_name.unwrap_or("mempalace_drawers");
+        let row: Result<(i64, Option<i64>), rusqlite::Error> = conn.query_row(
+            "SELECT id, dimension FROM collections WHERE name = ?1",
+            [col_name],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        );
+        let (collection_id, dim) = match row {
+            Ok(row) => row,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(MemPalaceError::CollectionNotFound(col_name.to_string()));
+            }
+            Err(err) => return Err(err.into()),
         };
-
+        let dim = usize::try_from(dim.unwrap_or(0))
+            .map_err(|_| MemPalaceError::InvalidArgument("negative dimension".into()))?;
+        let expected_bytes = dim
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| MemPalaceError::InvalidArgument("dimension overflow".into()))?;
         let mut index = Self::new(dim);
-
-        let sql = if collection_id.is_some() {
+        let mut stmt = conn.prepare(
             "SELECT id, embedding, wing, room FROM documents WHERE collection_id = ?1 ORDER BY rowid"
-        } else {
-            "SELECT id, embedding, wing, room FROM documents ORDER BY rowid"
-        };
-
-        let mut stmt = conn.prepare(sql)?;
-        let expected_bytes = dim * std::mem::size_of::<f32>();
-
-        let mut rows = if let Some(cid) = collection_id {
-            stmt.query([cid])?
-        } else {
-            stmt.query([])?
-        };
+        )?;
+        let mut rows = stmt.query([collection_id])?;
 
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             let blob_ref = row.get_ref(1)?.as_blob()?;
 
-            if blob_ref.len() != expected_bytes {
-                continue;
+            if dim == 0 || blob_ref.len() != expected_bytes {
+                return Err(MemPalaceError::InvalidArgument(format!(
+                    "invalid embedding length for document {id}"
+                )));
             }
 
-            let slice: &[f32] = unsafe {
-                std::slice::from_raw_parts(blob_ref.as_ptr() as *const f32, dim)
-            };
-
-            let norm = l2_norm(slice);
+            // SQLite exposes bytes with no f32 alignment guarantee. Decode
+            // little-endian floats directly into our owned contiguous buffer.
+            let start = index.vectors.len();
+            for bytes in blob_ref.chunks_exact(4) {
+                let value = f32::from_le_bytes(bytes.try_into().unwrap());
+                if !value.is_finite() {
+                    return Err(MemPalaceError::InvalidArgument(format!(
+                        "non-finite embedding for document {id}"
+                    )));
+                }
+                index.vectors.push(value);
+            }
+            index.norms.push(l2_norm(&index.vectors[start..]));
             index.ids.push(id);
-            index.vectors.extend_from_slice(slice);
-            index.norms.push(norm);
 
             let wing_val: Option<String> = row.get(2).ok();
             let wid = index.intern_wing(wing_val.as_deref());
@@ -216,74 +219,95 @@ impl VectorIndex {
         Ok(index)
     }
 
-    pub fn query(
-        &self,
-        query_vec: &[f32],
-        k: usize,
-        filter_wing: Option<&str>,
-    ) -> Result<Vec<Hit>, MemPalaceError> {
+    fn validate_query(&self, query_vec: &[f32]) -> Result<(), MemPalaceError> {
         if query_vec.len() != self.dim {
             return Err(MemPalaceError::DimensionMismatch {
                 expected: self.dim,
                 actual: query_vec.len(),
             });
         }
-        if self.ids.is_empty() || k == 0 {
-            return Ok(Vec::new());
+        if query_vec.iter().any(|x| !x.is_finite()) {
+            return Err(MemPalaceError::InvalidArgument(
+                "query must contain finite floats".into(),
+            ));
         }
+        Ok(())
+    }
 
-        let filter_wid = match filter_wing {
-            Some(w) => match self.wing_map.get(w) {
-                Some(&id) => id,
-                None => return Ok(Vec::new()), // filter matches nothing
-            },
-            None => 0,
-        };
+    fn retain(heap: &mut BinaryHeap<Candidate>, candidate: Candidate, k: usize) {
+        if heap.len() < k {
+            heap.push(candidate);
+        } else if heap.peek().is_some_and(|top| candidate < *top) {
+            *heap.peek_mut().unwrap() = candidate;
+        }
+    }
 
+    fn scan(
+        &self,
+        query_vec: &[f32],
+        k: usize,
+        wing: Option<usize>,
+        range: std::ops::Range<usize>,
+    ) -> BinaryHeap<Candidate> {
+        let mut heap = BinaryHeap::with_capacity(k.min(range.len()));
         let q_norm = l2_norm(query_vec);
-        let mut heap: BinaryHeap<Candidate> = BinaryHeap::with_capacity(k + 1);
-
-        let count = self.ids.len();
-        let dim = self.dim;
-
-        for i in 0..count {
-            if filter_wid != 0 && self.wing_ids[i] != filter_wid {
+        for i in range {
+            if wing.is_some_and(|wid| self.wing_ids[i] != wid) {
                 continue;
             }
-
-            let vec_start = i * dim;
-            let vec_slice = &self.vectors[vec_start..vec_start + dim];
-            let dot = dot_product(vec_slice, query_vec);
+            let vec_start = i * self.dim;
+            let dot = dot_product(&self.vectors[vec_start..vec_start + self.dim], query_vec);
             let denom = self.norms[i] * q_norm;
-            let cos = if denom > 0.0 { (dot / denom).clamp(-1.0, 1.0) } else { 0.0 };
-            let dist = 1.0 - cos;
-
-            if heap.len() < k {
-                heap.push(Candidate { id_idx: i, distance: dist });
-            } else if dist < heap.peek().unwrap().distance {
-                let mut top = heap.peek_mut().unwrap();
-                top.id_idx = i;
-                top.distance = dist;
-            }
+            let cos = if denom > 0.0 {
+                (dot / denom).clamp(-1.0, 1.0)
+            } else {
+                0.0
+            };
+            Self::retain(
+                &mut heap,
+                Candidate {
+                    id_idx: i,
+                    distance: 1.0 - cos,
+                },
+                k,
+            );
         }
+        heap
+    }
 
-        let mut candidates = heap.into_sorted_vec();
-        let hits = candidates
-            .drain(..)
-            .map(|c| {
-                let sim = (1.0 - c.distance).max(0.0);
-                Hit {
-                    id: self.ids[c.id_idx].clone(),
-                    distance: c.distance,
-                    similarity: sim,
-                    wing: Some(self.wing_names[self.wing_ids[c.id_idx] as usize].clone())
-                        .filter(|s| !s.is_empty()),
-                    room: self.rooms[c.id_idx].clone(),
-                }
+    fn hits(&self, heap: BinaryHeap<Candidate>) -> Vec<Hit> {
+        heap.into_sorted_vec()
+            .into_iter()
+            .map(|c| Hit {
+                id: self.ids[c.id_idx].clone(),
+                distance: c.distance,
+                similarity: (1.0 - c.distance).max(0.0),
+                wing: Some(self.wing_names[self.wing_ids[c.id_idx]].clone())
+                    .filter(|s| !s.is_empty()),
+                room: self.rooms[c.id_idx].clone(),
             })
-            .collect();
+            .collect()
+    }
 
-        Ok(hits)
+    pub fn query(
+        &self,
+        query_vec: &[f32],
+        k: usize,
+        filter_wing: Option<&str>,
+    ) -> Result<Vec<Hit>, MemPalaceError> {
+        self.validate_query(query_vec)?;
+        let k = k.min(self.len());
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let wing = match filter_wing {
+            Some(name) => match self.wing_map.get(name) {
+                Some(&id) => Some(id),
+                None => return Ok(Vec::new()),
+            },
+            None => None,
+        };
+        Ok(self.hits(self.scan(query_vec, k, wing, 0..self.len())))
     }
 
     pub fn query_parallel(
@@ -292,99 +316,46 @@ impl VectorIndex {
         k: usize,
         filter_wing: Option<&str>,
     ) -> Result<Vec<Hit>, MemPalaceError> {
-        if query_vec.len() != self.dim {
-            return Err(MemPalaceError::DimensionMismatch {
-                expected: self.dim,
-                actual: query_vec.len(),
-            });
+        self.validate_query(query_vec)?;
+        let k = k.min(self.len());
+        if k == 0 {
+            return Ok(Vec::new());
         }
-        if self.ids.len() < 10000 {
-            // For smaller datasets, single-thread is faster than thread spawn overhead
+        if self.len() < 10000 {
             return self.query(query_vec, k, filter_wing);
         }
-
-        let filter_wid = match filter_wing {
-            Some(w) => match self.wing_map.get(w) {
-                Some(&id) => id,
+        let wing = match filter_wing {
+            Some(name) => match self.wing_map.get(name) {
+                Some(&id) => Some(id),
                 None => return Ok(Vec::new()),
             },
-            None => 0,
+            None => None,
         };
-
-        let q_norm = l2_norm(query_vec);
-        let count = self.ids.len();
-        let dim = self.dim;
-
-        let num_chunks = rayon::current_num_threads().max(1);
-        let chunk_size = (count + num_chunks - 1) / num_chunks;
-
-        let chunk_heaps: Vec<BinaryHeap<Candidate>> = (0..num_chunks)
+        let chunks = rayon::current_num_threads().max(1);
+        let chunk_size = self.len().div_ceil(chunks);
+        let heaps: Vec<_> = (0..chunks)
             .into_par_iter()
-            .map(|chunk_idx| {
-                let start = chunk_idx * chunk_size;
-                let end = (start + chunk_size).min(count);
-                let mut local_heap: BinaryHeap<Candidate> = BinaryHeap::with_capacity(k + 1);
-
-                for i in start..end {
-                    if filter_wid != 0 && self.wing_ids[i] != filter_wid {
-                        continue;
-                    }
-
-                    let vec_start = i * dim;
-                    let vec_slice = &self.vectors[vec_start..vec_start + dim];
-                    let dot = dot_product(vec_slice, query_vec);
-                    let denom = self.norms[i] * q_norm;
-                    let cos = if denom > 0.0 { (dot / denom).clamp(-1.0, 1.0) } else { 0.0 };
-                    let dist = 1.0 - cos;
-
-                    if local_heap.len() < k {
-                        local_heap.push(Candidate { id_idx: i, distance: dist });
-                    } else if dist < local_heap.peek().unwrap().distance {
-                        let mut top = local_heap.peek_mut().unwrap();
-                        top.id_idx = i;
-                        top.distance = dist;
-                    }
-                }
-                local_heap
+            .map(|chunk| {
+                let start = (chunk * chunk_size).min(self.len());
+                self.scan(
+                    query_vec,
+                    k,
+                    wing,
+                    start..(start + chunk_size).min(self.len()),
+                )
             })
             .collect();
-
-        // Merge chunk heaps into global top-k heap
-        let mut final_heap: BinaryHeap<Candidate> = BinaryHeap::with_capacity(k + 1);
-        for local in chunk_heaps {
-            for c in local {
-                if final_heap.len() < k {
-                    final_heap.push(c);
-                } else if c.distance < final_heap.peek().unwrap().distance {
-                    let mut top = final_heap.peek_mut().unwrap();
-                    *top = c;
-                }
-            }
+        let mut heap = BinaryHeap::with_capacity(k);
+        for candidate in heaps.into_iter().flatten() {
+            Self::retain(&mut heap, candidate, k);
         }
-
-        let hits = final_heap
-            .into_sorted_vec()
-            .into_iter()
-            .map(|c| {
-                let sim = (1.0 - c.distance).max(0.0);
-                Hit {
-                    id: self.ids[c.id_idx].clone(),
-                    distance: c.distance,
-                    similarity: sim,
-                    wing: Some(self.wing_names[self.wing_ids[c.id_idx] as usize].clone())
-                        .filter(|s| !s.is_empty()),
-                    room: self.rooms[c.id_idx].clone(),
-                }
-            })
-            .collect();
-
-        Ok(hits)
+        Ok(self.hits(heap))
     }
 
     pub fn wing_counts(&self) -> HashMap<String, usize> {
         let mut counts = HashMap::new();
         for &wid in &self.wing_ids {
-            let name = &self.wing_names[wid as usize];
+            let name = &self.wing_names[wid];
             if !name.is_empty() {
                 *counts.entry(name.clone()).or_insert(0) += 1;
             }
@@ -424,5 +395,93 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].id, "doc1");
         assert!(hits[0].distance.abs() < 1e-6);
+    }
+
+    fn filled(count: usize) -> VectorIndex {
+        let mut index = VectorIndex::new(2);
+        for i in 0..count {
+            index.ids.push(i.to_string());
+            index.vectors.extend_from_slice(&[1.0, 0.0]);
+            index.norms.push(1.0);
+            index.wing_ids.push(0);
+            index.rooms.push(None);
+        }
+        index
+    }
+
+    #[test]
+    fn parallel_boundaries_and_ties_match_serial() {
+        for count in [0, 9999, 10000, 10001] {
+            let index = filled(count);
+            for k in [0, 1, 7, count + 1] {
+                let serial = index.query(&[1.0, 0.0], k, None).unwrap();
+                let parallel = index.query_parallel(&[1.0, 0.0], k, None).unwrap();
+                assert_eq!(
+                    serial.iter().map(|h| &h.id).collect::<Vec<_>>(),
+                    parallel.iter().map(|h| &h.id).collect::<Vec<_>>()
+                );
+                assert_eq!(serial.len(), k.min(count));
+                for (i, hit) in parallel.iter().enumerate() {
+                    assert_eq!(hit.id, i.to_string());
+                }
+            }
+            assert!(index
+                .query_parallel(&[1.0, 0.0], 5, Some("missing"))
+                .unwrap()
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn validates_queries_and_wing_ids_do_not_wrap() {
+        let mut index = filled(10000);
+        assert!(index.query_parallel(&[1.0], 1, None).is_err());
+        assert!(index.query_parallel(&[f32::NAN, 0.0], 1, None).is_err());
+        for i in 0..65537 {
+            assert_eq!(index.intern_wing(Some(&i.to_string())), i + 1);
+        }
+    }
+
+    #[test]
+    fn sqlite_load_is_scoped_and_validates_blobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("vectors.sqlite3");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE collections(id INTEGER, name TEXT, dimension INTEGER);
+            CREATE TABLE documents(id TEXT, embedding BLOB, wing TEXT, room TEXT, collection_id INTEGER);
+            INSERT INTO collections VALUES(1, 'mempalace_drawers', 2), (2, 'mempalace_closets', 1);").unwrap();
+        let blob: Vec<u8> = [1.0f32, 0.0].iter().flat_map(|v| v.to_le_bytes()).collect();
+        conn.execute(
+            "INSERT INTO documents VALUES('odd-length-id', ?1, 'wing', NULL, 1)",
+            [&blob],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO documents VALUES('closet', ?1, NULL, NULL, 2)",
+            [1.0f32.to_le_bytes().as_slice()],
+        )
+        .unwrap();
+        let index = VectorIndex::load_from_sqlite(&path, None).unwrap();
+        assert_eq!(index.len(), 1);
+        assert_eq!(
+            index.query(&[1.0, 0.0], 2, Some("wing")).unwrap()[0].id,
+            "odd-length-id"
+        );
+        assert_eq!(
+            VectorIndex::load_from_sqlite(&path, Some("mempalace_closets"))
+                .unwrap()
+                .dim(),
+            1
+        );
+        assert!(matches!(
+            VectorIndex::load_from_sqlite(&path, Some("missing")),
+            Err(MemPalaceError::CollectionNotFound(_))
+        ));
+        conn.execute(
+            "UPDATE documents SET embedding=x'0001' WHERE collection_id=1",
+            [],
+        )
+        .unwrap();
+        assert!(VectorIndex::load_from_sqlite(&path, None).is_err());
     }
 }

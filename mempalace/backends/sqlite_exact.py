@@ -924,9 +924,13 @@ class SQLiteExactCollection(BaseCollection):
                 dist = _cosine_distances(mat, q, norms)
                 k = min(n_results, int(dist.size))
                 if k < int(dist.size):
-                    partition = np.argpartition(dist, k)[:k]
-                    sub_order = np.argsort(dist[partition], kind="mergesort")
-                    order = partition[sub_order]
+                    # Preserve the old stable row-order tie break, including
+                    # ties at the cutoff; argpartition alone selects arbitrary ties.
+                    cutoff = np.partition(dist, k - 1)[k - 1]
+                    below = np.flatnonzero(dist < cutoff)
+                    tied = np.flatnonzero(dist == cutoff)[: k - len(below)]
+                    selected = np.concatenate((below, tied))
+                    order = selected[np.argsort(dist[selected], kind="mergesort")]
                 else:
                     order = np.argsort(dist, kind="mergesort")
                 top_ids = [ids[int(i)] for i in order]

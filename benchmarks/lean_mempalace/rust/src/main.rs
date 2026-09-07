@@ -113,19 +113,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rss_start = get_rss_mb();
     let t_start = Instant::now();
 
-    let db_path = r"C:\Users\igorl\.mempalace\palace\sqlite_exact.sqlite3";
+    let db_path = std::env::var("MEMPALACE_DB_PATH").expect("set MEMPALACE_DB_PATH");
     let conn = Connection::open_with_flags(db_path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI)?;
     conn.busy_timeout(std::time::Duration::from_millis(2000))?;
 
     // Sample query vector
     let sample_blob: Vec<u8> = conn.query_row(
-        "SELECT embedding FROM documents WHERE id = 'drawer_44fb808c93188a039e5ce4ef712ebe0a'",
+        "SELECT embedding FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid LIMIT 1",
         [],
         |r| r.get(0),
     )?;
-    let query_vec: &[f32] = unsafe {
-        std::slice::from_raw_parts(sample_blob.as_ptr() as *const f32, DIM)
-    };
+    let query_values: Vec<f32> = sample_blob.chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap())).collect();
+    assert_eq!(query_values.len(), DIM);
+    let query_vec = query_values.as_slice();
     let q_norm = l2_norm(query_vec);
 
     let capacity = if mode == "all" { 350_000 } else { 170_000 };
@@ -140,7 +141,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let t_load_start = Instant::now();
     let query_sql = if mode == "drawers" {
-        "SELECT collection_id, id, embedding, COALESCE(wing, '') FROM documents WHERE collection_id = 1 ORDER BY rowid"
+        "SELECT collection_id, id, embedding, COALESCE(wing, '') FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid"
     } else {
         "SELECT collection_id, id, embedding, COALESCE(wing, '') FROM documents ORDER BY rowid"
     };
@@ -164,10 +165,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             next_id
         };
 
-        let f32_slice: &[f32] = unsafe { std::slice::from_raw_parts(blob.as_ptr() as *const f32, DIM) };
-        let norm = l2_norm(f32_slice);
-        norms.push(norm);
-        flat_embeddings.extend_from_slice(f32_slice);
+        let start = flat_embeddings.len();
+        flat_embeddings.extend(blob.chunks_exact(4)
+            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap())));
+        norms.push(l2_norm(&flat_embeddings[start..]));
         cids.push(cid);
         ids.push(id);
         wing_ids.push(wid);

@@ -529,22 +529,14 @@ def _open_collection_or_explain(
         emit("  Run: mempalace mine <dir>")
         return None
     try:
-        open_fn = opener or open_collection
-        try:
-            return open_fn(
-                palace_path,
-                collection_name=collection_name,
-                create=False,
-                backend=backend_name,
-                read_only=read_only,
-            )
-        except TypeError:
-            return open_fn(
-                palace_path,
-                collection_name=collection_name,
-                create=False,
-                backend=backend_name,
-            )
+        options = {"read_only": True} if read_only else {}
+        return open_collection(
+            palace_path,
+            collection_name=collection_name,
+            create=False,
+            backend=backend_name,
+            **options,
+        )
     except CollectionNotInitializedError:
         emit(f"\n  Palace at {palace_path} is initialized but empty (no drawers yet).")
         emit("  Run: mempalace mine <dir>")

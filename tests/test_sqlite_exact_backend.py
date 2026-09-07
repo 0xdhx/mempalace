@@ -1480,3 +1480,52 @@ def test_sqlite_exact_source_file_index_used_for_equality_get(tmp_path):
     plan_text = " ".join(str(row[-1]) for row in plan)
     assert _SOURCE_FILE_INDEX in plan_text, plan_text
     assert "idx_documents_collection" not in plan_text
+
+
+@pytest.mark.parametrize("k", [0, 1, 3, 8, 12])
+def test_top_k_preserves_stable_cutoff_ties(tmp_path, k):
+    backend, col = _collection(tmp_path)
+    try:
+        ids = [str(i) for i in range(8)]
+        col.add(ids=ids, documents=ids, embeddings=[[1.0, 0.0]] * 8)
+        assert col.query(query_embeddings=[[1.0, 0.0]], n_results=k).ids == [ids[:k]]
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize("backend_name", ["sqlite_exact", "rust_exact"])
+def test_search_open_works_while_other_process_holds_writer_lease(
+    tmp_path, monkeypatch, backend_name
+):
+    from mempalace.searcher import _open_search_collection
+    from mempalace.palace import _open_collection_or_explain
+
+    monkeypatch.setenv("MEMPALACE_BACKEND_EXPLICIT", backend_name)
+    backend, col = _collection(tmp_path)
+    col.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    holder_code = """
+import sys
+from mempalace.palace import mine_palace_lock
+with mine_palace_lock(sys.argv[1]):
+    print("ready", flush=True)
+    sys.stdin.read()
+"""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", holder_code, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=os.environ.copy(),
+    )
+    try:
+        assert holder.stdout.readline().strip() == "ready"
+        reader, error = _open_search_collection(str(tmp_path), "mempalace_drawers")
+        assert error is None
+        assert reader.query(query_embeddings=[[1.0, 0.0]]).ids == [["a"]]
+        diagnostic_reader = _open_collection_or_explain(str(tmp_path), read_only=True)
+        assert diagnostic_reader.count() == 1
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=10)
+        backend.close()

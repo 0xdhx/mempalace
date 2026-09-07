@@ -1,7 +1,7 @@
+use mempalace_core::{MemPalaceError, VectorIndex};
 use pyo3::exceptions::{PyIOError, PyValueError};
 use pyo3::prelude::*;
 use std::collections::HashMap;
-use mempalace_core::{MemPalaceError, VectorIndex};
 
 fn to_py_err(err: MemPalaceError) -> PyErr {
     match err {
@@ -10,9 +10,10 @@ fn to_py_err(err: MemPalaceError) -> PyErr {
         MemPalaceError::CollectionNotFound(s) => {
             PyValueError::new_err(format!("Collection '{}' not found", s))
         }
-        MemPalaceError::DimensionMismatch { expected, actual } => PyValueError::new_err(
-            format!("Dimension mismatch: expected {}, got {}", expected, actual),
-        ),
+        MemPalaceError::DimensionMismatch { expected, actual } => PyValueError::new_err(format!(
+            "Dimension mismatch: expected {}, got {}",
+            expected, actual
+        )),
         MemPalaceError::InvalidArgument(s) => PyValueError::new_err(s),
         MemPalaceError::Io(e) => PyIOError::new_err(format!("IO error: {}", e)),
     }
@@ -32,9 +33,9 @@ impl PyNativeVectorIndex {
         db_path: &str,
         collection_name: Option<&str>,
     ) -> PyResult<Self> {
-        let index = py.allow_threads(|| {
-            VectorIndex::load_from_sqlite(db_path, collection_name)
-        }).map_err(to_py_err)?;
+        let index = py
+            .allow_threads(|| VectorIndex::load_from_sqlite(db_path, collection_name))
+            .map_err(to_py_err)?;
         Ok(Self { inner: index })
     }
 
@@ -58,9 +59,9 @@ impl PyNativeVectorIndex {
         k: usize,
         filter_wing: Option<&str>,
     ) -> PyResult<Vec<(String, f32, f32, Option<String>, Option<String>)>> {
-        let hits = py.allow_threads(|| {
-            self.inner.query(&query_embedding, k, filter_wing)
-        }).map_err(to_py_err)?;
+        let hits = py
+            .allow_threads(|| self.inner.query(&query_embedding, k, filter_wing))
+            .map_err(to_py_err)?;
         Ok(hits
             .into_iter()
             .map(|h| (h.id, h.distance, h.similarity, h.wing, h.room))
@@ -75,9 +76,9 @@ impl PyNativeVectorIndex {
         k: usize,
         filter_wing: Option<&str>,
     ) -> PyResult<Vec<(String, f32, f32, Option<String>, Option<String>)>> {
-        let hits = py.allow_threads(|| {
-            self.inner.query_parallel(&query_embedding, k, filter_wing)
-        }).map_err(to_py_err)?;
+        let hits = py
+            .allow_threads(|| self.inner.query_parallel(&query_embedding, k, filter_wing))
+            .map_err(to_py_err)?;
         Ok(hits
             .into_iter()
             .map(|h| (h.id, h.distance, h.similarity, h.wing, h.room))

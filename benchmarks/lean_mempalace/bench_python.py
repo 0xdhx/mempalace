@@ -32,7 +32,7 @@ def get_rss_mb():
         return counters.WorkingSetSize / (1024 * 1024)
 
 def run_suite(mode="drawers"):
-    db_path = r"C:\Users\igorl\.mempalace\palace\sqlite_exact.sqlite3"
+    db_path = os.environ["MEMPALACE_DB_PATH"]
     t_start = time.perf_counter()
     rss_start = get_rss_mb()
 
@@ -41,14 +41,14 @@ def run_suite(mode="drawers"):
     c.execute("PRAGMA busy_timeout=2000")
 
     # Sample query vector
-    c.execute("SELECT embedding FROM documents WHERE id = 'drawer_44fb808c93188a039e5ce4ef712ebe0a'")
+    c.execute("SELECT embedding FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid LIMIT 1")
     sample_blob = c.fetchone()[0]
     query_vec = np.frombuffer(sample_blob, dtype=np.float32)
 
     # Load
     t_load_start = time.perf_counter()
     if mode == "drawers":
-        sql = "SELECT collection_id, id, embedding, wing FROM documents WHERE collection_id = 1 ORDER BY rowid"
+        sql = "SELECT collection_id, id, embedding, wing FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid"
     else:
         sql = "SELECT collection_id, id, embedding, wing FROM documents ORDER BY rowid"
 

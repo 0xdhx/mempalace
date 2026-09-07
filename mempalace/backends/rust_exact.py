@@ -2,7 +2,7 @@
 
 High-performance native backend powered by crates/mempalace-core and PyO3.
 Stores data in the same sqlite_exact.sqlite3 database as SQLiteExactBackend,
-but uses a native memory-mapped contiguous SIMD index in Rust.
+but uses a native contiguous vector index in Rust.
 Memory consumption is 526 MB for 334k documents (vs 2,430 MB in pure Python)
 and multi-core parallel queries execute in 7–11 ms.
 """
@@ -14,9 +14,7 @@ import os
 from typing import Any, Optional
 
 from .base import (
-    CollectionNotInitializedError,
     DimensionMismatchError,
-    PalaceNotFoundError,
     QueryResult,
     _IncludeSpec,
 )
@@ -26,7 +24,6 @@ from .sqlite_exact import (
     SQLiteExactCollection,
     _SQLiteExactHandle,
     _as_vector_array,
-    _utcnow,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,18 +43,21 @@ class RustExactCollection(SQLiteExactCollection):
     def __init__(self, handle: _SQLiteExactHandle, collection_name: str, backend=None):
         super().__init__(handle, collection_name, backend=backend)
         self._native_index: Optional[Any] = None
-        self._native_data_version: Optional[int] = None
+        self._native_version: Optional[tuple[int, int]] = None
 
-    def _ensure_native_index(self, cur, collection_id: int):
+    def _ensure_native_index(self, cur):
         if _NativeVectorIndex is None:
             return None
         db_file = os.path.join(self._handle.palace_path, _DB_FILENAME)
         if not os.path.isfile(db_file):
             return None
         data_version = int(cur.execute("PRAGMA data_version").fetchone()[0])
-        if self._native_data_version != data_version:
+        # data_version sees other connections; total_changes also sees writes
+        # through this shared handle, including sibling collection wrappers.
+        version = (data_version, self._handle.conn.total_changes)
+        if self._native_version != version:
             self._native_index = None
-            self._native_data_version = data_version
+            self._native_version = version
         if self._native_index is None:
             try:
                 self._native_index = _NativeVectorIndex.load_from_sqlite(
@@ -120,7 +120,7 @@ class RustExactCollection(SQLiteExactCollection):
         with self._cursor() as cur:
             collection_id = self._collection_id(cur)
             expected_dim = self._collection_dimension(cur, collection_id)
-            native = self._ensure_native_index(cur, collection_id)
+            native = self._ensure_native_index(cur)
             if native is None:
                 return super().query(
                     query_embeddings=query_embeddings,
@@ -175,33 +175,10 @@ class RustExactBackend(SQLiteExactBackend):
     name = "rust_exact"
 
     def get_collection(self, *args, **kwargs) -> RustExactCollection:
-        palace, collection_name, create, read_only = self._normalize_args(args, kwargs)
-        self.require_namespace_support(palace)
-        palace_path = palace.local_path
-        if palace_path is None:
-            raise PalaceNotFoundError("RustExactBackend requires PalaceRef.local_path")
-        if not create and not os.path.isdir(palace_path):
-            raise PalaceNotFoundError(palace_path)
-        handle = self._connect(palace_path, create=create, read_only=read_only)
-        with handle.lock:
-            row = handle.conn.execute(
-                "SELECT id FROM collections WHERE name = ?",
-                (collection_name,),
-            ).fetchone()
-            if row is None:
-                if not create:
-                    raise CollectionNotInitializedError(collection_name)
-                from ..palace import mine_palace_lock
-
-                with mine_palace_lock(palace_path):
-                    handle.conn.execute(
-                        "INSERT INTO collections(name, created_at) VALUES (?, ?)",
-                        (collection_name, _utcnow()),
-                    )
-        return RustExactCollection(handle, collection_name, backend=self)
+        collection = super().get_collection(*args, **kwargs)
+        return RustExactCollection(collection._handle, collection._collection_name, backend=self)
 
     @classmethod
     def detect(cls, path: str) -> bool:
-        """Return True when ``path`` has a .rust_exact marker."""
-        marker = os.path.join(path, ".rust_exact")
-        return os.path.isfile(marker)
+        """Native acceleration is selected explicitly, not a separate disk format."""
+        return False

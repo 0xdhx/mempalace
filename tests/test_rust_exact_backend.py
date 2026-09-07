@@ -1,3 +1,7 @@
+import os
+
+import pytest
+
 from mempalace.backends import available_backends, get_backend
 from mempalace.backends.base import PalaceRef
 from mempalace.backends.rust_exact import RustExactBackend, RustExactCollection
@@ -77,3 +81,112 @@ def test_rust_exact_complex_filter_fallback(tmp_path):
     )
     assert "b" not in res.ids[0]
     assert set(res.ids[0]) == {"a", "c"}
+
+
+@pytest.fixture
+def native_backend(tmp_path):
+    from mempalace.backends.rust_exact import _NativeVectorIndex
+
+    if _NativeVectorIndex is None:
+        if os.environ.get("MEMPALACE_REQUIRE_NATIVE") == "1":
+            pytest.fail("CI requires the installed native extension")
+        pytest.skip("native extension not installed")
+    backend = RustExactBackend()
+    palace = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    try:
+        yield backend, palace
+    finally:
+        backend.close()
+
+
+def test_native_mutations_invalidate_all_wrappers(native_backend):
+    backend, palace = native_backend
+    col = backend.get_collection(palace=palace, collection_name="test", create=True)
+    sibling = backend.get_collection(palace=palace, collection_name="test")
+    col.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    assert col.query(query_embeddings=[[1.0, 0.0]]).ids == [["a"]]
+    sibling.add(ids=["b"], documents=["beta"], embeddings=[[0.0, 1.0]])
+    assert col.query(query_embeddings=[[0.0, 1.0]], n_results=1).ids == [["b"]]
+    sibling.update(ids=["b"], embeddings=[[-1.0, 0.0]])
+    assert col.query(query_embeddings=[[1.0, 0.0]], n_results=1).ids == [["a"]]
+    sibling.upsert(ids=["b"], documents=["new beta"], embeddings=[[1.0, 0.0]])
+    assert col.query(query_embeddings=[[1.0, 0.0]], n_results=2).ids == [["a", "b"]]
+    sibling.delete(ids=["a"])
+    result = col.query(query_embeddings=[[1.0, 0.0]])
+    assert result.ids == [["b"]]
+    assert result.documents == [["new beta"]]
+    assert col._native_index is not None
+
+
+def test_native_external_commit_refresh(native_backend):
+    backend, palace = native_backend
+    col = backend.get_collection(palace=palace, collection_name="test", create=True)
+    col.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    col.query(query_embeddings=[[1.0, 0.0]])
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    other = SQLiteExactBackend()
+    try:
+        writer = other.get_collection(palace=palace, collection_name="test")
+        writer.add(ids=["b"], documents=["beta"], embeddings=[[0.0, 1.0]])
+        assert col.query(query_embeddings=[[0.0, 1.0]], n_results=1).ids == [["b"]]
+    finally:
+        other.close()
+
+
+def test_empty_collection_survives_close(tmp_path):
+    palace = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    first = RustExactBackend()
+    first.get_collection(palace=palace, collection_name="empty", create=True)
+    first.close()
+    second = RustExactBackend()
+    try:
+        assert second.get_collection(palace=palace, collection_name="empty").count() == 0
+    finally:
+        second.close()
+
+
+def test_native_format_detection_is_sqlite_only(tmp_path, monkeypatch):
+    from mempalace.backends import detect_backends_for_path
+    from mempalace.palace import resolve_backend_name
+
+    monkeypatch.delenv("MEMPALACE_BACKEND", raising=False)
+    monkeypatch.setattr("mempalace.palace._config_backend_value", lambda _: None)
+    backend = RustExactBackend()
+    try:
+        backend.get_collection(str(tmp_path), "test", create=True)
+        (tmp_path / ".rust_exact").touch()
+        assert detect_backends_for_path(str(tmp_path)) == ["sqlite_exact"]
+        assert resolve_backend_name(str(tmp_path), explicit="rust_exact") == "rust_exact"
+        assert resolve_backend_name(str(tmp_path), explicit="sqlite_exact") == "sqlite_exact"
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize("count", [31, 10001])
+def test_native_matches_python_ranking_and_filters(native_backend, count):
+    import numpy as np
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    backend, palace = native_backend
+    col = backend.get_collection(palace=palace, collection_name="test", create=True)
+    vectors = np.random.default_rng(42).normal(size=(count, 4)).tolist()
+    col.add(
+        ids=[str(i) for i in range(count)],
+        documents=["fixture"] * count,
+        metadatas=[{"wing": "a" if i % 2 else "b"} for i in range(count)],
+        embeddings=vectors,
+    )
+    python_backend = SQLiteExactBackend()
+    try:
+        reference = python_backend.get_collection(palace=palace, collection_name="test")
+        for where in [None, {"wing": "a"}, {"wing": "missing"}]:
+            for k in [0, 1, 10]:
+                options = dict(query_embeddings=[[1.0, -0.3, 0.5, 0.1]], n_results=k, where=where)
+                actual = col.query(**options)
+                expected = reference.query(**options)
+                assert actual.ids == expected.ids
+                assert actual.distances[0] == pytest.approx(expected.distances[0], abs=1e-6)
+        assert col._native_index is not None
+    finally:
+        python_backend.close()

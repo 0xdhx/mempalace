@@ -1,6 +1,9 @@
 package main
 
 import (
+ "os"
+ "net/url"
+ "path/filepath"
 	"database/sql"
 	"fmt"
 	"math"
@@ -44,14 +47,14 @@ func getRssMb() float64 {
 }
 
 func main() {
-	db, err := sql.Open("sqlite", "file:C:/Users/igorl/.mempalace/palace/sqlite_exact.sqlite3?mode=ro")
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.ToSlash(os.Getenv("MEMPALACE_DB_PATH")), RawQuery: "mode=ro"}).String())
 	if err != nil {
 		panic(err)
 	}
 	defer db.Close()
 
 	t0 := time.Now()
-	rows, err := db.Query("SELECT id, embedding, COALESCE(wing, '') FROM documents WHERE collection_id = 1 ORDER BY rowid")
+	rows, err := db.Query("SELECT id, embedding, COALESCE(wing, '') FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid")
 	if err != nil {
 		panic(err)
 	}

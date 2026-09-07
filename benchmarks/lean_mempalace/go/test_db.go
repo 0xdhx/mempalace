@@ -1,6 +1,9 @@
 package main
 
 import (
+ "os"
+ "net/url"
+ "path/filepath"
 	"database/sql"
 	"fmt"
 	"syscall"
@@ -42,7 +45,7 @@ func getRssMb() float64 {
 
 func main() {
 	fmt.Printf("Initial RSS: %.2f MB\n", getRssMb())
-	db, err := sql.Open("sqlite", "file:C:/Users/igorl/.mempalace/palace/sqlite_exact.sqlite3?mode=ro")
+	db, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: filepath.ToSlash(os.Getenv("MEMPALACE_DB_PATH")), RawQuery: "mode=ro"}).String())
 	if err != nil {
 		panic(err)
 	}

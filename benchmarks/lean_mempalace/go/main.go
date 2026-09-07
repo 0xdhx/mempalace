@@ -1,6 +1,8 @@
 package main
 
 import (
+ "net/url"
+ "path/filepath"
 	"container/heap"
 	"database/sql"
 	"encoding/json"
@@ -159,7 +161,7 @@ func main() {
 	rssStart := getRssMb()
 	tStart := time.Now()
 
-	dbPath := "file:C:/Users/igorl/.mempalace/palace/sqlite_exact.sqlite3?mode=ro"
+	dbPath := (&url.URL{Scheme: "file", Path: filepath.ToSlash(os.Getenv("MEMPALACE_DB_PATH")), RawQuery: "mode=ro"}).String()
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		panic(err)
@@ -168,7 +170,7 @@ func main() {
 
 	// Sample query vector
 	var sampleBlob []byte
-	err = db.QueryRow("SELECT embedding FROM documents WHERE id = 'drawer_44fb808c93188a039e5ce4ef712ebe0a'").Scan(&sampleBlob)
+	err = db.QueryRow("SELECT embedding FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid LIMIT 1").Scan(&sampleBlob)
 	if err != nil {
 		panic(err)
 	}
@@ -177,7 +179,7 @@ func main() {
 
 	// Load vectors
 	tLoadStart := time.Now()
-	querySql := "SELECT collection_id, id, embedding, COALESCE(wing, '') FROM documents WHERE collection_id = 1 ORDER BY rowid"
+	querySql := "SELECT collection_id, id, embedding, COALESCE(wing, '') FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid"
 	capHint := 170000
 	if mode == "all" {
 		querySql = "SELECT collection_id, id, embedding, COALESCE(wing, '') FROM documents ORDER BY rowid"

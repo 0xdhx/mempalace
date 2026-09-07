@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
-const db = new Database("C:/Users/igorl/.mempalace/palace/sqlite_exact.sqlite3", { readonly: true });
-const row = db.query("SELECT id, embedding FROM documents WHERE id = 'drawer_44fb808c93188a039e5ce4ef712ebe0a'").get() as any;
+const db = new Database(process.env.MEMPALACE_DB_PATH!, { readonly: true });
+const row = db.query("SELECT id, embedding FROM documents WHERE collection_id = (SELECT id FROM collections WHERE name = 'mempalace_drawers') ORDER BY rowid LIMIT 1").get() as any;
 console.log("ID:", row.id);
 console.log("Embedding type:", row.embedding.constructor.name, "byteLength:", row.embedding.byteLength);
 const f32 = new Float32Array(row.embedding.buffer, row.embedding.byteOffset, 384);

@@ -20,7 +20,7 @@ from mempalace.backends.base import PalaceRef
 
 
 def run_soak_test():
-    palace_path = r"C:\Users\igorl\.mempalace\palace"
+    palace_path = os.path.dirname(os.path.abspath(os.environ["MEMPALACE_DB_PATH"]))
     palace_ref = PalaceRef(id=palace_path, local_path=palace_path)
     backend = get_backend("rust_exact")
     col = backend.get_collection(
