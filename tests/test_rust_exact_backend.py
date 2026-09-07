@@ -203,3 +203,114 @@ def test_migrated_null_dimension_uses_native_index(native_backend):
     assert result.ids == [["a"]]
     assert col._native_index is not None
     assert col._native_index.dim() == 2
+
+
+@pytest.mark.parametrize("operation", ["update", "delete"])
+@pytest.mark.parametrize("boundary", ["load", "before_hydrate", "after_hydrate"])
+def test_native_retries_when_writer_commits_during_query(
+    native_backend, monkeypatch, operation, boundary
+):
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    backend, palace = native_backend
+    col = backend.get_collection(palace=palace, collection_name="test", create=True)
+    col.add(ids=["a", "b"], documents=["alpha", "beta"], embeddings=[[1.0, 0.0], [0.0, 1.0]])
+    peer = SQLiteExactBackend()
+    writer = peer.get_collection(palace=palace, collection_name="test")
+    changed = False
+
+    def change_once():
+        nonlocal changed
+        if changed:
+            return
+        changed = True
+        if operation == "delete":
+            writer.delete(ids=["a"])
+        else:
+            writer.update(ids=["a"], documents=["changed alpha"], embeddings=[[-1.0, 0.0]])
+
+    original_hydrate = col._hydrate
+    original_load = col._ensure_native_index
+
+    def hydrate(*args):
+        if boundary == "before_hydrate":
+            change_once()
+        result = original_hydrate(*args)
+        if boundary == "after_hydrate":
+            change_once()
+        return result
+
+    def load(*args):
+        index = original_load(*args)
+        if boundary == "load":
+            change_once()
+        return index
+
+    monkeypatch.setattr(col, "_hydrate", hydrate)
+    monkeypatch.setattr(col, "_ensure_native_index", load)
+    try:
+        result = col.query(query_embeddings=[[1.0, 0.0]], n_results=2)
+        assert changed
+        assert result.ids == ([["b"]] if operation == "delete" else [["b", "a"]])
+        assert result.documents == (
+            [["beta"]] if operation == "delete" else [["beta", "changed alpha"]]
+        )
+        assert result.distances[0] == pytest.approx([1.0] if operation == "delete" else [1.0, 2.0])
+    finally:
+        peer.close()
+
+
+def test_native_continuous_writes_fail_explicitly(native_backend, monkeypatch):
+    from mempalace.backends.base import BackendError
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    backend, palace = native_backend
+    col = backend.get_collection(palace=palace, collection_name="test", create=True)
+    col.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    peer = SQLiteExactBackend()
+    writer = peer.get_collection(palace=palace, collection_name="test")
+    original = col._hydrate
+    calls = []
+
+    def hydrate(*args):
+        calls.append(1)
+        writer.update(ids=["a"], documents=[str(len(calls))])
+        return original(*args)
+
+    monkeypatch.setattr(col, "_hydrate", hydrate)
+    try:
+        with pytest.raises(BackendError, match="changed repeatedly"):
+            col.query(query_embeddings=[[1.0, 0.0]])
+        assert len(calls) == 3
+    finally:
+        peer.close()
+
+
+def test_native_immutable_snapshot_reopens_after_mid_query_commit(native_backend, monkeypatch):
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    backend, palace = native_backend
+    writer = backend.get_collection(palace=palace, collection_name="test", create=True)
+    writer.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    backend.close_palace(palace)
+    col = backend.get_collection(palace=palace, collection_name="test", options={"read_only": True})
+    assert col._handle.immutable
+    original = col._hydrate
+    changed = False
+
+    def hydrate(*args):
+        nonlocal changed
+        if not changed:
+            changed = True
+            peer = SQLiteExactBackend()
+            try:
+                writer = peer.get_collection(palace=palace, collection_name="test")
+                writer.update(ids=["a"], documents=["changed"], embeddings=[[-1.0, 0.0]])
+            finally:
+                peer.close()
+        return original(*args)
+
+    monkeypatch.setattr(col, "_hydrate", hydrate)
+    result = col.query(query_embeddings=[[1.0, 0.0]])
+    assert result.documents == [["changed"]]
+    assert result.distances[0] == pytest.approx([2.0])

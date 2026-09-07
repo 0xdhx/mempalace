@@ -160,14 +160,29 @@ impl VectorIndex {
         // The public default is the verbatim drawer collection, never an
         // unscoped scan that mixes drawers, closets, and embedding dimensions.
         let col_name = collection_name.unwrap_or("mempalace_drawers");
+        let collection_columns = conn
+            .prepare("PRAGMA table_info(collections)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let document_columns = conn
+            .prepare("PRAGMA table_xinfo(documents)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?;
+        let dimension_expr = if collection_columns.iter().any(|c| c == "dimension") {
+            "dimension"
+        } else {
+            "NULL"
+        };
         let row: Result<(i64, Option<i64>), rusqlite::Error> = conn.query_row(
             // Older migrations add a nullable dimension column. Infer from
             // the first encoded vector; every blob is validated below, so
             // mixed dimensions and truncated floats still fail explicitly.
-            "SELECT id, COALESCE(dimension, (
+            &format!(
+                "SELECT id, COALESCE({dimension_expr}, (
                 SELECT length(embedding) / 4 FROM documents
                 WHERE collection_id = collections.id ORDER BY rowid LIMIT 1
-            )) FROM collections WHERE name = ?1",
+            )) FROM collections WHERE name = ?1"
+            ),
             [col_name],
             |r| Ok((r.get(0)?, r.get(1)?)),
         );
@@ -184,9 +199,19 @@ impl VectorIndex {
             .checked_mul(std::mem::size_of::<f32>())
             .ok_or_else(|| MemPalaceError::InvalidArgument("dimension overflow".into()))?;
         let mut index = Self::new(dim);
-        let mut stmt = conn.prepare(
-            "SELECT id, embedding, wing, room FROM documents WHERE collection_id = ?1 ORDER BY rowid"
-        )?;
+        let wing = if document_columns.iter().any(|c| c == "wing") {
+            "wing"
+        } else {
+            "json_extract(metadata_json, '$.wing')"
+        };
+        let room = if document_columns.iter().any(|c| c == "room") {
+            "room"
+        } else {
+            "json_extract(metadata_json, '$.room')"
+        };
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, embedding, {wing}, {room} FROM documents WHERE collection_id = ?1 ORDER BY rowid"
+        ))?;
         let mut rows = stmt.query([collection_id])?;
 
         while let Some(row) = rows.next()? {
@@ -523,5 +548,22 @@ mod tests {
         )
         .unwrap();
         assert!(VectorIndex::load_from_sqlite(&path, None).is_err());
+    }
+
+    #[test]
+    fn pre_locus_schema_is_readable_without_migration() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("old.sqlite3");
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(r#"CREATE TABLE collections(id INTEGER, name TEXT);
+            CREATE TABLE documents(id TEXT, embedding BLOB, metadata_json TEXT, collection_id INTEGER);
+            INSERT INTO collections VALUES(1, 'mempalace_drawers');
+            INSERT INTO documents VALUES('a', x'0000803f00000000', '{"wing":"project","room":"notes"}', 1);"#).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let index = VectorIndex::load_from_sqlite(&path, None).unwrap();
+        let hits = index.query(&[1.0, 0.0], 1, Some("project")).unwrap();
+        assert_eq!(hits[0].id, "a");
+        assert_eq!(hits[0].room.as_deref(), Some("notes"));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
     }
 }

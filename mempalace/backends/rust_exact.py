@@ -14,6 +14,7 @@ import os
 from typing import Any, Optional
 
 from .base import (
+    BackendError,
     DimensionMismatchError,
     QueryResult,
     _IncludeSpec,
@@ -37,30 +38,48 @@ except (ImportError, ValueError):
         _NativeVectorIndex = None
 
 
+class _SnapshotChanged(Exception):
+    """Internal signal to retry the whole native query after a peer commit."""
+
+
 class RustExactCollection(SQLiteExactCollection):
     """Collection wrapper that delegates vector scanning to mempalace_core_rs."""
 
     def __init__(self, handle: _SQLiteExactHandle, collection_name: str, backend=None):
         super().__init__(handle, collection_name, backend=backend)
         self._native_index: Optional[Any] = None
-        self._native_version: Optional[tuple[int, int]] = None
+        self._native_version: Optional[tuple] = None
+
+    def _index_version(self, cur):
+        if self._handle.immutable:
+            db_file = os.path.join(self._handle.palace_path, _DB_FILENAME)
+            # Immutable SQLite connections do not observe peer commits at all.
+            # Reject an obsolete snapshot instead of combining it with a fresh
+            # Rust load; the next attempt reopens through the backend.
+            try:
+                wal_has_frames = os.path.getsize(db_file + "-wal") > 0
+            except FileNotFoundError:
+                wal_has_frames = False
+            # SQLite's native read-only opener may leave empty sidecars. They
+            # contain no newer data; nonempty WALs or main-file changes do.
+            if (
+                self._backend._database_signature(db_file) != self._handle.immutable_signature
+                or wal_has_frames
+            ):
+                raise _SnapshotChanged()
+        return (
+            self._handle.conn,
+            int(cur.execute("PRAGMA data_version").fetchone()[0]),
+            self._handle.conn.total_changes,
+        )
 
     def _ensure_native_index(self, cur):
-        if (
-            _NativeVectorIndex is None
-            or not self._handle.has_dimension_column
-            or not self._handle.has_locus_columns
-        ):
-            # Legacy palaces remain searchable without a write/migration lease.
-            # The next normal writable open upgrades the schema for native use.
+        if _NativeVectorIndex is None:
             return None
         db_file = os.path.join(self._handle.palace_path, _DB_FILENAME)
         if not os.path.isfile(db_file):
             return None
-        data_version = int(cur.execute("PRAGMA data_version").fetchone()[0])
-        # data_version sees other connections; total_changes also sees writes
-        # through this shared handle, including sibling collection wrappers.
-        version = (data_version, self._handle.conn.total_changes)
+        version = self._index_version(cur)
         if self._native_version != version:
             self._native_index = None
             self._native_version = version
@@ -74,7 +93,21 @@ class RustExactCollection(SQLiteExactCollection):
                 self._native_index = None
         return self._native_index
 
-    def query(
+    def query(self, **kwargs) -> QueryResult:
+        self._ensure_open()
+        for _ in range(3):
+            if self._handle.read_only and self._backend is not None and not self._closed:
+                self._handle = self._backend._connect(
+                    self._handle.palace_path, create=False, read_only=True
+                )
+            try:
+                return self._query_once(**kwargs)
+            except _SnapshotChanged:
+                self._native_index = None
+                self._native_version = None
+        raise BackendError("Palace changed repeatedly during native search; retry the query")
+
+    def _query_once(
         self,
         *,
         query_texts=None,
@@ -165,6 +198,12 @@ class RustExactCollection(SQLiteExactCollection):
                     [metas_by_id.get(doc_id, {}) for doc_id in top_ids] if spec.metadatas else []
                 )
                 outer_dists.append(top_dists if spec.distances else [])
+
+            # Both the loader and hydration use separate SQLite statements.
+            # A commit anywhere between version capture and hydration requires
+            # discarding all batch results, not merely refreshing the next call.
+            if self._native_version != self._index_version(cur):
+                raise _SnapshotChanged()
 
         return QueryResult(
             ids=outer_ids,
