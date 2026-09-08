@@ -314,3 +314,68 @@ def test_native_immutable_snapshot_reopens_after_mid_query_commit(native_backend
     result = col.query(query_embeddings=[[1.0, 0.0]])
     assert result.documents == [["changed"]]
     assert result.distances[0] == pytest.approx([2.0])
+
+
+@pytest.mark.parametrize("read_only", [False, True])
+def test_native_index_is_shared_across_fresh_wrappers(native_backend, monkeypatch, read_only):
+    import mempalace.backends.rust_exact as rust_module
+
+    backend, palace = native_backend
+    writer = backend.get_collection(palace=palace, collection_name="test", create=True)
+    writer.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    original = rust_module._NativeVectorIndex
+    loads = []
+
+    class CountingIndex:
+        @staticmethod
+        def load_from_sqlite(*args):
+            loads.append(args)
+            return original.load_from_sqlite(*args)
+
+    monkeypatch.setattr(rust_module, "_NativeVectorIndex", CountingIndex)
+
+    def search():
+        col = backend.get_collection(
+            palace=palace, collection_name="test", options={"read_only": read_only}
+        )
+        return col.query(query_embeddings=[[1.0, 0.0]]).ids
+
+    assert search() == [["a"]]
+    assert search() == [["a"]]
+    assert len(loads) == 1
+    writer.add(ids=["b"], documents=["beta"], embeddings=[[0.0, 1.0]])
+    assert search() == [["a", "b"]]
+    assert search() == [["a", "b"]]
+    assert len(loads) == 2
+
+
+@pytest.mark.parametrize("magnitude", [1e20, 1e-30, 2**-149])
+@pytest.mark.parametrize("count", [4, 10004])
+def test_native_finite_extremes_match_python_cosine(native_backend, magnitude, count):
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    backend, palace = native_backend
+    col = backend.get_collection(palace=palace, collection_name="extremes", create=True)
+    vectors = [[magnitude, 0.0], [0.0, magnitude], [0.0, 0.0]]
+    vectors.extend([[-magnitude, 0.0]] * (count - 3))
+    ids = [str(i) for i in range(count)]
+    col.add(ids=ids, documents=ids, embeddings=vectors)
+    python_backend = SQLiteExactBackend()
+    try:
+        reference = python_backend.get_collection(palace=palace, collection_name="extremes")
+        for query, distances in [
+            ([magnitude, 0.0], [0.0, 1.0, 1.0, 2.0]),
+            ([0.0, 0.0], [1.0, 1.0, 1.0, 1.0]),
+        ]:
+            actual = col.query(query_embeddings=[query], n_results=4)
+            expected = reference.query(query_embeddings=[query], n_results=4)
+            assert actual.ids == expected.ids == [["0", "1", "2", "3"]]
+            assert actual.distances[0] == pytest.approx(distances, abs=1e-6)
+            assert expected.distances[0] == pytest.approx(distances, abs=1e-6)
+            assert col._native_index is not None
+            for method in [col._native_index.query, col._native_index.query_parallel]:
+                hits = method(query, 4)
+                assert [hit[0] for hit in hits] == ["0", "1", "2", "3"]
+                assert [hit[1] for hit in hits] == pytest.approx(distances, abs=1e-6)
+    finally:
+        python_backend.close()

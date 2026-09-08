@@ -306,13 +306,25 @@ def _cosine_distances(
     q = np.asarray(query, dtype=np.float32)
     if mat.size == 0:
         return np.zeros((0,), dtype=np.float32)
-    q_norm = float(np.linalg.norm(q))
-    if norms is None:
-        norms = np.linalg.norm(mat, axis=1)
-    denom = norms * q_norm
-    dots = mat @ q
-    cos = np.zeros(dots.shape, dtype=np.float32)
-    np.divide(dots, denom, out=cos, where=denom > 0)
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        q_norm = float(np.linalg.norm(q))
+        if norms is None:
+            norms = np.linalg.norm(mat, axis=1)
+        denom = norms * q_norm
+        dots = mat @ q
+        cos = np.zeros(dots.shape, dtype=np.float32)
+        np.divide(dots, denom, out=cos, where=denom > 0)
+    # Finite float32 inputs can still overflow or underflow intermediate
+    # products. Recompute only affected rows in float64; ordinary embeddings
+    # retain the cached float32 path and zero vectors retain distance one.
+    unsafe = (~np.isfinite(denom)) | (~np.isfinite(dots)) | (denom < np.finfo(np.float32).tiny)
+    if np.any(unsafe):
+        wide = mat[unsafe].astype(np.float64)
+        wide_q = q.astype(np.float64)
+        wide_denom = np.linalg.norm(wide, axis=1) * np.linalg.norm(wide_q)
+        wide_cos = np.zeros(len(wide), dtype=np.float64)
+        np.divide(wide @ wide_q, wide_denom, out=wide_cos, where=wide_denom > 0)
+        cos[unsafe] = wide_cos
     np.clip(cos, -1.0, 1.0, out=cos)
     return 1.0 - cos
 
@@ -473,12 +485,17 @@ class _SQLiteExactHandle:
         self.has_dimension_column = True
         self.has_locus_columns = True
         self.closed = False
+        self.retired = False
+        self.lifetime = None
         # collection_id -> (ids, float32 matrix, mini-metadata). Filled lazily
         # by query() so a long-lived hub does not re-read every embedding blob
         # on the next search. Mini-metadata is wing/room/source_file for
         # ``_vector_cache_data_version`` detects commits from other handles.
         self._vector_cache: dict[int, tuple[list[str], np.ndarray, np.ndarray, list[dict]]] = {}
         self._vector_cache_data_version: Optional[int] = None
+        # Native accelerators share one versioned index per collection across
+        # the short-lived wrappers created by application searches.
+        self._native_cache: dict[str, tuple[tuple, Any]] = {}
 
 
 class SQLiteExactCollection(BaseCollection):
@@ -496,6 +513,15 @@ class SQLiteExactCollection(BaseCollection):
     def _ensure_open(self) -> None:
         if self._closed or self._handle.closed:
             raise BackendClosedError("SQLiteExactCollection has been closed")
+
+    def _refresh_retired_handle(self) -> None:
+        if not self._closed and self._handle.retired and self._backend is not None:
+            with self._backend._clients_lock:
+                path = self._handle.palace_path
+                # Explicit close_palace ends this lifetime, even if a newer
+                # collection has since reopened the same directory.
+                if self._backend._palace_lifetimes.get(path) is self._handle.lifetime:
+                    self._handle = self._backend._connect(path, create=False, read_only=True)
 
     @contextlib.contextmanager
     def _write_lock(self):
@@ -517,6 +543,7 @@ class SQLiteExactCollection(BaseCollection):
 
     @contextlib.contextmanager
     def _cursor(self, *, write: bool = False):
+        self._refresh_retired_handle()
         serialization = self._write_lock() if write else self._handle.lock
         with serialization:
             self._ensure_open()
@@ -530,6 +557,7 @@ class SQLiteExactCollection(BaseCollection):
                 self._handle.conn.commit()
                 if write:
                     self._handle._vector_cache.clear()
+                    self._handle._native_cache.clear()
             finally:
                 cur.close()
 
@@ -1416,6 +1444,7 @@ class SQLiteExactBackend(BaseBackend):
     def __init__(self):
         self._clients: dict[str, _SQLiteExactHandle] = {}
         self._read_only_clients: dict[str, _SQLiteExactHandle] = {}
+        self._palace_lifetimes: dict[str, object] = {}
         self._clients_lock = threading.RLock()
         self._closed = False
 
@@ -1477,6 +1506,7 @@ class SQLiteExactBackend(BaseBackend):
         """Drop a cached read-only handle so the next open re-evaluates WAL state."""
         self._read_only_clients.pop(palace_path, None)
         with handle.lock:
+            handle.retired = True
             if handle.closed:
                 return
             handle.closed = True
@@ -1547,6 +1577,7 @@ class SQLiteExactBackend(BaseBackend):
                     immutable=immutable,
                 )
                 handle.immutable_signature = signature if immutable else None
+                handle.lifetime = self._palace_lifetimes.setdefault(palace_path, object())
                 with handle.lock:
                     if read_only:
                         # ``mode=ro`` prevents filesystem writes. ``query_only``
@@ -1749,6 +1780,7 @@ class SQLiteExactBackend(BaseBackend):
         if path is None:
             return
         with self._clients_lock:
+            self._palace_lifetimes.pop(path, None)
             cached_handles = [
                 self._clients.pop(path, None),
                 self._read_only_clients.pop(path, None),
@@ -1769,6 +1801,7 @@ class SQLiteExactBackend(BaseBackend):
             handles = list(self._clients.values()) + list(self._read_only_clients.values())
             self._clients.clear()
             self._read_only_clients.clear()
+            self._palace_lifetimes.clear()
             self._closed = True
         for handle in handles:
             with handle.lock:

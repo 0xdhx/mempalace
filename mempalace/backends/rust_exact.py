@@ -47,8 +47,12 @@ class RustExactCollection(SQLiteExactCollection):
 
     def __init__(self, handle: _SQLiteExactHandle, collection_name: str, backend=None):
         super().__init__(handle, collection_name, backend=backend)
-        self._native_index: Optional[Any] = None
         self._native_version: Optional[tuple] = None
+
+    @property
+    def _native_index(self) -> Optional[Any]:
+        cached = self._handle._native_cache.get(self._collection_name)
+        return cached[1] if cached is not None else None
 
     def _index_version(self, cur):
         if self._handle.immutable:
@@ -80,20 +84,19 @@ class RustExactCollection(SQLiteExactCollection):
         if not os.path.isfile(db_file):
             return None
         version = self._index_version(cur)
-        if self._native_version != version:
-            self._native_index = None
-            self._native_version = version
-        if self._native_index is None:
+        cached = self._handle._native_cache.get(self._collection_name)
+        self._native_version = version
+        if cached is None or cached[0] != version:
+            self._handle._native_cache.pop(self._collection_name, None)
             try:
-                self._native_index = _NativeVectorIndex.load_from_sqlite(
-                    db_file, self._collection_name
-                )
+                index = _NativeVectorIndex.load_from_sqlite(db_file, self._collection_name)
+                self._handle._native_cache[self._collection_name] = (version, index)
             except Exception as e:
                 logger.warning("Failed to load Rust native vector index: %s", e)
-                self._native_index = None
         return self._native_index
 
     def query(self, **kwargs) -> QueryResult:
+        self._refresh_retired_handle()
         self._ensure_open()
         for _ in range(3):
             if self._handle.read_only and self._backend is not None and not self._closed:
@@ -103,7 +106,8 @@ class RustExactCollection(SQLiteExactCollection):
             try:
                 return self._query_once(**kwargs)
             except _SnapshotChanged:
-                self._native_index = None
+                with self._handle.lock:
+                    self._handle._native_cache.pop(self._collection_name, None)
                 self._native_version = None
         raise BackendError("Palace changed repeatedly during native search; retry the query")
 

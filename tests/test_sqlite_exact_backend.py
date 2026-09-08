@@ -1672,3 +1672,48 @@ with mine_palace_lock(sys.argv[1]):
         holder.stdin.close()
         holder.wait(timeout=10)
         get_backend(backend_name).close_palace(str(tmp_path))
+
+
+@pytest.mark.parametrize("backend_name", ["sqlite_exact", "rust_exact"])
+def test_retired_reader_wrappers_reconnect_but_explicit_close_stays_closed(tmp_path, backend_name):
+    from mempalace.backends import get_backend
+    from mempalace.backends.base import BackendClosedError
+
+    backend = type(get_backend(backend_name))()
+    peer = SQLiteExactBackend()
+    palace = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    try:
+        writer = peer.get_collection(palace=palace, collection_name="test", create=True)
+        writer.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+        peer.close_palace(palace)
+        old = backend.get_collection(
+            palace=palace, collection_name="test", options={"read_only": True}
+        )
+        old_handle = old._handle
+        stale = backend.get_collection(
+            palace=palace, collection_name="test", options={"read_only": True}
+        )
+        writer = peer.get_collection(palace=palace, collection_name="test")
+        writer.add(ids=["b"], documents=["beta"], embeddings=[[0.0, 1.0]])
+        peer.close_palace(palace)
+        fresh = backend.get_collection(
+            palace=palace, collection_name="test", options={"read_only": True}
+        )
+        assert old_handle.closed
+        assert old.count() == 2
+        assert old.query(query_embeddings=[[0.0, 1.0]], n_results=1).ids == [["b"]]
+        old.close()
+        with pytest.raises(BackendClosedError):
+            old.query(query_embeddings=[[1.0, 0.0]])
+        backend.close_palace(palace)
+        with pytest.raises(BackendClosedError):
+            fresh.count()
+        reopened = backend.get_collection(
+            palace=palace, collection_name="test", options={"read_only": True}
+        )
+        assert reopened.count() == 2
+        with pytest.raises(BackendClosedError):
+            stale.count()
+    finally:
+        peer.close()
+        backend.close()

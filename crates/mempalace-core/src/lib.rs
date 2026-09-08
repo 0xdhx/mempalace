@@ -90,6 +90,22 @@ fn l2_norm(v: &[f32]) -> f32 {
     sum.sqrt()
 }
 
+// Every finite f32 product and norm fits in f64, including subnormal inputs.
+// Keep ordinary embeddings on the f32 path; recompute unsafe intermediates.
+fn cosine_wide(a: &[f32], b: &[f32]) -> f32 {
+    let (mut dot, mut a_squared, mut b_squared) = (0.0f64, 0.0f64, 0.0f64);
+    for (&a, &b) in a.iter().zip(b) {
+        let (a, b) = (f64::from(a), f64::from(b));
+        dot += a * b;
+        a_squared += a * a;
+        b_squared += b * b;
+    }
+    if a_squared == 0.0 || b_squared == 0.0 {
+        return 0.0;
+    }
+    (dot / (a_squared.sqrt() * b_squared.sqrt())).clamp(-1.0, 1.0) as f32
+}
+
 pub struct VectorIndex {
     ids: Vec<String>,
     vectors: Vec<f32>,
@@ -287,12 +303,13 @@ impl VectorIndex {
                 continue;
             }
             let vec_start = i * self.dim;
-            let dot = dot_product(&self.vectors[vec_start..vec_start + self.dim], query_vec);
+            let vector = &self.vectors[vec_start..vec_start + self.dim];
+            let dot = dot_product(vector, query_vec);
             let denom = self.norms[i] * q_norm;
-            let cos = if denom > 0.0 {
+            let cos = if dot.is_finite() && denom.is_normal() && denom > 0.0 {
                 (dot / denom).clamp(-1.0, 1.0)
             } else {
-                0.0
+                cosine_wide(vector, query_vec)
             };
             Self::retain(
                 &mut heap,
@@ -548,6 +565,45 @@ mod tests {
         )
         .unwrap();
         assert!(VectorIndex::load_from_sqlite(&path, None).is_err());
+    }
+
+    #[test]
+    fn finite_extreme_magnitudes_keep_cosine_distances_finite() {
+        for magnitude in [1e20f32, 1e-30, f32::from_bits(1)] {
+            for count in [4, 10004] {
+                let mut index = VectorIndex::new(2);
+                for i in 0..count {
+                    let vector = match i {
+                        0 => [magnitude, 0.0],
+                        1 => [0.0, magnitude],
+                        2 => [0.0, 0.0],
+                        _ => [-magnitude, 0.0],
+                    };
+                    index.ids.push(i.to_string());
+                    index.vectors.extend_from_slice(&vector);
+                    index.norms.push(l2_norm(&vector));
+                    index.wing_ids.push(0);
+                    index.rooms.push(None);
+                }
+                for query in [[magnitude, 0.0], [0.0, 0.0]] {
+                    let expected = if query[0] == 0.0 {
+                        [1.0, 1.0, 1.0, 1.0]
+                    } else {
+                        [0.0, 1.0, 1.0, 2.0]
+                    };
+                    for hits in [
+                        index.query(&query, 4, None).unwrap(),
+                        index.query_parallel(&query, 4, None).unwrap(),
+                    ] {
+                        for (i, hit) in hits.iter().enumerate() {
+                            assert_eq!(hit.id, i.to_string());
+                            assert_eq!(hit.distance, expected[i]);
+                            assert!(hit.similarity.is_finite());
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]
