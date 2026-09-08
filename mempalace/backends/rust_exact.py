@@ -14,7 +14,6 @@ import os
 from typing import Any, Optional
 
 from .base import (
-    BackendError,
     DimensionMismatchError,
     QueryResult,
     _IncludeSpec,
@@ -23,7 +22,7 @@ from .sqlite_exact import (
     _DB_FILENAME,
     SQLiteExactBackend,
     SQLiteExactCollection,
-    _SQLiteExactHandle,
+    _SnapshotChanged,
     _as_vector_array,
 )
 
@@ -38,44 +37,17 @@ except (ImportError, ValueError):
         _NativeVectorIndex = None
 
 
-class _SnapshotChanged(Exception):
-    """Internal signal to retry the whole native query after a peer commit."""
+class _NativeUnavailable(Exception):
+    """Leave the native cursor before entering the Python fallback."""
 
 
 class RustExactCollection(SQLiteExactCollection):
     """Collection wrapper that delegates vector scanning to mempalace_core_rs."""
 
-    def __init__(self, handle: _SQLiteExactHandle, collection_name: str, backend=None):
-        super().__init__(handle, collection_name, backend=backend)
-        self._native_version: Optional[tuple] = None
-
     @property
     def _native_index(self) -> Optional[Any]:
         cached = self._handle._native_cache.get(self._collection_name)
         return cached[1] if cached is not None else None
-
-    def _index_version(self, cur):
-        if self._handle.immutable:
-            db_file = os.path.join(self._handle.palace_path, _DB_FILENAME)
-            # Immutable SQLite connections do not observe peer commits at all.
-            # Reject an obsolete snapshot instead of combining it with a fresh
-            # Rust load; the next attempt reopens through the backend.
-            try:
-                wal_has_frames = os.path.getsize(db_file + "-wal") > 0
-            except FileNotFoundError:
-                wal_has_frames = False
-            # SQLite's native read-only opener may leave empty sidecars. They
-            # contain no newer data; nonempty WALs or main-file changes do.
-            if (
-                self._backend._database_signature(db_file) != self._handle.immutable_signature
-                or wal_has_frames
-            ):
-                raise _SnapshotChanged()
-        return (
-            self._handle.conn,
-            int(cur.execute("PRAGMA data_version").fetchone()[0]),
-            self._handle.conn.total_changes,
-        )
 
     def _ensure_native_index(self, cur):
         if _NativeVectorIndex is None:
@@ -85,7 +57,6 @@ class RustExactCollection(SQLiteExactCollection):
             return None
         version = self._index_version(cur)
         cached = self._handle._native_cache.get(self._collection_name)
-        self._native_version = version
         if cached is None or cached[0] != version:
             self._handle._native_cache.pop(self._collection_name, None)
             try:
@@ -94,22 +65,6 @@ class RustExactCollection(SQLiteExactCollection):
             except Exception as e:
                 logger.warning("Failed to load Rust native vector index: %s", e)
         return self._native_index
-
-    def query(self, **kwargs) -> QueryResult:
-        self._refresh_retired_handle()
-        self._ensure_open()
-        for _ in range(3):
-            if self._handle.read_only and self._backend is not None and not self._closed:
-                self._handle = self._backend._connect(
-                    self._handle.palace_path, create=False, read_only=True
-                )
-            try:
-                return self._query_once(**kwargs)
-            except _SnapshotChanged:
-                with self._handle.lock:
-                    self._handle._native_cache.pop(self._collection_name, None)
-                self._native_version = None
-        raise BackendError("Palace changed repeatedly during native search; retry the query")
 
     def _query_once(
         self,
@@ -146,7 +101,7 @@ class RustExactCollection(SQLiteExactCollection):
         )
         if not can_use_native:
             # Fall back to base SQLiteExactCollection implementation
-            return super().query(
+            return super()._query_once(
                 query_embeddings=query_embeddings,
                 n_results=n_results,
                 where=where,
@@ -154,6 +109,18 @@ class RustExactCollection(SQLiteExactCollection):
                 include=include,
             )
 
+        try:
+            return self._query_native(query_embeddings, n_results, where, spec)
+        except _NativeUnavailable:
+            return super()._query_once(
+                query_embeddings=query_embeddings,
+                n_results=n_results,
+                where=where,
+                where_document=where_document,
+                include=include,
+            )
+
+    def _query_native(self, query_embeddings, n_results, where, spec) -> QueryResult:
         outer_ids: list[list[str]] = []
         outer_docs: list[list[str]] = []
         outer_metas: list[list[dict]] = []
@@ -161,17 +128,12 @@ class RustExactCollection(SQLiteExactCollection):
         n_results = max(0, int(n_results))
 
         with self._cursor() as cur:
+            snapshot = self._index_version(cur)
             collection_id = self._collection_id(cur)
             expected_dim = self._collection_dimension(cur, collection_id)
             native = self._ensure_native_index(cur)
             if native is None:
-                return super().query(
-                    query_embeddings=query_embeddings,
-                    n_results=n_results,
-                    where=where,
-                    where_document=where_document,
-                    include=include,
-                )
+                raise _NativeUnavailable()
 
             filter_wing = where.get("wing") if where else None
             for query_vector in query_embeddings:
@@ -206,7 +168,7 @@ class RustExactCollection(SQLiteExactCollection):
             # Both the loader and hydration use separate SQLite statements.
             # A commit anywhere between version capture and hydration requires
             # discarding all batch results, not merely refreshing the next call.
-            if self._native_version != self._index_version(cur):
+            if snapshot != self._index_version(cur):
                 raise _SnapshotChanged()
 
         return QueryResult(

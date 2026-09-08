@@ -463,6 +463,10 @@ def _validate_write_batch(
         raise ValueError(f"embeddings length {len(embeddings)} does not match ids length {n}")
 
 
+class _SnapshotChanged(Exception):
+    """Retry the complete exact query after a concurrent database change."""
+
+
 class _SQLiteExactHandle:
     def __init__(
         self,
@@ -514,8 +518,8 @@ class SQLiteExactCollection(BaseCollection):
         if self._closed or self._handle.closed:
             raise BackendClosedError("SQLiteExactCollection has been closed")
 
-    def _refresh_retired_handle(self) -> None:
-        if not self._closed and self._handle.retired and self._backend is not None:
+    def _refresh_read_handle(self) -> None:
+        if not self._closed and self._handle.read_only and self._backend is not None:
             with self._backend._clients_lock:
                 path = self._handle.palace_path
                 # Explicit close_palace ends this lifetime, even if a newer
@@ -543,7 +547,7 @@ class SQLiteExactCollection(BaseCollection):
 
     @contextlib.contextmanager
     def _cursor(self, *, write: bool = False):
-        self._refresh_retired_handle()
+        self._refresh_read_handle()
         serialization = self._write_lock() if write else self._handle.lock
         with serialization:
             self._ensure_open()
@@ -909,7 +913,40 @@ class SQLiteExactCollection(BaseCollection):
                 }
         return by_id
 
-    def query(
+    def _index_version(self, cur):
+        if self._handle.immutable:
+            db_file = os.path.join(self._handle.palace_path, _DB_FILENAME)
+            # Immutable SQLite connections do not observe peer commits at all.
+            # Reject an obsolete snapshot instead of combining it with a fresh
+            # query; the next attempt reopens through the backend.
+            try:
+                wal_has_frames = os.path.getsize(db_file + "-wal") > 0
+            except FileNotFoundError:
+                wal_has_frames = False
+            # SQLite's native read-only opener may leave empty sidecars. They
+            # contain no newer data; nonempty WALs or main-file changes do.
+            if (
+                self._backend._database_signature(db_file) != self._handle.immutable_signature
+                or wal_has_frames
+            ):
+                raise _SnapshotChanged()
+        return (
+            self._handle.conn,
+            int(cur.execute("PRAGMA data_version").fetchone()[0]),
+            self._handle.conn.total_changes,
+        )
+
+    def query(self, **kwargs) -> QueryResult:
+        for _ in range(3):
+            try:
+                return self._query_once(**kwargs)
+            except _SnapshotChanged:
+                with self._handle.lock:
+                    self._handle._native_cache.pop(self._collection_name, None)
+                    self._handle._vector_cache.clear()
+        raise BackendError("Palace changed repeatedly during exact search; retry the query")
+
+    def _query_once(
         self,
         *,
         query_texts=None,
@@ -937,6 +974,7 @@ class SQLiteExactCollection(BaseCollection):
         n_results = max(0, int(n_results))
 
         with self._cursor() as cur:
+            snapshot = self._index_version(cur)
             collection_id = self._collection_id(cur)
             expected_dim = self._collection_dimension(cur, collection_id)
 
@@ -991,6 +1029,9 @@ class SQLiteExactCollection(BaseCollection):
                 outer_dists.append([float(dist[i]) for i in order] if spec.distances else [])
                 if spec.embeddings:
                     outer_embeds.append([mat[int(i)].astype(float).tolist() for i in order])
+
+            if snapshot != self._index_version(cur):
+                raise _SnapshotChanged()
 
         return QueryResult(
             ids=outer_ids,
@@ -1553,7 +1594,13 @@ class SQLiteExactBackend(BaseBackend):
                     # unchanged database remains a transient mid-open state.
                     wal_exists, shm_exists = self._wal_sidecar_state(db_path)
                     changed = self._database_signature(db_path) != cached.immutable_signature
-                    if (wal_exists and shm_exists) or changed:
+                    try:
+                        wal_has_data = wal_exists and os.path.getsize(db_path + "-wal") > 0
+                    except FileNotFoundError:
+                        wal_has_data = False
+                    # Native read-only opens may leave empty sidecars. They
+                    # contain no commit and must not evict the warm index.
+                    if (wal_has_data and shm_exists) or changed:
                         self._retire_read_only_handle(palace_path, cached)
                         cached = None
                 if cached is not None:

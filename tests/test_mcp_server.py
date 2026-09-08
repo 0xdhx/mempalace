@@ -1055,6 +1055,19 @@ with mine_palace_lock(sys.argv[1]):
             holder.wait(timeout=10)
             assert holder.returncode == 0
 
+            # Complete a writer/checkpoint cycle while MCP retains its wrapper.
+            from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+            peer = SQLiteExactBackend()
+            try:
+                peer_col = peer.get_collection(
+                    palace=palace_ref, collection_name=config.collection_name
+                )
+                peer_col.add(ids=["new_drawer"], documents=["new memory"], embeddings=[[1.0, 0.0]])
+            finally:
+                peer.close()
+            assert mcp_server.tool_list_drawers()["count"] == 2
+
             writer_ok, writer_reason = mcp_server._acquire_mcp_writer_lock()
             assert writer_ok is True
             assert writer_reason == ""

@@ -1717,3 +1717,71 @@ def test_retired_reader_wrappers_reconnect_but_explicit_close_stays_closed(tmp_p
     finally:
         peer.close()
         backend.close()
+
+
+@pytest.mark.parametrize("backend_name", ["sqlite_exact", "rust_exact", "rust_fallback"])
+@pytest.mark.parametrize("operation", ["update", "delete"])
+@pytest.mark.parametrize("boundary", ["load", "before_hydrate", "after_hydrate"])
+def test_exact_query_retries_entire_batch_across_all_engines(
+    tmp_path, monkeypatch, backend_name, operation, boundary
+):
+    from mempalace.backends.rust_exact import RustExactBackend, _NativeVectorIndex
+
+    backend = SQLiteExactBackend() if backend_name == "sqlite_exact" else RustExactBackend()
+    peer = SQLiteExactBackend()
+    palace = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    try:
+        writer = peer.get_collection(palace=palace, collection_name="test", create=True)
+        writer.add(ids=["a", "b"], documents=["alpha", "beta"], embeddings=[[1.0, 0.0], [0.0, 1.0]])
+        col = backend.get_collection(
+            palace=palace, collection_name="test", options={"read_only": True}
+        )
+        kwargs = (
+            {"include": ["documents", "distances", "embeddings"]}
+            if backend_name == "rust_fallback"
+            else {}
+        )
+        # Warm either engine's cache before injecting the next-query commit.
+        col.query(query_embeddings=[[1.0, 0.0]], **kwargs)
+        method = "_hydrate"
+        if boundary == "load":
+            method = (
+                "_ensure_native_index"
+                if backend_name == "rust_exact" and _NativeVectorIndex is not None
+                else "_rank_vectors"
+            )
+        original = getattr(col, method)
+        changed = False
+
+        def change():
+            nonlocal changed
+            if changed:
+                return
+            changed = True
+            if operation == "delete":
+                writer.delete(ids=["a"])
+            else:
+                writer.update(ids=["a"], documents=["changed alpha"], embeddings=[[-1.0, 0.0]])
+
+        def intercept(*args, **kw):
+            if boundary == "before_hydrate":
+                change()
+            result = original(*args, **kw)
+            if boundary != "before_hydrate":
+                change()
+            return result
+
+        monkeypatch.setattr(col, method, intercept)
+        result = col.query(query_embeddings=[[1.0, 0.0], [1.0, 0.0]], n_results=2, **kwargs)
+        assert changed
+        assert result.ids == ([["b"], ["b"]] if operation == "delete" else [["b", "a"], ["b", "a"]])
+        assert result.documents == (
+            [["beta"], ["beta"]]
+            if operation == "delete"
+            else [["beta", "changed alpha"], ["beta", "changed alpha"]]
+        )
+        for distances in result.distances:
+            assert distances == pytest.approx([1.0] if operation == "delete" else [1.0, 2.0])
+    finally:
+        peer.close()
+        backend.close()

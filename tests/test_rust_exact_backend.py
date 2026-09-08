@@ -341,12 +341,16 @@ def test_native_index_is_shared_across_fresh_wrappers(native_backend, monkeypatc
         return col.query(query_embeddings=[[1.0, 0.0]]).ids
 
     assert search() == [["a"]]
+    cold_loads = len(loads)
+    assert cold_loads > 0
     assert search() == [["a"]]
-    assert len(loads) == 1
+    assert len(loads) == cold_loads, "warm wrapper unexpectedly reloaded the index"
     writer.add(ids=["b"], documents=["beta"], embeddings=[[0.0, 1.0]])
     assert search() == [["a", "b"]]
+    refreshed_loads = len(loads)
+    assert refreshed_loads > cold_loads
     assert search() == [["a", "b"]]
-    assert len(loads) == 2
+    assert len(loads) == refreshed_loads, "warm wrapper unexpectedly reloaded after mutation"
 
 
 @pytest.mark.parametrize("magnitude", [1e20, 1e-30, 2**-149])
@@ -379,3 +383,31 @@ def test_native_finite_extremes_match_python_cosine(native_backend, magnitude, c
                 assert [hit[1] for hit in hits] == pytest.approx(distances, abs=1e-6)
     finally:
         python_backend.close()
+
+
+def test_native_load_failure_after_commit_falls_back_after_cursor_exit(native_backend, monkeypatch):
+    import mempalace.backends.rust_exact as rust_module
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    backend, palace = native_backend
+    writer = backend.get_collection(palace=palace, collection_name="test", create=True)
+    writer.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+    backend.close_palace(palace)
+    col = backend.get_collection(palace=palace, collection_name="test", options={"read_only": True})
+    assert col._handle.immutable
+
+    class FailingLoader:
+        @staticmethod
+        def load_from_sqlite(*args):
+            peer = SQLiteExactBackend()
+            try:
+                changed = peer.get_collection(palace=palace, collection_name="test")
+                changed.update(ids=["a"], documents=["changed"], embeddings=[[-1.0, 0.0]])
+            finally:
+                peer.close()
+            raise RuntimeError("native loader unavailable")
+
+    monkeypatch.setattr(rust_module, "_NativeVectorIndex", FailingLoader)
+    result = col.query(query_embeddings=[[1.0, 0.0]])
+    assert result.documents == [["changed"]]
+    assert result.distances[0] == pytest.approx([2.0])
