@@ -1517,7 +1517,7 @@ def _get_collection(create=False):
         # with a daemon/HTTP writer. _acquire_mcp_writer_lock() discards this
         # cached read-only collection before a promoted mutation is handled.
         collection_read_only = _READ_ONLY or (
-            backend_name == "sqlite_exact"
+            backend_name in {"sqlite_exact", "rust_exact"}
             and getattr(_args, "transport", "stdio") == "stdio"
             and _MCP_WRITER_LOCK_CM is None
         )
@@ -2012,7 +2012,7 @@ def _sqlite_taxonomy():
             from .backends.chroma import _sqlite_wing_room_counts
 
             counts = _sqlite_wing_room_counts(_config.palace_path, _config.collection_name)
-        elif _selected_backend_name() == "sqlite_exact":
+        elif _selected_backend_name() in {"sqlite_exact", "rust_exact"}:
             from .backends.sqlite_exact import sqlite_wing_room_counts
 
             counts = sqlite_wing_room_counts(_config.palace_path, _config.collection_name)
@@ -2065,7 +2065,7 @@ def _sqlite_graph_stats():
     try:
         if _is_chroma_backend():
             rows = _chroma_room_wing_hall_counts()
-        elif _selected_backend_name() == "sqlite_exact":
+        elif _selected_backend_name() in {"sqlite_exact", "rust_exact"}:
             from .backends.sqlite_exact import sqlite_room_wing_hall_counts
 
             rows = sqlite_room_wing_hall_counts(_config.palace_path, _config.collection_name)
