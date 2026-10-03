@@ -400,7 +400,7 @@ def test_a_busy_anchor_stays_open(tmp_path, monkeypatch):
     assert anchor.primed is False
 
 
-def test_lock_holder_blocks_a_wal_checkpoint_until_released(tmp_path):
+def test_lock_holder_allows_checkpoints_without_replacing_sidecars(tmp_path):
     db = tmp_path / "chroma.sqlite3"
     _make_db(db, rows=1)
     with contextlib.closing(sqlite3.connect(db)) as conn:
@@ -424,9 +424,14 @@ def test_lock_holder_blocks_a_wal_checkpoint_until_released(tmp_path):
     assert proc.stdout is not None
     try:
         assert _inproc_sqlite._read_holder_line(proc) == "ready"
-        # The insert creates a WAL frame while the holder is a reader. Truncate
-        # has to reset -shm, which it cannot do until that reader exits.
-        assert _run(checkpoint, db) == "busy"
+        # An idle WAL connection retains the lifetime locks, without a read
+        # snapshot preventing checkpoint progress. Truncating/reusing WAL
+        # files is safe; removing/recreating the mapped sidecars is not.
+        sidecars = _sidecar_inodes(str(db))
+        assert _run(checkpoint, db) == "done"
+        assert _sidecar_inodes(str(db)) == sidecars
+        _run(_EXTERNAL_CLOSE, db)
+        assert _sidecar_inodes(str(db)) == sidecars
     finally:
         _stop_process(proc)
 
@@ -494,7 +499,7 @@ def test_idle_rollback_holder_allows_external_commits_and_fresh_reads(tmp_path, 
     assert not holder.alive()
 
 
-def test_idle_holder_detects_delete_to_wal_and_retains_checkpoint_guard(tmp_path, monkeypatch):
+def test_idle_holder_detects_delete_to_wal_and_retains_sidecar_guard(tmp_path, monkeypatch):
     monkeypatch.setattr(_inproc_sqlite, "_HOLD_LOCKS", True)
     monkeypatch.setattr(_inproc_sqlite, "_ANCHORED", False)
     monkeypatch.setattr(_inproc_sqlite, "_F_OFD_SETLK", None)
@@ -516,10 +521,12 @@ def test_idle_holder_detects_delete_to_wal_and_retains_checkpoint_guard(tmp_path
         assert holder.ready
         assert holder.alive()
 
-        # WAL permits the writer's commit while the helper's read transaction
-        # prevents that writer from truncating the live wal-index.
+        # The helper retains sidecar ownership while permitting both the
+        # writer's commit and a checkpoint after its transaction ends.
+        sidecars = _sidecar_inodes(str(db))
         during = json.loads(_run(_EXTERNAL_SQLITE_WRITE, db, 1, "checkpoint"))
-        assert during == {"journal_mode": "wal", "rows": 2, "checkpoint_busy": 1}
+        assert during == {"journal_mode": "wal", "rows": 2, "checkpoint_busy": 0}
+        assert _sidecar_inodes(str(db)) == sidecars
     finally:
         _inproc_sqlite.release(db)
 

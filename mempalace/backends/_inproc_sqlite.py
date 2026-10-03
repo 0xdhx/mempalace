@@ -52,9 +52,11 @@ This module is the one door for that access.
 * Everywhere else connections open and close per call, still under the lock.
   Windows locks belong to a handle, so a close never drops another handle's
   locks. POSIX platforms without OFD locks (macOS) keep the same promise with
-  a helper process: its WAL read transaction is another process's SHARED
-  lock, so it conflicts with Chroma where an in-process fcntl lock
-  would not, and closing a connection in this process cannot drop it. The
+  a helper process: its idle WAL connection retains another process's SHARED
+  and DMS locks, so they conflict with Chroma where in-process fcntl locks
+  would not, and closing a connection in this process cannot drop them. Its
+  read transaction ends after priming: retaining a snapshot would prevent
+  checkpoints from progressing beyond it for the life of the parent. The
   in-process anchor is installed only after that helper is holding, so
   Chroma cannot recreate ``-wal``/``-shm`` under a parked wal-index.
 """
@@ -117,7 +119,7 @@ _holders: dict[str, "_Holder"] = {}
 
 # Self-contained: the helper must not import this package. Importing
 # mempalace.backends pulls Chroma into the process whose only job is to hold
-# a read transaction open.
+# an idle WAL connection open.
 _HOLD_SCRIPT = """
 import os, sqlite3, sys
 from urllib.request import pathname2url
@@ -152,8 +154,8 @@ except sqlite3.Error:
 def prime():
     global conn
     # Read before checking the mode so a new transaction sees any external
-    # DELETE-to-WAL change. Only WAL can keep this transaction: a foreign SHARED
-    # lock in rollback-journal mode blocks every writer's COMMIT.
+    # DELETE-to-WAL change. Only WAL can retain this connection: a foreign
+    # SHARED lock in rollback-journal mode blocks every writer's COMMIT.
     try:
         if conn is None:
             conn = open_conn()
@@ -166,6 +168,12 @@ def prime():
             conn.rollback()
         raise
     if row and str(row[0]).lower() == "wal":
+        # WAL keeps the database SHARED lock and shm DMS lock until this
+        # connection closes, including between transactions. End the snapshot
+        # so checkpoint/restart/truncate can make progress. Those operations
+        # reuse the sidecar inodes; deleting/recreating them still requires
+        # EXCLUSIVE/DMS locks, which this helper continues to block.
+        conn.rollback()
         return True
     # Keep the idle child alive, but release its non-WAL connection. Reopening
     # on the next read applies the sidecar rule if an external writer switches
@@ -369,7 +377,7 @@ def _guard(anchor: _Anchor, db_path: str) -> None:
 
 
 class _Holder:
-    """A child process whose read transaction outlives this process's closes."""
+    """A child whose idle WAL connection outlives this process's closes."""
 
     __slots__ = ("proc", "ident", "ready", "shm_ino")
 
