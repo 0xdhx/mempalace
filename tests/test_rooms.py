@@ -932,7 +932,7 @@ def test_rekey_closets_retry_does_not_follow_intermediate_room():
     Regression for the review finding on PR #2654 (F3).
     """
     from mempalace.rooms import (
-        resolve_closet_id_targets,
+        plan_closet_moves,
         rekey_closets_by_ids,
     )
 
@@ -953,8 +953,11 @@ def test_rekey_closets_retry_does_not_follow_intermediate_room():
             },
         ]
     )
-    id_targets = resolve_closet_id_targets(closets, "w", targets)
-    assert id_targets == {"a-first": "technical", "b-second": "releases"}
+    moves = plan_closet_moves(closets, "w", targets)
+    assert moves == {
+        "a-first": ["session.jsonl", "general", "technical"],
+        "b-second": ["session.jsonl", "technical", "releases"],
+    }
 
     calls = {"n": 0}
     real_update = closets.update
@@ -971,7 +974,7 @@ def test_rekey_closets_retry_does_not_follow_intermediate_room():
 
     closets.update = interrupt
     try:
-        rekey_closets_by_ids(closets, id_targets)
+        rekey_closets_by_ids(closets, "w", moves)
     except RuntimeError:
         pass
     # After interrupt, a-first is technical; b-second may be releases if same batch.
@@ -979,9 +982,9 @@ def test_rekey_closets_retry_does_not_follow_intermediate_room():
     closets.rows["a-first"]["meta"]["room"] = "technical"
     closets.rows["b-second"]["meta"]["room"] = "releases"
 
-    # Retry with the SAME id_targets snapshot (as a pending marker would).
+    # Retry with the SAME moves snapshot (as a pending marker would).
     closets.update = real_update
-    moved = rekey_closets_by_ids(closets, id_targets)
+    moved = rekey_closets_by_ids(closets, "w", moves)
     assert closets.rows["a-first"]["meta"]["room"] == "technical"
     assert closets.rows["b-second"]["meta"]["room"] == "releases"
     assert moved == 0  # both already at recorded destinations
@@ -1070,7 +1073,10 @@ def test_cmd_rooms_apply_resume_keeps_drawer_and_closet_aligned(tmp_path, monkey
         },
         0,
         apply_inputs(cfg, "w", 0.75, GENERIC_ROOMS),
-        id_targets={"a-first": "technical", "b-second": "releases"},
+        moves={
+            "a-first": ["session.jsonl", "general", "technical"],
+            "b-second": ["session.jsonl", "technical", "releases"],
+        },
     )
     assert os.path.isfile(marker)
 

@@ -83,7 +83,7 @@ def cmd_rooms(args):
         plan_rooms,
         propose_rooms,
         rekey_closets_by_ids,
-        resolve_closet_id_targets,
+        plan_closet_moves,
         save_pending_apply,
         room_set_path,
         sample_drawers,
@@ -206,11 +206,14 @@ def cmd_rooms(args):
             # after an interruption can finish the closet phase even when no
             # drawer is left to move.
             targets, ambiguous = closet_targets(plan)
-            id_targets = resolve_closet_id_targets(closets_col, wing, targets)
-            save_pending_apply(config, wing, targets, ambiguous, inputs, id_targets=id_targets)
+            moves = plan_closet_moves(closets_col, wing, targets)
+            save_pending_apply(config, wing, targets, ambiguous, inputs, moves=moves)
         else:
-            targets, ambiguous, _, id_targets = pending
-            id_targets = id_targets or resolve_closet_id_targets(closets_col, wing, targets)
+            targets, ambiguous, _, moves = pending
+            # Only a missing legacy snapshot may be recomputed. An explicit empty
+            # ``closet_moves: {}`` means this operation owns no closet moves.
+            if moves is None:
+                moves = plan_closet_moves(closets_col, wing, targets)
             print("  Resuming an interrupted apply: finishing drawers, then closets.")
         try:
             done = apply_plan(col, plan) if plan.changes else 0
@@ -223,7 +226,7 @@ def cmd_rooms(args):
         # Any other failure to open it must stop the command with its
         # recovery marker kept, or the closet phase is skipped for good.
         closets_col = _open_closets_collection(palace_path)
-        moved_closets = rekey_closets_by_ids(closets_col, id_targets)
+        moved_closets = rekey_closets_by_ids(closets_col, wing, moves)
         clear_pending_apply(config, wing)
         note = f" {moved_closets} closets followed."
         if ambiguous:

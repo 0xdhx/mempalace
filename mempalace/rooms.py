@@ -654,57 +654,78 @@ def closet_targets(plan: RoomPlan) -> tuple[dict, int]:
     return targets, ambiguous
 
 
-def resolve_closet_id_targets(closets_col, wing: str, targets: dict) -> dict[str, str]:
-    """Snapshot ``{closet_id: destination_room}`` from ``(source_file, room)`` targets.
+def plan_closet_moves(closets_col, wing: str, targets: dict) -> dict[str, list[str]]:
+    """Snapshot ``{closet_id: [source_file, old_room, destination]}`` for one wing.
 
     Resolved once against each closet's room at plan time. Chained plans
     (``general→technical`` and ``technical→releases`` for one source) assign
     each closet a single destination; a retry must not reinterpret a closet
     already moved into an intermediate room as input to the next mapping.
+    Source and original room are retained so replay can refuse a closet that
+    changed ownership or left this wing between attempts.
     """
     if closets_col is None or not targets:
         return {}
-    out: dict[str, str] = {}
+    out: dict[str, list[str]] = {}
     for row in _iter_wing_rows(closets_col, wing, include=["metadatas"]):
         meta = row["metadata"]
-        key = (str(meta.get("source_file") or ""), str(meta.get("room") or ""))
-        target = targets.get(key)
-        if target and target != key[1]:
-            out[str(row["id"])] = target
+        source = str(meta.get("source_file") or "")
+        old = str(meta.get("room") or "")
+        target = targets.get((source, old))
+        if target and target != old:
+            out[str(row["id"])] = [source, old, target]
     return out
 
 
-def rekey_closets_by_ids(closets_col, id_targets: dict) -> int:
-    """Move closets by stable id to their recorded destinations; returns moved.
+def resolve_closet_id_targets(closets_col, wing: str, targets: dict) -> dict[str, str]:
+    """``{closet_id: destination}`` view of :func:`plan_closet_moves`."""
+    return {
+        cid: dest
+        for cid, (_src, _old, dest) in plan_closet_moves(closets_col, wing, targets).items()
+    }
 
-    Idempotent: a closet already in its destination is skipped. Identities
-    come from :func:`resolve_closet_id_targets` (or a pending apply marker),
-    never from reinterpreted current ``room`` metadata.
+
+def rekey_closets_by_ids(closets_col, wing: str, moves: dict) -> int:
+    """Move closets by stable id within ``wing``; returns moved.
+
+    Idempotent: a closet already in its destination is skipped. Each move
+    must still belong to ``wing`` with the planned source file, and its room
+    must be the planned original or destination. Identities come from
+    :func:`plan_closet_moves` (or a pending apply marker), never from
+    reinterpreted current ``room`` metadata alone.
     """
-    if closets_col is None or not id_targets:
+    if closets_col is None:
         return 0
-    for dest in id_targets.values():
-        if sanitize_name(str(dest), "room") != str(dest):
+    if not moves:
+        return 0
+    for _source, _old, target in moves.values():
+        if sanitize_name(str(target), "room") != str(target):
             raise ValueError("closet destination must retain its approved room spelling")
-    ids = [str(i) for i in id_targets]
-    got = closets_col.get(ids=ids, include=["metadatas"])
-    if isinstance(got, dict):
-        got_ids = list(got.get("ids") or [])
-        got_metas = list(got.get("metadatas") or [])
-    else:
-        got_ids = list(getattr(got, "ids", None) or [])
-        got_metas = list(getattr(got, "metadatas", None) or [])
     stamp = datetime.now(timezone.utc).isoformat()
     move_ids: list[str] = []
     metas: list[dict] = []
-    for cid, meta in zip(got_ids, got_metas):
-        if not isinstance(meta, dict):
+    found: set[str] = set()
+    for row in _iter_wing_rows(closets_col, wing, include=["metadatas"]):
+        cid = str(row["id"])
+        move = moves.get(cid)
+        if move is None:
             continue
-        dest = id_targets.get(str(cid))
-        if not dest or str(meta.get("room") or "") == dest:
+        found.add(cid)
+        source, old, target = move
+        meta = row["metadata"]
+        current = str(meta.get("room") or "")
+        if str(meta.get("source_file") or "") != source or current not in {old, target}:
+            raise ValueError(f"closet {cid!r} changed since room apply was planned")
+        if current == target:
             continue
-        move_ids.append(str(cid))
-        metas.append({"room": dest, "last_modified": stamp})
+        move_ids.append(cid)
+        metas.append({"room": target, "last_modified": stamp})
+    missing = sorted(set(moves) - found)
+    if missing:
+        raise ValueError(
+            f"closet(s) {missing!r} are not in wing {wing!r} as planned; "
+            "refusing to apply a stale room-apply snapshot"
+        )
     for start in range(0, len(move_ids), _UPDATE_BATCH):
         closets_col.update(
             ids=move_ids[start : start + _UPDATE_BATCH],
@@ -713,14 +734,18 @@ def rekey_closets_by_ids(closets_col, id_targets: dict) -> int:
     return len(move_ids)
 
 
-def rekey_closets_to(closets_col, wing: str, targets: dict) -> int:
+def rekey_closets_to(closets_col, wing: str, targets: dict, *, moves: Optional[dict] = None) -> int:
     """Move each matching closet to its target room; returns closets moved.
 
     Resolves closet identities once, then moves by id so a retry cannot
     treat an intermediate room as a fresh source mapping. Only ``room``
     metadata is rewritten, never the record id.
     """
-    return rekey_closets_by_ids(closets_col, resolve_closet_id_targets(closets_col, wing, targets))
+    if moves is None:
+        moves = plan_closet_moves(closets_col, wing, targets)
+    elif any(targets.get((source, old)) != target for source, old, target in moves.values()):
+        raise ValueError("closet moves conflict with room apply targets")
+    return rekey_closets_by_ids(closets_col, wing, moves)
 
 
 def rekey_closets(closets_col, plan: RoomPlan) -> dict:
@@ -776,19 +801,21 @@ def save_pending_apply(
     targets: dict,
     ambiguous: int,
     inputs: Optional[dict] = None,
-    id_targets: Optional[dict] = None,
+    moves: Optional[dict] = None,
 ) -> str:
     path = pending_apply_path(config, wing)
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    if moves is None:
+        moves = {}
     payload = {
         "wing": wing,
         "started_at": datetime.now(timezone.utc).isoformat(),
         "ambiguous": int(ambiguous),
         "inputs": inputs,
         "closets": [[src, old, new] for (src, old), new in sorted(targets.items())],
-        # Stable closet identities + destinations so a retry cannot reinterpret
-        # an intermediate room as a fresh source mapping.
-        "closet_moves": [[cid, dest] for cid, dest in sorted((id_targets or {}).items())],
+        # Stable closet identities with source/old/dest so a retry cannot
+        # reinterpret an intermediate room or mutate a closet that left this wing.
+        "closet_moves": {cid: list(entry) for cid, entry in sorted(moves.items())},
     }
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -800,12 +827,13 @@ def save_pending_apply(
 def load_pending_apply(
     config: MempalaceConfig, wing: str
 ) -> Optional[tuple[dict, int, Optional[dict], Optional[dict]]]:
-    """``(targets, ambiguous, inputs, id_targets)`` from an interrupted apply, or ``None``.
+    """``(targets, ambiguous, inputs, moves)`` from an interrupted apply, or ``None``.
 
     ``inputs`` is ``None`` for a marker written before inputs were recorded.
-    ``id_targets`` is ``None`` for a marker written before closet identities
-    were recorded; callers then resolve from ``targets`` against current rooms
-    (legacy best-effort).
+    ``moves`` is ``None`` only when ``closet_moves`` was omitted (legacy marker);
+    an explicitly empty ``{}`` means this operation owns no closet moves and must
+    not be recomputed. Malformed or inconsistent ``closet_moves`` raise before
+    any caller can write.
     """
     path = pending_apply_path(config, wing)
     if not os.path.isfile(path):
@@ -817,33 +845,44 @@ def load_pending_apply(
         if isinstance(row, list) and len(row) == 3 and all(isinstance(x, str) for x in row):
             targets[(row[0], row[1])] = row[2]
     inputs = data.get("inputs")
-    id_targets = None
-    moves = data.get("closet_moves")
-    if "closet_moves" not in data and any(
-        targets.get((source, target)) not in (None, target)
-        for (source, _old), target in targets.items()
-    ):
-        # Old markers cannot tell an unmoved closet from one already moved
-        # into another source room. Keep the marker instead of guessing.
-        raise ValueError(
-            "legacy room apply has overlapping closet targets; rebuild closets "
-            "from their sources before abandoning the pending marker"
+    if "closet_moves" not in data:
+        if any(
+            targets.get((source, target)) not in (None, target)
+            for (source, _old), target in targets.items()
+        ):
+            # Old markers cannot tell an unmoved closet from one already moved
+            # into another source room. Keep the marker instead of guessing.
+            raise ValueError(
+                "legacy room apply has overlapping closet targets; rebuild closets "
+                "from their sources before abandoning the pending marker"
+            )
+        return (
+            targets,
+            int(data.get("ambiguous") or 0),
+            inputs if isinstance(inputs, dict) else None,
+            None,
         )
-    if isinstance(moves, list):
-        id_targets = {}
-        for row in moves:
-            if isinstance(row, list) and len(row) == 2 and all(isinstance(x, str) for x in row):
-                dest = row[1]
-                if sanitize_name(dest, "room") != dest:
-                    raise ValueError(
-                        "pending closet destination must retain its approved room spelling"
-                    )
-                id_targets[row[0]] = dest
+    moves = data["closet_moves"]
+    if not isinstance(moves, dict) or any(
+        not isinstance(cid, str)
+        or not isinstance(entry, list)
+        or len(entry) != 3
+        or not all(isinstance(x, str) for x in entry)
+        for cid, entry in moves.items()
+    ):
+        raise ValueError("pending room apply has invalid closet moves")
+    if len(moves) != len(set(moves)):
+        raise ValueError("pending room apply has invalid closet moves")
+    if any(targets.get((source, old)) != target for source, old, target in moves.values()):
+        raise ValueError("pending closet moves conflict with room apply targets")
+    for _source, _old, target in moves.values():
+        if sanitize_name(target, "room") != target:
+            raise ValueError("pending closet destination must retain its approved room spelling")
     return (
         targets,
         int(data.get("ambiguous") or 0),
         inputs if isinstance(inputs, dict) else None,
-        id_targets,
+        moves,
     )
 
 
