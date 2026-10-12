@@ -41,7 +41,8 @@ opens the palace directory in-process and listens on no network port. If you
 instead run a separate `chroma run` / Chroma HTTP server (for example to share
 a palace between hosts), keep it on localhost or a private network behind
 authenticated access and never expose it to the public internet. Several 2026
-advisories (CVE-2026-45829 pre-authentication code injection, and
-CVE-2026-45830, CVE-2026-45831 and CVE-2026-45833 tenant-authorization/RBAC
-issues) affect the Chroma server and, at the time of writing, list no fixed
-release. They do not apply to the embedded client MemPalace uses by default.
+advisories affect the Python/FastAPI Chroma server and, at the time of
+writing, list no fixed release: CVE-2026-45829 (pre-authentication code
+injection), CVE-2026-45833 (authenticated code injection through a collection
+update), and CVE-2026-45830 and CVE-2026-45831 (tenant-authorization/RBAC
+issues). They do not apply to the embedded client MemPalace uses by default.
