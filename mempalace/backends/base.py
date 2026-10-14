@@ -472,6 +472,9 @@ def initialize_last_modified_metadata(metadatas):
 class BaseCollection(ABC):
     """Per-collection read/write surface every backend must implement."""
 
+    # Chroma retains omitted metadata fields on upsert; replacing backends do not.
+    upsert_merges_metadata = False
+
     @abstractmethod
     def add(
         self,

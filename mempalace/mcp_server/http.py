@@ -581,6 +581,8 @@ def _http_dispatch(request):
     tool_name = None
     if method == "tools/call" and isinstance(request.get("params"), dict):
         tool_name = request["params"].get("name")
+    if not isinstance(tool_name, str):
+        return handle_request(request)
     if tool_name in _HTTP_LOCK_FREE_TOOLS:
         return handle_request(request)
     # service.classify_tool is the authoritative read/write registry. The

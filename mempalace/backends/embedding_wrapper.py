@@ -27,6 +27,19 @@ def _get_document_embedder():
     return configured_embedding_function()
 
 
+def _resolve_document_embedder():
+    """Release a transport request lease during configuration and construction."""
+    from ..embedding import embedding_section
+
+    with embedding_section():
+        return _get_document_embedder()
+
+
+def _merged_metadata(old, patch):
+    metadata = {**(old or {}), **(patch or {})}
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
 def _embed_texts(
     texts: list[str],
     *,
@@ -127,6 +140,10 @@ class EmbeddingCollection(BaseCollection):
         return getattr(self._inner, name)
 
     @property
+    def upsert_merges_metadata(self):
+        return self._inner.upsert_merges_metadata
+
+    @property
     def distance_metric(self) -> str:
         # Explicit delegation: ``BaseCollection`` defines ``distance_metric``
         # as a property, so it resolves on this subclass and ``__getattr__``
@@ -171,8 +188,42 @@ class EmbeddingCollection(BaseCollection):
         ids = _as_list(ids)
         if metadatas is not None:
             metadatas = initialize_last_modified_metadata(_as_list(metadatas))
+        if metadatas is not None and len(metadatas) != len(ids):
+            raise ValueError("metadatas length does not match ids length")
+        if len(documents) != len(ids):
+            raise ValueError("documents length does not match ids length")
+        expected = None
         if embeddings is None:
-            embeddings = _embed_texts(documents, metadatas=metadatas)
+            embedder = _resolve_document_embedder()
+            effective = metadatas
+            if getattr(
+                self._inner, "upsert_merges_metadata", False
+            ) is True and _supports_metadata_aware_documents(embedder):
+                existing = self._inner.get(ids=ids, include=["metadatas"])
+                old = dict(zip(existing.ids, existing.metadatas))
+                expected = old
+                effective = []
+                for index, record_id in enumerate(ids):
+                    metadata = dict(old.get(record_id) or {})
+                    if _is_native_media(metadata):
+                        raise ValueError(
+                            "native media upsert requires explicit embeddings or re-ingest"
+                        )
+                    effective.append(
+                        _merged_metadata(
+                            metadata, metadatas[index] if metadatas is not None else None
+                        )
+                    )
+            embeddings = _embed_texts(documents, metadatas=effective, embedder=embedder)
+        guarded = getattr(self._inner, "_upsert_with_metadata_guard", None)
+        if expected is not None and callable(guarded):
+            return guarded(
+                expected=expected,
+                documents=documents,
+                ids=ids,
+                metadatas=metadatas,
+                embeddings=embeddings,
+            )
         return self._inner.upsert(
             documents=documents,
             ids=ids,
@@ -295,8 +346,9 @@ class EmbeddingCollection(BaseCollection):
                 raise ValueError(
                     f"{label} length {len(value)} does not match ids length {len(ids)}"
                 )
+        expected = None
         if documents is not None and embeddings is None:
-            embedder = _get_document_embedder()
+            embedder = _resolve_document_embedder()
             if _supports_metadata_aware_documents(embedder):
                 existing = self._inner.get(ids=ids, include=["documents", "metadatas"])
                 old_by_id = {
@@ -306,6 +358,7 @@ class EmbeddingCollection(BaseCollection):
                     )
                     for index, record_id in enumerate(existing.ids)
                 }
+                expected = old_by_id
                 if any(_is_native_media(meta) for _, meta in old_by_id.values()):
                     raise ValueError(
                         "document updates for native media assets require explicit embeddings; "
@@ -314,10 +367,8 @@ class EmbeddingCollection(BaseCollection):
                 effective_metadatas = []
                 for index, record_id in enumerate(ids):
                     _old_document, old_metadata = old_by_id.get(record_id, ("", {}))
-                    metadata = dict(old_metadata)
                     update_metadata = (metadatas[index] or {}) if metadatas is not None else {}
-                    metadata.update(update_metadata)
-                    effective_metadatas.append(metadata)
+                    effective_metadatas.append(_merged_metadata(old_metadata, update_metadata))
                 embeddings = _embed_texts(
                     documents,
                     metadatas=effective_metadatas,
@@ -332,7 +383,7 @@ class EmbeddingCollection(BaseCollection):
             and metadatas is not None
             and any(_metadata_can_change_embedding(metadata) for metadata in metadatas)
         ):
-            embedder = _get_document_embedder()
+            embedder = _resolve_document_embedder()
             if _supports_metadata_aware_documents(embedder):
                 existing = self._inner.get(ids=ids, include=["documents", "metadatas"])
                 old_by_id = {
@@ -342,15 +393,15 @@ class EmbeddingCollection(BaseCollection):
                     )
                     for index, record_id in enumerate(existing.ids)
                 }
+                expected = old_by_id
                 effective_documents = []
                 effective_metadatas = []
                 title_changed = False
                 media_found = False
                 for index, record_id in enumerate(ids):
                     old_document, old_metadata = old_by_id.get(record_id, ("", {}))
-                    metadata = dict(old_metadata)
                     update_metadata = metadatas[index] or {}
-                    metadata.update(update_metadata)
+                    metadata = _merged_metadata(old_metadata, update_metadata)
                     media_found = media_found or _is_native_media(old_metadata)
                     if _is_native_media(old_metadata) and {
                         "source_path",
@@ -378,6 +429,15 @@ class EmbeddingCollection(BaseCollection):
                         metadatas=effective_metadatas,
                         embedder=embedder,
                     )
+        guarded = getattr(self._inner, "_update_with_metadata_guard", None)
+        if expected is not None and callable(guarded):
+            return guarded(
+                expected=expected,
+                ids=ids,
+                documents=documents,
+                metadatas=metadatas,
+                embeddings=embeddings,
+            )
         return self._inner.update(
             ids=ids,
             documents=documents,

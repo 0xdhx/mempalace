@@ -89,12 +89,17 @@ def _scan_collection_metadata(collection, keys, absorb, reset, require_key=None)
     ``require_key`` is only a hint the caller re-checks. If paging fails too,
     :class:`MinedSetUnavailable` stops the caller.
     """
+    from ..backends.chroma import MetadataRecoveryPending
+
     fast = _fast_collection_metadata(collection, keys, require_key)
     if fast is not None:
         try:
             for meta in fast:
                 absorb(meta)
             return
+        except MetadataRecoveryPending:
+            logger.debug("metadata recovery pending; paging through the collection instead")
+            reset()
         except Exception:
             logger.warning(
                 "sqlite metadata scan failed; paging through the collection instead",
@@ -377,6 +382,8 @@ def prefetch_complete_mtimes(collection, source_files) -> Optional[dict[str, tup
     # whether some drawer has no chunk_total].
     groups: dict[str, dict] = {}
     unprovable: set = set()
+    from ..backends.chroma import MetadataRecoveryPending
+
     try:
         for meta in rows:
             meta = meta or {}
@@ -403,6 +410,9 @@ def prefetch_complete_mtimes(collection, source_files) -> Optional[dict[str, tup
                 entry[2] = True
             else:
                 entry[1] = max(entry[1], chunk_total)
+    except MetadataRecoveryPending:
+        logger.debug("metadata recovery pending; checking each file on its own")
+        return None
     except Exception:
         logger.warning("sqlite metadata scan failed; checking each file on its own", exc_info=True)
         return None

@@ -635,9 +635,13 @@ with mine_palace_lock(sys.argv[1]):
 
         scans = [s for s in statements if "FROM embeddings" in s and "ORDER BY e.id" in s]
         assert scans, f"no listing scan observed in {statements}"
-        scan = scans[0]
-        # Documents are excluded from the scan and the filter is pushed down.
-        assert "chroma:document" in scan and "!=" in scan
+        # Initialization can also scan metadata without a wing filter. Locate
+        # the filtered listing query, then verify that it excludes the entire
+        # reserved namespace (which includes chroma:document).
+        filtered_scans = [s for s in scans if "f0.string_value" in s]
+        assert filtered_scans, f"listing did not push its filter into SQL: {scans}"
+        scan = filtered_scans[0]
+        assert "substr(m.key, 1, 7) != 'chroma:'" in scan
         assert scan.count("JOIN embedding_metadata") >= 2, scan
         assert "string_value = " in scan or "string_value = ?" in scan
 

@@ -375,7 +375,7 @@ def _fill_drawer_previews(col, page: list) -> None:
     _apply_drawer_previews(page, docs_by_id)
 
 
-def _fill_drawer_previews_from_sqlite(page: list) -> None:
+def _fill_drawer_previews_from_sqlite(page: list, *, connection=None) -> bool:
     """Same, reading the page's documents straight from ``chroma.sqlite3``.
 
     The list itself is answered from metadata only — joining documents into
@@ -384,18 +384,16 @@ def _fill_drawer_previews_from_sqlite(page: list) -> None:
     """
     physical_ids = _page_physical_ids(page)
     if not physical_ids:
-        return
+        return True
     from ..backends.chroma import sqlite_documents_for_ids
 
     docs_by_id = sqlite_documents_for_ids(
-        _config.palace_path, _config.collection_name, physical_ids
+        _config.palace_path, _config.collection_name, physical_ids, _connection=connection
     )
     if docs_by_id is None:
-        # sqlite went unreadable between the two reads; previews are a
-        # display detail, so degrade to blank rather than fail the listing.
-        logger.debug("sqlite preview hydration failed; leaving previews empty")
-        return
+        return False
     _apply_drawer_previews(page, docs_by_id)
+    return True
 
 
 def _collapse_drawer_rows(ids, documents, metadatas):
@@ -1374,46 +1372,47 @@ def tool_list_drawers(
         elif len(conditions) > 1:
             where = {"$and": conditions}
 
-        listed = None
+        def make_page(ids, metadatas):
+            drawers = _collapse_drawer_rows(ids, [], metadatas)
+            if since_dt is not None or before_dt is not None:
+                drawers = [
+                    d
+                    for d in drawers
+                    if _filed_at_in_window(
+                        d.get("metadata", {}).get("filed_at"), since_dt, before_dt
+                    )
+                ]
+            page = drawers[offset : offset + limit]
+            return {
+                "drawers": page,
+                "total": len(drawers),
+                "count": len(page),
+                "offset": offset,
+                "limit": limit,
+            }
+
         if _is_chroma_backend() and _config.palace_path:
-            from ..backends.chroma import sqlite_list_id_metadata
+            from ..backends.chroma import sqlite_list_id_metadata, sqlite_metadata_snapshot
 
-            listed = sqlite_list_id_metadata(
-                _config.palace_path, _config.collection_name, where=where
-            )
-        if listed is not None:
-            # Documents are fetched for the displayed page only, below.
-            ids, metadatas = listed
-            documents = []
-        else:
-            col = _get_collection()
-            if not col:
-                return _collection_error_or_no_palace()
-            ids, documents, metadatas = _fetch_drawer_rows(col, where=where, include=["metadatas"])
-        drawers = _collapse_drawer_rows(ids, documents, metadatas)
+            # Metadata selection, logical grouping and page-only text hydration
+            # share a recovered SQLite snapshot. Close it before any SDK fallback.
+            with sqlite_metadata_snapshot(_config.palace_path, _config.collection_name) as conn:
+                if conn is not None:
+                    listed = sqlite_list_id_metadata(
+                        _config.palace_path, _config.collection_name, where=where, _connection=conn
+                    )
+                    if listed is not None:
+                        result = make_page(*listed)
+                        if _fill_drawer_previews_from_sqlite(result["drawers"], connection=conn):
+                            return result
 
-        if since_dt is not None or before_dt is not None:
-            drawers = [
-                d
-                for d in drawers
-                if _filed_at_in_window(d.get("metadata", {}).get("filed_at"), since_dt, before_dt)
-            ]
-
-        page = drawers[offset : offset + limit]
-        if listed is not None:
-            _fill_drawer_previews_from_sqlite(page)
-        else:
-            col = _get_collection()
-            if col:
-                _fill_drawer_previews(col, page)
-
-        return {
-            "drawers": page,
-            "total": len(drawers),
-            "count": len(page),
-            "offset": offset,
-            "limit": limit,
-        }
+        col = _get_collection()
+        if not col:
+            return _collection_error_or_no_palace()
+        ids, _documents, metadatas = _fetch_drawer_rows(col, where=where, include=["metadatas"])
+        result = make_page(ids, metadatas)
+        _fill_drawer_previews(col, result["drawers"])
+        return result
     except Exception as e:
         logger.exception("tool_list_drawers failed")
         return {"error": str(e)}

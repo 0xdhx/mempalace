@@ -8,16 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-### Bug Fixes
-
-- **`mempalace mine --mode convos --include-subagents` keeps the flag through
-  a running hub or the daemon.** Both routes dropped it, so the forwarded mine
-  skipped `subagents/` folders as if the flag had not been passed. The
-  `mempalace_mine` tool accepts `include_subagents` (convos mode only), and the
-  daemon job carries it. A hub too old to advertise `mine_include_subagents` is
-  refused with an upgrade message instead of mining locally beside the hub's
-  writer lease. A plain `mempalace mine <dir>` with no `--mode` now forwards
-  `mode: "projects"` to the hub instead of `null`, which the hub refused.
 
 ---
 
@@ -347,6 +337,31 @@ A palace can now be audited and repaired in guided steps: scored for organizatio
   write that has not landed. (#2619, #2650)
 
 ### Bug Fixes
+
+- **Drawer listings keep metadata and page previews in one recovered snapshot.**
+  SQLite shortcuts fall back to Chroma when recovery is pending, fetch only the
+  displayed page's text, and consistently exclude case-sensitive `chroma:` keys.
+  Expected recovery fallback is logged at debug level instead of as a scan error.
+- **Approved tunnel proposals retain their full spelling context.** Candidate
+  limits and wing filtering no longer cause approved qualified links to be
+  silently skipped as aliases. Audit and prune use the same ambiguity context.
+- **Room recovery rejects damaged journals before applying changes.** Duplicate
+  JSON members, duplicate closet targets and malformed closet rows are refused.
+- **Metadata-aware updates and upserts guard the inputs used for embedding.**
+  Concurrent document or metadata changes cause refusal before publication;
+  removed fields are omitted from embedding metadata. Embedder construction runs
+  inside the transport's embedding section, and guarded writes are counted once.
+- **Malformed HTTP tool names return normal JSON-RPC validation errors.**
+  Non-string names no longer fail during dispatch.
+
+- **`mempalace mine --mode convos --include-subagents` keeps the flag through
+  a running hub or the daemon.** Both routes dropped it, so the forwarded mine
+  skipped `subagents/` folders as if the flag had not been passed. The
+  `mempalace_mine` tool accepts `include_subagents` (convos mode only), and the
+  daemon job carries it. A hub too old to advertise `mine_include_subagents` is
+  refused with an upgrade message instead of mining locally beside the hub's
+  writer lease. A plain `mempalace mine <dir>` with no `--mode` now forwards
+  `mode: "projects"` to the hub instead of `null`, which the hub refused.
 
 - **`mempalace_reconnect` no longer runs under a running mine, and failed files
   count as errors.** A reconnect during a mine now waits up to 10 s and then
