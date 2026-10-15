@@ -58,51 +58,24 @@ _BACKEND_ENV = "MEMPALACE_BACKEND"
 _PER_JOB_ENV = (_PALACE_PATH_ENV, _BACKEND_ENV, _EXPLICIT_BACKEND_ENV)
 
 
-READ_TOOLS = frozenset(
-    {
-        "mempalace_status",
-        "mempalace_list_wings",
-        "mempalace_list_rooms",
-        "mempalace_get_taxonomy",
-        "mempalace_get_aaak_spec",
-        "mempalace_traverse",
-        "mempalace_find_tunnels",
-        "mempalace_graph_stats",
-        "mempalace_list_tunnels",
-        "mempalace_list_hallways",
-        "mempalace_follow_tunnels",
-        "mempalace_search",
-        "mempalace_check_duplicate",
-        "mempalace_get_drawer",
-        "mempalace_get_drawers",
-        "mempalace_list_drawers",
-        "mempalace_diary_read",
-        "mempalace_kg_query",
-        "mempalace_kg_stats",
-        "mempalace_kg_timeline",
-    }
-)
+def _capability_buckets() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+    """Read, write, and maintenance names from the tool capability registry."""
+    from .mcp_server import TOOLS
 
-WRITE_TOOLS = frozenset(
-    {
-        "mempalace_add_drawer",
-        "mempalace_checkpoint",
-        "mempalace_delete_by_source",
-        "mempalace_delete_drawer",
-        "mempalace_delete_drawers",
-        "mempalace_update_drawer",
-        "mempalace_diary_write",
-        "mempalace_kg_add",
-        "mempalace_kg_invalidate",
-        "mempalace_create_tunnel",
-        "mempalace_delete_tunnel",
-        "mempalace_delete_hallway",
-        "mempalace_hook_settings",
-        "mempalace_memories_filed_away",
-    }
-)
+    buckets: dict[str, set[str]] = {"read": set(), "write": set(), "maintenance": set()}
+    for name, spec in TOOLS.items():
+        capability = spec.get("capability")
+        if capability not in buckets:
+            raise RuntimeError(f"{name} has no capability in the tool registry")
+        buckets[capability].add(name)
+    return (
+        frozenset(buckets["read"]),
+        frozenset(buckets["write"]),
+        frozenset(buckets["maintenance"]),
+    )
 
-MAINTENANCE_TOOLS = frozenset({"mempalace_mine", "mempalace_sync", "mempalace_reconnect"})
+
+READ_TOOLS, WRITE_TOOLS, MAINTENANCE_TOOLS = _capability_buckets()
 
 
 def classify_tool(name: str) -> str:

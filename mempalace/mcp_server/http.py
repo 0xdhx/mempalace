@@ -138,13 +138,7 @@ _HTTP_YIELDING_TOOLS = frozenset({"mempalace_mine"})
 # otherwise independent backend operation. Holding ``_HTTP_REQUEST_LOCK``
 # through that inference stalls unrelated requests for the whole model call.
 # Compound read-modify-write tools stay fully serialized.
-_HTTP_EMBEDDING_RELEASE_TOOLS = frozenset(
-    {
-        "mempalace_search",
-        "mempalace_check_duplicate",
-        "mempalace_diary_write",
-    }
-)
+# The set itself is the embedding_release capability flag.
 # Reserved before a request releases the request lock mid-embedding so
 # ``mempalace_reconnect`` cannot close backend handles during that window.
 # Reconnect acquires this before the request lock; embedding reacquires the
@@ -157,33 +151,9 @@ _HTTP_ACTIVE_CLIENT_WINDOW_S = 120.0
 
 _HTTP_PROTOCOL_METHODS = frozenset({"initialize", "ping", "tools/list"})
 
-# RFC 003 phase 5: logstream tools touch only logstream.sqlite3 (its own WAL
-# database with internal locking) — never Chroma or the KG. Dispatching them
-# outside _HTTP_REQUEST_LOCK keeps a five-minute mempalace_event_wait
-# long-poll from stalling every other agent on a shared hub, and lets the
-# SSE stream coexist with normal tool traffic.
-# Knowledge-graph tools use their own SQLite database and lock. Mesh peers
-# and the AAAK spec are process-local reads.
-_HTTP_LOCK_FREE_TOOLS = frozenset(
-    {
-        "mempalace_event_append",
-        "mempalace_task_create",
-        "mempalace_event_list",
-        "mempalace_event_wait",
-        "mempalace_event_ack",
-        "mempalace_artifact_put",
-        "mempalace_artifact_get",
-        "mempalace_patch_submit",
-        "mempalace_kg_query",
-        "mempalace_kg_add",
-        "mempalace_kg_invalidate",
-        "mempalace_kg_supersede",
-        "mempalace_kg_timeline",
-        "mempalace_kg_stats",
-        "mempalace_mesh_peers",
-        "mempalace_get_aaak_spec",
-    }
-)
+# Lock-free tools are the lock_free capability flag: logstream, the knowledge
+# graph, mesh peers, and the AAAK spec. A five-minute event_wait must not hold
+# _HTTP_REQUEST_LOCK.
 
 # SSE stream limits (GET /logstream/stream). Each connected client holds one
 # handler thread, so the cap is a thread-exhaustion guard, not a rate limit.

@@ -1125,29 +1125,180 @@ TOOLS = {
     },
 }
 
-# MCP ToolAnnotations.readOnlyHint for clients that hide mutating tools
-# (plan modes, read-only subagents). Only tools that do not change state
-# belong here. Server --read-only uses the wider _READ_ONLY_REFUSED_TOOLS
-# set: mempalace_memories_filed_away unlinks the checkpoint ack file, so it
-# stays refused there and must not advertise readOnlyHint (MCP default is
-# false when the annotation is omitted).
-for _read_only_name in (
-    "mempalace_status",
-    "mempalace_list_wings",
-    "mempalace_list_rooms",
-    "mempalace_get_taxonomy",
-    "mempalace_get_aaak_spec",
-    "mempalace_search",
-    "mempalace_check_duplicate",
-    "mempalace_get_drawer",
-    "mempalace_get_drawers",
-    "mempalace_list_drawers",
-    "mempalace_diary_read",
-    "mempalace_kg_query",
-    "mempalace_kg_timeline",
-    "mempalace_kg_stats",
-):
-    TOOLS[_read_only_name]["read_only"] = True
+
+def _cap(capability: str, **flags: bool) -> dict:
+    row = {"capability": capability}
+    row.update(flags)
+    return row
+
+
+# One registry for read vs write. The gate sets, HTTP lock selection, daemon
+# classification, and readOnlyHint are derived from these rows.
+#
+# mutating: the peer-writer lease. peer_exempt stays mutating (read-only still
+# refuses it) but does not touch Chroma, so the lease does not apply.
+# vector_write is the mutating subset that can block inside a diverged HNSW
+# segment. hook_settings and memories_filed_away are writes the lease does not
+# arbitrate. reconnect is maintenance and stays available in read-only mode.
+# lock_free tools use their own database or no palace state. integrity_allowed
+# tools stay callable while chroma.sqlite3 is corrupt. embedding_release tools
+# drop the HTTP request lock around one embedding call.
+_TOOL_CAPABILITIES = {
+    "mempalace_status": _cap("read", integrity_allowed=True),
+    "mempalace_list_wings": _cap("read"),
+    "mempalace_list_rooms": _cap("read"),
+    "mempalace_get_taxonomy": _cap("read"),
+    "mempalace_get_aaak_spec": _cap("read", lock_free=True),
+    "mempalace_kg_query": _cap("read", lock_free=True),
+    "mempalace_kg_add": _cap("write", mutating=True, lock_free=True, peer_exempt=True),
+    "mempalace_kg_invalidate": _cap("write", mutating=True, lock_free=True, peer_exempt=True),
+    "mempalace_kg_supersede": _cap("write", mutating=True, lock_free=True, peer_exempt=True),
+    "mempalace_kg_timeline": _cap("read", lock_free=True),
+    "mempalace_kg_stats": _cap("read", lock_free=True),
+    "mempalace_traverse": _cap("read"),
+    "mempalace_find_tunnels": _cap("read"),
+    "mempalace_graph_stats": _cap("read"),
+    "mempalace_mesh_peers": _cap("read", lock_free=True, integrity_allowed=True),
+    "mempalace_create_tunnel": _cap("write", mutating=True),
+    "mempalace_list_tunnels": _cap("read"),
+    "mempalace_delete_tunnel": _cap("write", mutating=True),
+    "mempalace_list_hallways": _cap("read"),
+    "mempalace_delete_hallway": _cap("write", mutating=True),
+    "mempalace_follow_tunnels": _cap("read"),
+    "mempalace_search": _cap("read", embedding_release=True),
+    "mempalace_check_duplicate": _cap("read", embedding_release=True),
+    "mempalace_add_drawer": _cap("write", mutating=True, vector_write=True),
+    "mempalace_checkpoint": _cap("write", mutating=True, vector_write=True),
+    "mempalace_delete_drawer": _cap("write", mutating=True, vector_write=True),
+    "mempalace_delete_drawers": _cap("write", mutating=True, vector_write=True),
+    "mempalace_mine": _cap("maintenance", mutating=True, vector_write=True),
+    "mempalace_delete_by_source": _cap("write", mutating=True, vector_write=True),
+    "mempalace_sync": _cap("maintenance", mutating=True, vector_write=True),
+    "mempalace_get_drawer": _cap("read"),
+    "mempalace_get_drawers": _cap("read"),
+    "mempalace_list_drawers": _cap("read"),
+    "mempalace_update_drawer": _cap("write", mutating=True, vector_write=True),
+    "mempalace_diary_write": _cap(
+        "write", mutating=True, vector_write=True, embedding_release=True
+    ),
+    "mempalace_diary_read": _cap("read"),
+    "mempalace_hook_settings": _cap("write"),
+    "mempalace_memories_filed_away": _cap("write"),
+    "mempalace_reconnect": _cap("maintenance", integrity_allowed=True),
+    "mempalace_event_append": _cap(
+        "write",
+        mutating=True,
+        lock_free=True,
+        peer_exempt=True,
+        integrity_allowed=True,
+    ),
+    "mempalace_task_create": _cap(
+        "write",
+        mutating=True,
+        lock_free=True,
+        peer_exempt=True,
+        integrity_allowed=True,
+    ),
+    "mempalace_event_list": _cap("read", lock_free=True, integrity_allowed=True),
+    "mempalace_event_wait": _cap("read", lock_free=True, integrity_allowed=True),
+    "mempalace_event_ack": _cap(
+        "write",
+        mutating=True,
+        lock_free=True,
+        peer_exempt=True,
+        integrity_allowed=True,
+    ),
+    "mempalace_artifact_put": _cap(
+        "write",
+        mutating=True,
+        lock_free=True,
+        peer_exempt=True,
+        integrity_allowed=True,
+    ),
+    "mempalace_artifact_get": _cap("read", lock_free=True, integrity_allowed=True),
+    "mempalace_patch_submit": _cap(
+        "write",
+        mutating=True,
+        lock_free=True,
+        peer_exempt=True,
+        integrity_allowed=True,
+    ),
+}
+
+_CAPABILITY_FLAGS = (
+    "mutating",
+    "vector_write",
+    "peer_exempt",
+    "lock_free",
+    "integrity_allowed",
+    "embedding_release",
+)
+
+
+def _install_tool_capabilities() -> None:
+    """Copy the registry onto TOOLS and derive every gate set from it."""
+    global _MUTATING_TOOLS, _VECTOR_WRITE_TOOLS, _PEER_WRITER_EXEMPT_TOOLS
+    global _READ_ONLY_REFUSED_TOOLS, _SQLITE_INTEGRITY_ALLOWED_TOOLS
+    global _HTTP_LOCK_FREE_TOOLS, _HTTP_EMBEDDING_RELEASE_TOOLS
+
+    missing = set(TOOLS) - set(_TOOL_CAPABILITIES)
+    extra = set(_TOOL_CAPABILITIES) - set(TOOLS)
+    if missing or extra:
+        raise RuntimeError(
+            "tool capability registry does not match TOOLS: "
+            f"missing={sorted(missing)} extra={sorted(extra)}"
+        )
+
+    mutating = set()
+    vector_write = set()
+    peer_exempt = set()
+    refused = set()
+    integrity_allowed = set()
+    lock_free = set()
+    embedding_release = set()
+    for name, flags in _TOOL_CAPABILITIES.items():
+        capability = flags["capability"]
+        if capability not in {"read", "write", "maintenance"}:
+            raise RuntimeError(
+                f"{name} capability {capability!r} is not read, write, or maintenance"
+            )
+        if flags.get("vector_write") and not flags.get("mutating"):
+            raise RuntimeError(f"{name} is vector_write but not mutating")
+        if flags.get("peer_exempt") and not flags.get("mutating"):
+            raise RuntimeError(f"{name} is peer_exempt but not mutating")
+        TOOLS[name]["capability"] = capability
+        for flag in _CAPABILITY_FLAGS:
+            if flags.get(flag):
+                TOOLS[name][flag] = True
+        if capability == "read":
+            # memories_filed_away is a write: it unlinks the checkpoint ack.
+            # Reads advertise readOnlyHint. Writes do not.
+            TOOLS[name]["read_only"] = True
+        if flags.get("mutating"):
+            mutating.add(name)
+        if flags.get("vector_write"):
+            vector_write.add(name)
+        if flags.get("peer_exempt"):
+            peer_exempt.add(name)
+        if flags.get("integrity_allowed"):
+            integrity_allowed.add(name)
+        if flags.get("lock_free"):
+            lock_free.add(name)
+        if flags.get("embedding_release"):
+            embedding_release.add(name)
+        if capability != "read" and name != "mempalace_reconnect":
+            refused.add(name)
+
+    _MUTATING_TOOLS = frozenset(mutating)
+    _VECTOR_WRITE_TOOLS = frozenset(vector_write)
+    _PEER_WRITER_EXEMPT_TOOLS = frozenset(peer_exempt)
+    _READ_ONLY_REFUSED_TOOLS = frozenset(refused)
+    _SQLITE_INTEGRITY_ALLOWED_TOOLS = frozenset(integrity_allowed)
+    _HTTP_LOCK_FREE_TOOLS = frozenset(lock_free)
+    _HTTP_EMBEDDING_RELEASE_TOOLS = frozenset(embedding_release)
+
+
+_install_tool_capabilities()
 
 
 SUPPORTED_PROTOCOL_VERSIONS = [

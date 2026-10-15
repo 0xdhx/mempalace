@@ -170,28 +170,8 @@ _sqlite_integrity_verdict = None
 # twice concurrently.
 _sqlite_integrity_refresh_lock = threading.Lock()
 _SQLITE_INTEGRITY_ERROR_CODE = -32002
-_SQLITE_INTEGRITY_ALLOWED_TOOLS = frozenset(
-    {
-        "mempalace_status",
-        "mempalace_reconnect",
-        # RFC 003: logstream lives in its own logstream.sqlite3 with no
-        # Chroma/FTS5 dependency, so agent coordination stays available
-        # even while the main palace index is corrupt and under repair.
-        "mempalace_event_append",
-        "mempalace_task_create",
-        "mempalace_event_list",
-        "mempalace_event_wait",
-        "mempalace_event_ack",
-        "mempalace_artifact_put",
-        "mempalace_artifact_get",
-        "mempalace_patch_submit",
-        # RFC 004: the estate is observability — logstream + sync state +
-        # peers.json, no FTS5 dependency (the profile's drawer count
-        # degrades gracefully). A damaged palace is exactly when mesh
-        # visibility matters most; caught live on the third replica.
-        "mempalace_mesh_peers",
-    }
-)
+# Installed from each tool's integrity_allowed flag. Empty until schemas loads.
+_SQLITE_INTEGRITY_ALLOWED_TOOLS = frozenset()
 
 # The startup probe above runs PRAGMA quick_check, which reads every page of
 # chroma.sqlite3 and is therefore O(database size). On multi-GB palaces it can
@@ -221,125 +201,16 @@ _MCP_WRITER_LOCK_ERROR = ""
 _MCP_WRITER_ATEXIT_REGISTERED = False
 _MCP_ALLOW_PEER_WRITER_ENV = "MEMPALACE_MCP_ALLOW_PEER_WRITER"
 
-_MUTATING_TOOLS = frozenset(
-    {
-        "mempalace_kg_add",
-        "mempalace_kg_invalidate",
-        "mempalace_kg_supersede",
-        "mempalace_create_tunnel",
-        "mempalace_delete_tunnel",
-        "mempalace_delete_hallway",
-        "mempalace_add_drawer",
-        "mempalace_delete_drawer",
-        "mempalace_delete_drawers",
-        "mempalace_checkpoint",
-        "mempalace_delete_by_source",
-        "mempalace_mine",
-        "mempalace_sync",
-        "mempalace_update_drawer",
-        "mempalace_diary_write",
-        "mempalace_event_append",
-        "mempalace_task_create",
-        "mempalace_event_ack",
-        "mempalace_artifact_put",
-        "mempalace_patch_submit",
-    }
-)
-
-# Tools exempt from the peer-writer lease.
-#
-# Logstream mutating tools (RFC 003) write only to logstream.sqlite3 — an
-# independent WAL database with no Chroma/HNSW in-memory state — so the
-# peer-writer lease that protects Chroma does not apply to them. Exempting
-# them keeps agent coordination alive while a CLI mine or a peer stdio
-# writer holds the palace lock.
-#
-# Knowledge-graph tools (#2297): KnowledgeGraph opens its own
-# knowledge_graph.sqlite3 in WAL mode with its own threading.Lock.
-# None of these paths touch Chroma or the HNSW segment, so the
-# peer-writer lease — which exists to serialise two Chroma
-# PersistentClients against the same palace — has no claim on them.
-# Gate them through the lease and a second session loses the ability
-# to record durable facts for the lifetime of the other session,
-# even though the write is provably safe.
-#
-# All exempted tools remain in _MUTATING_TOOLS so operator
-# read-only mode (--read-only / MEMPALACE_MCP_READ_ONLY) still hides and
-# refuses them.
-_PEER_WRITER_EXEMPT_TOOLS = frozenset(
-    {
-        "mempalace_event_append",
-        "mempalace_task_create",
-        "mempalace_event_ack",
-        "mempalace_artifact_put",
-        "mempalace_patch_submit",
-        "mempalace_kg_add",
-        "mempalace_kg_invalidate",
-        "mempalace_kg_supersede",
-    }
-)
-
-# The subset of _MUTATING_TOOLS whose write path reaches the chroma vector
-# segment. Deliberately narrower: the knowledge-graph and tunnel/hallway tools
-# keep their own sqlite/JSON state and never touch HNSW, so an unusable vector
-# index has no say over them.
-#
-# The distinction earns its keep because a write into a diverged HNSW segment
-# does not fail — it blocks inside chromadb's Rust upsert with no timeout of its
-# own, for the life of the process, while this server holds the palace mine lock
-# and the writer lease. One stuck call becomes a palace-wide outage that a still
-# healthy handshake hides.
-_VECTOR_WRITE_TOOLS = frozenset(
-    {
-        "mempalace_add_drawer",
-        "mempalace_update_drawer",
-        "mempalace_delete_drawer",
-        "mempalace_delete_drawers",
-        "mempalace_delete_by_source",
-        "mempalace_diary_write",
-        "mempalace_checkpoint",
-        "mempalace_mine",
-        "mempalace_sync",
-    }
-)
-
+# Installed from TOOLS capability flags in schemas._install_tool_capabilities.
+# mutating: peer-writer lease. peer_exempt: mutating, but not Chroma.
+# vector_write: mutating path that can block in a diverged HNSW segment.
+# Read-only refuses every non-read tool except mempalace_reconnect.
+# hook_settings and memories_filed_away are writes the lease does not arbitrate.
+_MUTATING_TOOLS = frozenset()
+_PEER_WRITER_EXEMPT_TOOLS = frozenset()
+_VECTOR_WRITE_TOOLS = frozenset()
 _DIVERGED_INDEX_ERROR_CODE = -32004
-
-# Read-only mode (#1877) refuses a wider set than the peer-writer guard above.
-#
-# _MUTATING_TOOLS is the *palace-write* set: _mcp_peer_writer_refusal consults it
-# to decide which calls need this process to hold the palace mine lock. A tool
-# that never touches Chroma or the knowledge graph has to stay out of that set,
-# or a server that lost the lease to a peer would start refusing calls the lease
-# has no say over.
-#
-# Two tools are exactly that shape, and read-only has to name both because it is
-# a capability boundary rather than a lock: it exists so a shared server can
-# serve recall to a client that must not change server state.
-#
-#   mempalace_hook_settings, given an argument, writes the server's
-#   ~/.mempalace/config.json through MempalaceConfig.set_hook_setting.
-#   service.WRITE_TOOLS already classifies it as a write, which the daemon uses
-#   as an allowlist, so read-only was the odd one out.
-#
-#   mempalace_memories_filed_away unlinks ~/.mempalace/hook_state/last_checkpoint
-#   on both of its branches. Consuming the file is the contract of the tool, but
-#   it is still a delete of state that outlives the process, on behalf of a
-#   client with no write access. (service.classify_tool calls this one "read",
-#   which is wrong for the same reason.)
-#
-# mempalace_reconnect is deliberately NOT here even though it is not write-free:
-# it clears ChromaBackend._quarantined_paths, so the reopen that follows can let
-# quarantine_stale_hnsw rename a segment directory. It is the only way to pick up
-# an external writer's changes, and _SQLITE_INTEGRITY_ALLOWED_TOOLS already keeps
-# it reachable for recovery, so gating it would strand a read-only server on a
-# stale index. This set means "refuse what a client asked to change", not
-# "nothing past here touches the disk" -- opening the palace or the knowledge
-# graph materialises files on its own, which no name-based gate can express.
-_READ_ONLY_REFUSED_TOOLS = _MUTATING_TOOLS | {
-    "mempalace_hook_settings",
-    "mempalace_memories_filed_away",
-}
+_READ_ONLY_REFUSED_TOOLS = frozenset()
 
 
 # Stale-library write gate (#899).
