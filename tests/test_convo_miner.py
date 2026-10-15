@@ -1359,3 +1359,92 @@ def test_mine_convos_reaches_a_yield_point_before_each_file(tmp_path, capsys):
     with mine_yield_hook(lambda: calls.append(1)):
         mine_convos(str(src), str(tmp_path / "palace"), wing="test")
     assert len(calls) == 3
+
+
+_THREE_TURNS = (
+    "> What is memory?\nMemory is persistence of the read.\n\n"
+    "> Why does it matter?\nIt enables continuity of the read.\n\n"
+    "> How do we build it?\nWith structured storage of the read.\n"
+)
+
+
+def test_drawer_source_mtime_is_the_read_not_a_later_stat(tmp_path, monkeypatch):
+    """An append between the read and a later stat must not be skipped forever.
+
+    The stored source_mtime is the one from the same fstat as the bytes that
+    were chunked. A getmtime() after that read can already see the append.
+    """
+    convo = tmp_path / "chat.txt"
+    convo.write_text(_THREE_TURNS, encoding="utf-8")
+    real_mtime = convo.stat().st_mtime
+    monkeypatch.setattr(os.path, "getmtime", lambda _path: real_mtime + 5000)
+
+    palace = tmp_path / "palace"
+    mine_convos(str(tmp_path), str(palace), wing="test")
+
+    client = chromadb.PersistentClient(path=str(palace))
+    col = client.get_collection("mempalace_drawers")
+    metas = col.get(include=["metadatas"])["metadatas"]
+    assert metas
+    for meta in metas:
+        assert abs(float(meta["source_mtime"]) - real_mtime) < 0.001
+        assert abs(float(meta["source_mtime"]) - (real_mtime + 5000)) > 1
+
+
+def test_empty_file_sentinel_uses_the_read_mtime(tmp_path, monkeypatch):
+    blank = tmp_path / "blank.txt"
+    blank.write_text("   \n", encoding="utf-8")
+    real_mtime = blank.stat().st_mtime
+    monkeypatch.setattr(os.path, "getmtime", lambda _path: real_mtime + 5000)
+
+    palace = tmp_path / "palace"
+    mine_convos(str(tmp_path), str(palace), wing="test")
+
+    client = chromadb.PersistentClient(path=str(palace))
+    col = client.get_collection("mempalace_drawers")
+    metas = col.get(where={"source_file": str(blank.resolve())}, include=["metadatas"])["metadatas"]
+    if not metas:
+        metas = [
+            meta
+            for meta in col.get(include=["metadatas"])["metadatas"]
+            if meta and str(meta.get("source_file", "")).endswith("blank.txt")
+        ]
+    assert metas
+    assert abs(float(metas[0]["source_mtime"]) - real_mtime) < 0.001
+
+
+def test_one_bad_transcript_does_not_abort_the_mine(tmp_path, monkeypatch):
+    """A TypeError in one export is a file error. The rest of the mine still runs."""
+    from mempalace import convo_miner
+    from mempalace.palace import MineFileErrors
+
+    good = tmp_path / "good.txt"
+    good.write_text(
+        "> What stayed?\nUNIQUE_GOOD_MARKER is still here.\n\n"
+        "> And the other file?\nIt failed on its own.\n\n"
+        "> Will the mine stop?\nNo, it records the error and continues.\n",
+        encoding="utf-8",
+    )
+    bad = tmp_path / "bad.json"
+    bad.write_text("[]", encoding="utf-8")
+    real = convo_miner._conversations_from_content
+
+    def flaky(filepath, content):
+        if filepath.name == "bad.json":
+            raise TypeError("expected string or bytes-like object, got 'NoneType'")
+        return real(filepath, content)
+
+    monkeypatch.setattr(convo_miner, "_conversations_from_content", flaky)
+    palace = tmp_path / "palace"
+    with pytest.raises(MineFileErrors) as exc_info:
+        mine_convos(str(tmp_path), str(palace), wing="test")
+
+    assert any(str(path).endswith("bad.json") for path in exc_info.value.failed_files)
+    client = chromadb.PersistentClient(path=str(palace))
+    col = client.get_collection("mempalace_drawers")
+    stored = col.get(include=["documents", "metadatas"])
+    assert any("UNIQUE_GOOD_MARKER" in doc for doc in stored["documents"])
+    assert not any(
+        meta and str(meta.get("source_file", "")).endswith("bad.json")
+        for meta in stored["metadatas"]
+    )
