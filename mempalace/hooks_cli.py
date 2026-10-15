@@ -990,6 +990,120 @@ def _extract_themes(messages: list[str], max_themes: int = 3) -> list[str]:
     return [w for w, _ in words.most_common(max_themes)]
 
 
+def _write_private_json(path: Path, payload: dict) -> None:
+    """Atomically write ``payload`` as owner-only JSON."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, ensure_ascii=False)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(str(tmp), str(path))
+
+
+def _diary_checkpoint_path(session_id: str) -> Path:
+    return STATE_DIR / f"diary_checkpoint_{_sanitize_session_id(session_id)}.json"
+
+
+def _diary_checkpoint_argv(payload_path: Path) -> list[str]:
+    # The entry stays in the payload file. It must not appear on argv.
+    return [
+        _mempalace_python(),
+        "-c",
+        "import sys; from mempalace.hooks_cli import run_detached_diary_checkpoint; "
+        "run_detached_diary_checkpoint(sys.argv[1])",
+        str(payload_path),
+    ]
+
+
+def _queue_diary_checkpoint(payload: dict) -> bool:
+    """Detach the diary write. The foreground must not import mcp_server."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    payload_path = _diary_checkpoint_path(str(payload.get("session_id") or "unknown"))
+    cmd = _diary_checkpoint_argv(payload_path)
+    if _mine_already_running(cmd):
+        _log("Skipping diary checkpoint: already running")
+        return False
+    _write_private_json(payload_path, payload)
+    try:
+        _spawn_mine(cmd)
+    except OSError:
+        try:
+            payload_path.unlink()
+        except OSError:
+            pass
+        raise
+    return True
+
+
+def run_detached_diary_checkpoint(payload_path: str) -> None:
+    """Child entry: file one diary checkpoint, then drop the payload and slot."""
+    path = Path(payload_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        _log(f"Diary checkpoint payload unreadable: {type(exc).__name__}")
+        return
+    try:
+        _apply_diary_checkpoint(payload)
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        pid_file = os.environ.get(_MINE_PID_FILE_ENV, "")
+        if pid_file:
+            try:
+                Path(pid_file).unlink()
+            except OSError:
+                pass
+
+
+def _apply_diary_checkpoint(payload: dict) -> dict:
+    """File the checkpoint. This is the only hook path that imports mcp_server."""
+    from .mcp_server import tool_diary_write
+
+    entry = payload.get("entry") or ""
+    themes = payload.get("themes") or []
+    if not isinstance(entry, str) or not entry:
+        return {"drawers_filed": 0, "messages_folded": 0, "themes": themes}
+    messages_folded = int(payload.get("messages_folded") or 0)
+    result = tool_diary_write(
+        agent_name=str(payload.get("agent_name") or "claude"),
+        entry=entry,
+        topic=str(payload.get("topic") or "checkpoint"),
+        wing=str(payload.get("wing") or ""),
+    )
+    if not isinstance(result, dict) or not result.get("success"):
+        _log("Diary checkpoint failed")
+        return {"drawers_filed": 0, "messages_folded": 0, "themes": themes}
+    _log(f"Diary checkpoint saved: {result.get('entry_id', '?')}")
+    try:
+        (STATE_DIR / "last_checkpoint").write_text(
+            json.dumps({"msgs": messages_folded, "ts": payload.get("ack_ts") or ""}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+    exchange_count = payload.get("exchange_count")
+    if isinstance(exchange_count, int) and not isinstance(exchange_count, bool):
+        session_id = _sanitize_session_id(str(payload.get("session_id") or "unknown"))
+        try:
+            (STATE_DIR / f"{session_id}_last_save").write_text(
+                str(exchange_count), encoding="utf-8"
+            )
+        except OSError:
+            pass
+    if payload.get("toast"):
+        _desktop_toast(f"Checkpoint saved \u2014 {messages_folded} messages archived")
+    return {
+        "drawers_filed": 1,
+        "messages_folded": messages_folded,
+        "themes": themes,
+    }
+
+
 def _save_diary_direct(
     transcript_path: str,
     session_id: str,
@@ -997,8 +1111,14 @@ def _save_diary_direct(
     toast: bool = False,
     *,
     agent_name: str,
+    exchange_count: Optional[int] = None,
 ) -> dict:
-    """Write a diary checkpoint by calling the tool function directly (no MCP roundtrip).
+    """Queue a diary checkpoint without importing ``mempalace.mcp_server``.
+
+    The daemon path still waits on a job. The direct path spawns a detached
+    child (``run_detached_diary_checkpoint``) and returns immediately. The
+    child files the drawer and writes the ack. That direct path returns
+    ``checkpoint_queued`` and ``drawers_filed`` 0.
 
     The entry is filed under `agent_name` so the agent that later calls
     `mempalace_diary_read(agent_name=...)` discovers it (#1693). If `wing` is
@@ -1085,32 +1205,30 @@ def _save_diary_direct(
             _log(f"Daemon diary checkpoint failed: {result.get('error', job.get('error'))}")
             return {"drawers_filed": 0, "messages_folded": 0}
 
-        from .mcp_server import tool_diary_write
-
-        result = tool_diary_write(
-            agent_name=agent_name,
-            entry=entry,
-            topic="checkpoint",
-            wing=wing,
+        queued = _queue_diary_checkpoint(
+            {
+                "agent_name": agent_name,
+                "entry": entry,
+                "topic": "checkpoint",
+                "wing": wing,
+                "toast": bool(toast),
+                "messages_folded": len(messages),
+                "themes": themes,
+                "session_id": session_id,
+                "exchange_count": exchange_count,
+                "ack_ts": now.isoformat(),
+            }
         )
-        if result.get("success"):
-            _log(f"Diary checkpoint saved: {result.get('entry_id', '?')}")
-            # Write state for ack tool to read
-            try:
-                ack_file = STATE_DIR / "last_checkpoint"
-                ack_file.write_text(
-                    json.dumps({"msgs": len(messages), "ts": now.isoformat()}),
-                    encoding="utf-8",
-                )
-            except OSError:
-                pass
-            if toast:
-                _desktop_toast(f"Checkpoint saved \u2014 {len(messages)} messages archived")
-            return {"drawers_filed": 1, "messages_folded": len(messages), "themes": themes}
-        else:
-            _log(f"Diary checkpoint failed: {result.get('error', 'unknown')}")
+        if queued:
+            _log("Diary checkpoint queued")
+            return {
+                "drawers_filed": 0,
+                "messages_folded": len(messages),
+                "themes": themes,
+                "checkpoint_queued": True,
+            }
     except Exception as e:
-        _log(f"Diary checkpoint error: {e}")
+        _log(f"Diary checkpoint error: {type(e).__name__}")
     return {"drawers_filed": 0, "messages_folded": 0}
 
 
@@ -1477,6 +1595,7 @@ def hook_stop(data: dict, harness: str):
                         wing=project_wing,
                         toast=toast,
                         agent_name=_diary_agent_for_harness(harness),
+                        exchange_count=exchange_count,
                     )
                     _ingest_transcript(transcript_path)
                 _maybe_auto_ingest()

@@ -41,10 +41,10 @@ HOST = "127.0.0.1"
 STATE_ROOT_ENV = "MEMPALACE_DAEMON_STATE_ROOT"
 DEFAULT_WAIT_TIMEOUT = 60.0 * 60.0
 # Liveness-probe timeout for the hook "is a daemon already running?" precheck.
-# Kept well under the ~500ms hook budget so a wedged daemon can't stall the hook
-# (it falls back to the direct/spawn path instead). A healthy local daemon
+# 0.15s stays well under the 500ms hook budget: a wedged daemon must not
+# consume the whole budget before the hook falls back. A healthy local daemon
 # answers /health in single-digit ms, so this rarely false-negatives.
-HOOK_PROBE_TIMEOUT = 0.5
+HOOK_PROBE_TIMEOUT = 0.15
 TERMINAL_STATES = {"succeeded", "failed", "cancelled"}
 MAX_ATTEMPTS = 3
 # ``error_class`` marking a job refused the per-palace write lock. The lock

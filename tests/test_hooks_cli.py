@@ -517,7 +517,12 @@ def test_stop_hook_saves_silently_at_interval(tmp_path):
     assert "hooks" in result["systemMessage"]
     # tmp_path has no "-Projects-" segment, so _wing_from_transcript_path falls back to "wing_sessions"
     mock_save.assert_called_once_with(
-        str(transcript), "test", wing="wing_sessions", toast=False, agent_name="claude"
+        str(transcript),
+        "test",
+        wing="wing_sessions",
+        toast=False,
+        agent_name="claude",
+        exchange_count=SAVE_INTERVAL,
     )
 
 
@@ -538,7 +543,12 @@ def test_stop_hook_derives_wing_from_transcript_path(tmp_path):
             state_dir=tmp_path,
         )
     mock_save.assert_called_once_with(
-        str(transcript), "test", wing="wing_myproject", toast=False, agent_name="claude"
+        str(transcript),
+        "test",
+        wing="wing_myproject",
+        toast=False,
+        agent_name="claude",
+        exchange_count=SAVE_INTERVAL,
     )
 
 
@@ -654,9 +664,25 @@ def test_stop_hook_checkpoint_visible_to_diary_read(monkeypatch, config, palace_
         [{"message": {"role": "user", "content": f"msg {i}"}} for i in range(5)],
     )
 
+    spawned = {}
+
+    def _fake_popen(cmd, **kwargs):
+        spawned["cmd"] = list(cmd)
+
+        class _Proc:
+            pid = os.getpid()
+
+        return _Proc()
+
     agent = _diary_agent_for_harness("claude-code")
-    res = _save_diary_direct(str(transcript), "sess1", wing="wing_.claude", agent_name=agent)
-    assert res["drawers_filed"] > 0
+    with patch("mempalace.hooks_cli.subprocess.Popen", _fake_popen):
+        res = _save_diary_direct(str(transcript), "sess1", wing="wing_.claude", agent_name=agent)
+    assert res.get("checkpoint_queued") is True
+    assert res["drawers_filed"] == 0
+    argv = " ".join(spawned["cmd"])
+    assert "run_detached_diary_checkpoint" in argv
+    assert "CHECKPOINT" not in argv
+    hooks_cli_mod.run_detached_diary_checkpoint(spawned["cmd"][-1])
 
     visible = tool_diary_read(agent_name="claude")
     assert visible.get("total", 0) >= 1
@@ -665,6 +691,87 @@ def test_stop_hook_checkpoint_visible_to_diary_read(monkeypatch, config, palace_
     # The legacy identity no longer captures hook checkpoints.
     legacy = tool_diary_read(agent_name="session-hook")
     assert legacy.get("entries") == []
+
+
+def test_stop_foreground_does_not_import_mcp_server(tmp_path):
+    """The default Stop path must stay inside the 500ms budget.
+
+    Importing mempalace.mcp_server alone is about half a second. The
+    foreground queues a detached child and must not import it.
+    """
+    import time
+
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(
+        transcript,
+        [{"message": {"role": "user", "content": f"msg {i}"}} for i in range(SAVE_INTERVAL)],
+    )
+    removed = {
+        key: sys.modules.pop(key)
+        for key in list(sys.modules)
+        if key == "mempalace.mcp_server" or key.startswith("mempalace.mcp_server.")
+    }
+    try:
+        started = time.perf_counter()
+        result = _capture_hook_output(
+            hook_stop,
+            {
+                "session_id": "budget",
+                "stop_hook_active": False,
+                "transcript_path": str(transcript),
+            },
+            state_dir=tmp_path,
+        )
+        elapsed = time.perf_counter() - started
+        assert "mempalace.mcp_server" not in sys.modules
+        assert result == {}
+        assert elapsed < 0.5, f"foreground stop took {elapsed:.3f}s"
+    finally:
+        sys.modules.update(removed)
+
+
+def test_daemon_available_probe_stays_under_hook_budget(tmp_path, monkeypatch):
+    import socket
+    import threading
+    import time
+
+    from mempalace import daemon
+
+    monkeypatch.setenv(daemon.STATE_ROOT_ENV, str(tmp_path / "daemon-state"))
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(palace))
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def _hang():
+        try:
+            conn, _addr = server.accept()
+            time.sleep(2)
+            conn.close()
+        except OSError:
+            pass
+
+    threading.Thread(target=_hang, daemon=True).start()
+    try:
+        daemon.ensure_token(str(palace))
+        endpoint = daemon.state_dir(str(palace)) / "endpoint.json"
+        endpoint.write_text(
+            json.dumps({"host": "127.0.0.1", "port": port, "pid": os.getpid()}),
+            encoding="utf-8",
+        )
+        started = time.perf_counter()
+        available = hooks_cli_mod._daemon_available()
+        elapsed = time.perf_counter() - started
+    finally:
+        server.close()
+
+    assert available is False
+    assert daemon.HOOK_PROBE_TIMEOUT <= 0.15
+    assert elapsed < 0.5, f"hook probe took {elapsed:.3f}s"
+    assert elapsed < daemon.HOOK_PROBE_TIMEOUT + 0.2
 
 
 def test_save_diary_direct_daemon_opt_in_submits_job(tmp_path):
@@ -2526,15 +2633,32 @@ def test_session_end_checkpoint_visible_to_diary_read(
     with patch("mempalace.hooks_cli.MempalaceConfig") as mock_cfg_cls:
         mock_cfg_cls.return_value.hooks_auto_save = True
         mock_cfg_cls.return_value.hook_desktop_toast = False
-        # Mock only the detached subprocess mines; run the REAL diary write.
+        spawned = {}
+
+        def _fake_popen(cmd, **kwargs):
+            spawned.setdefault("cmds", []).append(list(cmd))
+
+            class _Proc:
+                pid = os.getpid()
+
+            return _Proc()
+
+        # Mines stay detached. The diary child is recorded, then filed here
+        # so the test does not wait on a second interpreter.
         with (
             patch("mempalace.hooks_cli._ingest_transcript"),
             patch("mempalace.hooks_cli._maybe_auto_ingest"),
+            patch("mempalace.hooks_cli.subprocess.Popen", _fake_popen),
         ):
             hook_session_end(
                 {"session_id": "sessX", "transcript_path": str(transcript)},
                 "claude-code",
             )
+    diary_cmds = [
+        cmd for cmd in spawned.get("cmds", []) if "run_detached_diary_checkpoint" in " ".join(cmd)
+    ]
+    assert diary_cmds
+    hooks_cli_mod.run_detached_diary_checkpoint(diary_cmds[0][-1])
 
     visible = tool_diary_read(agent_name="claude")
     assert visible.get("total", 0) >= 1
