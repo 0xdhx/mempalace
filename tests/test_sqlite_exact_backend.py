@@ -1672,6 +1672,49 @@ with mine_palace_lock(sys.argv[1]):
         get_backend(backend_name).close_palace(str(tmp_path))
 
 
+def test_leaf_commit_changes_signature_when_stat_does_not(tmp_path, monkeypatch):
+    """Immutable readers must notice a checkpoint the filesystem clock missed.
+
+    A leaf write can leave page_count, freelist, schema_version, and the file
+    change counter untouched. On a coarse clock, st_mtime_ns stays put too, so
+    the stat half of ``_database_signature`` is frozen here.
+    """
+    backend, col = _collection(tmp_path)
+    try:
+        col.add(ids=["a"], documents=["alpha"], embeddings=[[1.0, 0.0]])
+        col._handle.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        db_path = os.path.join(str(tmp_path), "sqlite_exact.sqlite3")
+        recorded = {}
+        real_stat = sqlite_exact_module.os.stat
+
+        def recording_stat(path, *args, **kwargs):
+            st = real_stat(path, *args, **kwargs)
+            if os.fspath(path) == db_path:
+                recorded["st"] = st
+            return st
+
+        monkeypatch.setattr(sqlite_exact_module.os, "stat", recording_stat)
+        first = backend._database_signature(db_path)
+        monkeypatch.setattr(sqlite_exact_module.os, "stat", real_stat)
+        col.add(ids=["b"], documents=["beta"], embeddings=[[0.0, 1.0]])
+        col._handle.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+        frozen = recorded["st"]
+
+        def frozen_stat(path, *args, **kwargs):
+            if os.fspath(path) == db_path:
+                return frozen
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite_exact_module.os, "stat", frozen_stat)
+        second = backend._database_signature(db_path)
+        assert second[:5] == first[:5]
+        assert second != first
+        assert second[-1][-1] != first[-1][-1]
+    finally:
+        backend.close()
+
+
 @pytest.mark.parametrize("backend_name", ["sqlite_exact", "rust_exact"])
 def test_retired_reader_wrappers_reconnect_but_explicit_close_stays_closed(tmp_path, backend_name):
     from mempalace.backends import get_backend
