@@ -1255,6 +1255,86 @@ def test_sqlite_integrity_payload_never_reads_clean_mid_refresh(monkeypatch, tmp
     assert mid["checked"] is False
 
 
+def test_sqlite_integrity_payload_keeps_the_generation_it_started_with(monkeypatch):
+    """A refresh that lands during backend lookup must not rewrite this answer.
+
+    The payload used to read the error list once to choose a branch and again
+    to fill ``ok`` / ``errors``. Those two reads could be different generations.
+    """
+    from mempalace import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_selected_backend_name", lambda: "chroma")
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_checked", True)
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_errors", [])
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_check_error", "")
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_no_verdict_reason", "")
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_verdict", None)
+
+    def _swap_in_a_new_generation():
+        mcp_server._sqlite_integrity_errors = ["malformed inverted index"]
+        return "chroma"
+
+    monkeypatch.setattr(mcp_server, "_selected_backend_name", _swap_in_a_new_generation)
+    payload = mcp_server._sqlite_integrity_payload()
+
+    assert payload["ok"] is True
+    assert payload["errors"] == []
+    assert payload["error_count"] == 0
+    assert (payload["ok"] is True) == (payload["error_count"] == 0)
+
+
+def test_node_profile_counts_drawers_under_the_request_lock(monkeypatch):
+    """Lock-free profile reads must not mutate the collection cache unlocked."""
+    from mempalace import mcp_server
+
+    seen = {}
+
+    def _fake_get_collection(create=False):
+        del create
+        seen["readers"] = mcp_server._HTTP_REQUEST_LOCK._readers
+        return None
+
+    monkeypatch.setattr(mcp_server, "_get_collection", _fake_get_collection)
+    mcp_server._node_profile_cache.clear()
+    profile = mcp_server._node_profile()
+
+    assert seen["readers"] >= 1
+    assert profile["drawers"] is None
+
+
+def test_peer_sync_mutation_waits_for_the_mesh_lock():
+    """Peer-sync and known-profile updates share one lock."""
+    import threading
+
+    from mempalace import mcp_server
+
+    mcp_server._PEER_SYNC_STATE.clear()
+    mcp_server._KNOWN_PROFILES.clear()
+    started = threading.Event()
+    finished = threading.Event()
+    mcp_server._MESH_STATE_LOCK.acquire()
+
+    def _worker():
+        started.set()
+        mcp_server._record_peer_sync(
+            {"peer_name": "held", "peer_url": "http://peer.example", "error": "down"}
+        )
+        finished.set()
+
+    worker = threading.Thread(target=_worker)
+    worker.start()
+    try:
+        assert started.wait(2)
+        assert finished.wait(0.2) is False
+        assert "held" not in mcp_server._PEER_SYNC_STATE
+    finally:
+        mcp_server._MESH_STATE_LOCK.release()
+    assert finished.wait(2)
+    worker.join(2)
+    assert mcp_server._PEER_SYNC_STATE["held"]["reachable"] is False
+    mcp_server._PEER_SYNC_STATE.clear()
+
+
 def test_refresh_sqlite_integrity_status_runs_when_under_limit(monkeypatch, tmp_path):
     """A DB under the limit still runs the quick_check (behaviour preserved)."""
     from mempalace import mcp_server, repair
