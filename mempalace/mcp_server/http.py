@@ -725,6 +725,7 @@ def _http_serve_sync(handler, path: str) -> bool:
 # Written by the sync loop after every round, read by /sync/peers. Values
 # are whole-entry replacements under the GIL, so readers never see a
 # half-updated peer record.
+_MESH_STATE_LOCK = threading.RLock()
 _PEER_SYNC_STATE: dict = {}
 
 # Node profiles learned from peers (their self-descriptions, relayed
@@ -741,6 +742,28 @@ _node_profile_cache: dict = {}
 _ACCELERATOR_NAMES = {"cuda": "CUDA", "dml": "DirectML", "coreml": "CoreML", "cpu": "CPU"}
 
 
+def _drawer_count_for_profile():
+    """Drawer count for the node profile.
+
+    ``_get_collection`` writes the process-wide collection cache. Lock-free
+    routes (/sync/version_vector, mempalace_mesh_peers) call this, so the
+    read takes the request lock's read side. The write side is not
+    reentrant; a thread that already holds it counts without acquiring.
+    """
+    lock = _HTTP_REQUEST_LOCK
+
+    def _count():
+        col = _get_collection(create=False)
+        if col is None:
+            return None
+        return col.count()
+
+    if lock._writer and lock._writer_ident == threading.get_ident():
+        return _count()
+    with lock.read_lock():
+        return _count()
+
+
 def _node_profile() -> dict:
     """This node's self-described profile — every field is pure derivation
     (palace presence, logstream authorship, resolved onnxruntime provider),
@@ -754,9 +777,8 @@ def _node_profile() -> dict:
     roles = []
     drawers = None
     try:
-        col = _get_collection(create=False)
-        if col is not None:
-            drawers = col.count()
+        drawers = _drawer_count_for_profile()
+        if drawers is not None:
             roles.append("replica")
     except Exception:
         logger.debug("node profile: drawer count unavailable", exc_info=True)
@@ -796,13 +818,14 @@ def _merge_known_profiles(profiles: dict) -> None:
     """Fold relayed profiles in, last-writer-wins by advertised_at."""
     if not isinstance(profiles, dict):
         return
-    for origin, profile in profiles.items():
-        if not isinstance(origin, str) or not isinstance(profile, dict):
-            continue
-        prior = _KNOWN_PROFILES.get(origin)
-        if prior and (prior.get("advertised_at") or "") >= (profile.get("advertised_at") or ""):
-            continue
-        _KNOWN_PROFILES[origin] = profile
+    with _MESH_STATE_LOCK:
+        for origin, profile in profiles.items():
+            if not isinstance(origin, str) or not isinstance(profile, dict):
+                continue
+            prior = _KNOWN_PROFILES.get(origin)
+            if prior and (prior.get("advertised_at") or "") >= (profile.get("advertised_at") or ""):
+                continue
+            _KNOWN_PROFILES[origin] = profile
 
 
 def _known_profiles_snapshot(published: dict = None) -> dict:
@@ -814,8 +837,10 @@ def _known_profiles_snapshot(published: dict = None) -> dict:
     """
     if published is None:
         published = _published_mesh_state()
+    with _MESH_STATE_LOCK:
+        learned = dict(_KNOWN_PROFILES)
     snapshot = dict(published.get("profiles") or {})
-    snapshot.update(_KNOWN_PROFILES)
+    snapshot.update(learned)
     try:
         snapshot[_call_logstream(lambda ls: ls.replica_id)] = _node_profile()
     except Exception:
@@ -836,10 +861,13 @@ def _publish_mesh_state(palace_path: str) -> None:
     from .. import server_registry
 
     try:
+        with _MESH_STATE_LOCK:
+            peers = dict(_PEER_SYNC_STATE)
+            profiles = dict(_KNOWN_PROFILES)
         server_registry.write_mesh_state(
             palace_path,
-            peers=dict(_PEER_SYNC_STATE),
-            profiles=dict(_KNOWN_PROFILES),
+            peers=peers,
+            profiles=profiles,
         )
     except Exception:
         logger.debug("mesh state publish failed", exc_info=True)
@@ -863,6 +891,11 @@ def _record_peer_sync(stats: dict) -> None:
     """Fold one peer's round outcome into the estate state."""
     name = stats.get("peer_name") or stats.get("peer_url") or "?"
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    with _MESH_STATE_LOCK:
+        _record_peer_sync_locked(stats, name, now)
+
+
+def _record_peer_sync_locked(stats: dict, name: str, now: str) -> None:
     prior = _PEER_SYNC_STATE.get(name) or {}
     if stats.get("error"):
         entry = {
@@ -919,11 +952,14 @@ def _mesh_peers_payload() -> dict:
     # back to the published estate per peer.
     published = _published_mesh_state()
     published_peers = published.get("peers") or {}
+    with _MESH_STATE_LOCK:
+        local_peers = {key: dict(value) for key, value in _PEER_SYNC_STATE.items()}
+        in_process = bool(local_peers)
     named_origins = {replica_id}
     peers = []
     for peer in configured:
         name = peer.get("name") or peer["url"]
-        state = dict(_PEER_SYNC_STATE.get(name) or published_peers.get(name) or {})
+        state = dict(local_peers.get(name) or published_peers.get(name) or {})
         state.pop("url", None)  # peers.json is authoritative for the url
         if state.get("replica_id"):
             named_origins.add(state["replica_id"])
@@ -948,7 +984,7 @@ def _mesh_peers_payload() -> dict:
         # the hub at published_at, and writer_alive says whether that hub is
         # still running (a dead hub leaves a last-known-good reading).
         "estate_source": {
-            "in_process": bool(_PEER_SYNC_STATE),
+            "in_process": in_process,
             "published_at": published.get("written_at"),
             "writer_alive": published.get("writer_alive", False),
         },
