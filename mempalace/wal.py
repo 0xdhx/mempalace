@@ -76,7 +76,9 @@ def _wal_log(operation: str, params: dict, result: dict = None):
     """Append a write operation to the write-ahead log.
 
     Preserves the existing contract: callers write *before* the backend
-    mutation so the intent entry survives a crash in the mutation itself. The
+    mutation so the intent entry survives a crash in the mutation itself.
+    Content fields are redacted, so this log is not a restorable copy of a
+    drawer. The
     ``result`` argument is kept for back-compat but is not expected to be
     supplied at the call site — tools that want to record the write outcome
     should follow up with :func:`_wal_result`, which appends a second entry

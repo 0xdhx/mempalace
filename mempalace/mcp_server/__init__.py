@@ -148,8 +148,9 @@ from ..ids import ID_RECIPE, make_drawer_id_from_content  # noqa: E402
 
 # ==================== WRITE-AHEAD LOG ====================
 # Every write operation is logged to a JSONL file before execution.
-# This provides an audit trail for detecting memory poisoning and
-# enables review/rollback of writes from external or untrusted sources.
+# The log is an audit trail. It redacts content, so it is not a copy you
+# can restore a drawer from. update_drawer keeps that verbatim prior text
+# in the palace's drawer_revisions.jsonl.
 #
 # The implementation lives in mempalace.wal — a side-effect-free module — so the
 # CLI sync path and the daemon service layer can audit writes without importing

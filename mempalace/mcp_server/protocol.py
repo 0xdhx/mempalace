@@ -808,8 +808,9 @@ def handle_request(request):
                 "id": req_id,
                 "error": {"code": -32601, "message": f"Unknown tool: {tool_name}"},
             }
-        # Whitelist arguments to declared schema properties only.
-        # Prevents callers from spoofing internal params like added_by/source_file.
+        # Keep only arguments declared on the tool schema.
+        # added_by and source_file are schema properties, so this does not
+        # reject a caller who supplies them.
         # Skip filtering if handler explicitly accepts **kwargs (pass-through).
         # Default to filtering on inspect failure (safe fallback).
         import inspect

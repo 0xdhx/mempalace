@@ -1070,6 +1070,118 @@ class TestWriteTools:
         closets_col = get_closets_collection(palace_path, create=False)
         assert len(closets_col.get(include=[])["ids"]) == 1
 
+    def test_update_drawer_keeps_prior_text_when_the_write_fails(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        """A failed overwrite must leave the drawer, its closets, and a verbatim copy."""
+        from mempalace import mcp_server
+        from mempalace.palace import get_closets_collection
+        from mempalace.revisions import load_drawer_revisions
+
+        _patch_mcp_server(monkeypatch, config, kg)
+        original = (
+            "The authentication module uses JWT tokens for session management. "
+            "Tokens expire after 24 hours. Refresh tokens are stored in HttpOnly cookies."
+        )
+        closets_col = get_closets_collection(palace_path, create=True)
+        closets_col.add(
+            ids=["auth_closet_01"],
+            documents=["topic: JWT session tokens"],
+            metadatas=[{"source_file": "auth.py"}],
+        )
+
+        real_get = mcp_server._get_collection
+
+        def _failing_collection(create=False):
+            col = real_get(create=create)
+
+            def _boom(**_kwargs):
+                raise RuntimeError("write failed")
+
+            col.update = _boom
+            col.upsert = _boom
+            return col
+
+        monkeypatch.setattr(mcp_server, "_get_collection", _failing_collection)
+
+        result = mcp_server.tool_update_drawer(
+            "drawer_proj_backend_aaa", content="replacement that must not stick"
+        )
+
+        assert result["success"] is False
+        stored = seeded_collection.get(ids=["drawer_proj_backend_aaa"], include=["documents"])
+        assert stored["documents"] == [original]
+        assert closets_col.get(include=[])["ids"] == ["auth_closet_01"]
+        revisions = load_drawer_revisions(palace_path, "drawer_proj_backend_aaa")
+        assert revisions[-1]["content"] == original
+
+    def test_update_drawer_prior_text_is_recoverable_outside_the_wal(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        """The WAL redacts content. The palace revision keeps the verbatim prior text."""
+        from pathlib import Path
+
+        from mempalace import mcp_server, wal
+        from mempalace.revisions import load_drawer_revisions
+
+        _patch_mcp_server(monkeypatch, config, kg)
+        wal_file = Path(palace_path) / "isolated-wal.jsonl"
+        monkeypatch.setattr(wal, "_WAL_FILE", wal_file)
+        monkeypatch.setattr(wal, "_WAL_INITIALIZED_DIR", None)
+        original = (
+            "The authentication module uses JWT tokens for session management. "
+            "Tokens expire after 24 hours. Refresh tokens are stored in HttpOnly cookies."
+        )
+        replacement = "replacement verbatim text for the auth drawer"
+        result = mcp_server.tool_update_drawer("drawer_proj_backend_aaa", content=replacement)
+
+        assert result["success"] is True
+        assert result["revision_id"]
+        revisions = load_drawer_revisions(palace_path, "drawer_proj_backend_aaa")
+        assert revisions[-1]["content"] == original
+        assert revisions[-1]["revision_id"] == result["revision_id"]
+        fetched = mcp_server.tool_get_drawer("drawer_proj_backend_aaa")
+        assert fetched["content"] == replacement
+
+        wal_text = wal_file.read_text(encoding="utf-8")
+        assert original not in wal_text
+        assert "[REDACTED" in wal_text
+
+    def test_update_drawer_purges_closets_only_after_the_write(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        from mempalace import mcp_server
+
+        _patch_mcp_server(monkeypatch, config, kg)
+        order = []
+        real_get = mcp_server._get_collection
+        real_purge = mcp_server._purge_source_closets
+
+        def _recording_collection(create=False):
+            col = real_get(create=create)
+            real_update = col.update
+
+            def _update(**kwargs):
+                order.append("write")
+                return real_update(**kwargs)
+
+            col.update = _update
+            return col
+
+        def _recording_purge(source_file, *, commit):
+            order.append("purge")
+            return real_purge(source_file, commit=commit)
+
+        monkeypatch.setattr(mcp_server, "_get_collection", _recording_collection)
+        monkeypatch.setattr(mcp_server, "_purge_source_closets", _recording_purge)
+
+        result = mcp_server.tool_update_drawer(
+            "drawer_proj_backend_aaa", content="updated after the closet check"
+        )
+
+        assert result["success"] is True
+        assert order == ["write", "purge"]
+
     def test_update_drawer_not_found(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_update_drawer

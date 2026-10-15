@@ -854,7 +854,8 @@ def tool_mine(
     A mine that ran but could not file some files returns ``success: False``
     with ``error_class: "MineFileErrors"``, ``files_failed``, up to 20
     ``failed_files`` and the same ``output``.
-    The palace write lock is held by the miners themselves, so a concurrent mine
+    Project and conversation mines take the palace write lock. Format mines
+    (``extract`` mode) do not. A concurrent project or conversation mine
     surfaces as a structured already-running error. Orphan cleanup is not part of
     mining — use ``mempalace_sync`` for that.
     """
@@ -1467,6 +1468,29 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
                 new_meta["room"] = room
 
         new_meta["last_modified"] = datetime.now().isoformat()
+
+        chunk_size = max(1, int(getattr(_config, "chunk_size", 800) or 800))
+        should_chunk = bool(record.get("chunked")) or len(new_doc) > chunk_size
+        # The chunked path rewrites stored documents even for a metadata-only
+        # change. Keep the prior verbatim text before either overwrite. The WAL
+        # redacts content, so it is not this copy.
+        revision_id = None
+        if content is not None or should_chunk:
+            from ..revisions import append_drawer_revision
+
+            try:
+                revision_id = append_drawer_revision(
+                    _config.palace_path,
+                    drawer_id,
+                    old_doc if isinstance(old_doc, str) else "",
+                    old_meta,
+                )
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "error": f"could not record prior drawer text: {exc}",
+                }
+
         _wal_log(
             "update_drawer",
             {
@@ -1477,18 +1501,20 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
                 "new_room": new_meta.get("room", ""),
                 "content_changed": content is not None,
                 "content_preview": new_doc[:200] if content is not None else None,
+                "revision_id": revision_id,
             },
         )
 
         # A closet quotes the source file, not the stored drawer, so it only
         # goes stale on a content change; wing/room alone leaves it correct (#2325).
-        closets_deleted = 0
+        # Purge only after the drawer write commits. A failed upsert must leave
+        # the closets in place.
         source_file = old_meta.get("source_file")
-        if content is not None and source_file:
-            closets_deleted = _purge_source_closets(source_file, commit=True)
 
-        chunk_size = max(1, int(getattr(_config, "chunk_size", 800) or 800))
-        should_chunk = bool(record.get("chunked")) or len(new_doc) > chunk_size
+        def _purge_closets_after_write() -> int:
+            if content is not None and source_file:
+                return _purge_source_closets(source_file, commit=True)
+            return 0
 
         if should_chunk:
             chunk_ids, chunk_docs, chunk_metas = _build_chunk_rows(
@@ -1505,11 +1531,12 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
             if stale_ids:
                 col.delete(ids=stale_ids)
 
+            closets_deleted = _purge_closets_after_write()
             _invalidate_overview_caches()
 
             logger.info("Updated drawer: %s (%s rows)", drawer_id, len(chunk_ids))
 
-            return {
+            outcome = {
                 "success": True,
                 "drawer_id": drawer_id,
                 "wing": new_meta.get("wing", ""),
@@ -1518,6 +1545,10 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
                 "chunk_ids": chunk_ids,
                 "closets_deleted": closets_deleted,
             }
+            if revision_id:
+                outcome["revision_id"] = revision_id
+            _wal_result("update_drawer", outcome)
+            return outcome
 
         update_kwargs = {"ids": [record["ids"][0]]}
         if content is not None:
@@ -1525,19 +1556,26 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
         update_kwargs["metadatas"] = [new_meta]
 
         col.update(**update_kwargs)
+        closets_deleted = _purge_closets_after_write()
         _invalidate_overview_caches()
 
         logger.info("Updated drawer: %s", drawer_id)
 
-        return {
+        outcome = {
             "success": True,
             "drawer_id": drawer_id,
             "wing": new_meta.get("wing", ""),
             "room": new_meta.get("room", ""),
             "closets_deleted": closets_deleted,
         }
+        if revision_id:
+            outcome["revision_id"] = revision_id
+        _wal_result("update_drawer", outcome)
+        return outcome
     except Exception as e:
-        return _embed_failure(e, success=False)
+        outcome = _embed_failure(e, success=False)
+        _wal_result("update_drawer", outcome)
+        return outcome
 
 
 def tool_delete_drawers(drawer_ids: list):
