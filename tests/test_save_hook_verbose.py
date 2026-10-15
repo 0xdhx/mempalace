@@ -1,44 +1,17 @@
-"""TDD: save hook must support verbose mode for developers.
+"""Silent vs verbose save is the Python hook's job, not the legacy shell.
 
-Developers want to see diaries and code in chat.
-Regular users want silent background saves.
-The hook should check a config flag.
+The wrapper must not grow its own MEMPAL_VERBOSE / decision:block fork.
+``mempalace hook run`` reads ``hooks.silent_save``.
 """
 
-import os
+from pathlib import Path
 
 
-class TestSaveHookVerboseMode:
-    """Save hook must have a verbose/silent toggle."""
-
-    def test_hook_checks_verbose_flag(self):
-        """Hook must read a MEMPAL_VERBOSE or similar flag."""
-        hook_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "hooks",
-            "mempal_save_hook.sh",
-        )
-        src = open(hook_path).read()
-        has_verbose = "VERBOSE" in src or "verbose" in src or "SILENT" in src or "silent" in src
-        assert has_verbose, (
-            "Save hook has no verbose/silent toggle. "
-            "Developers need to see diaries and code in chat. "
-            "Add MEMPAL_VERBOSE flag: when true, hook blocks and asks "
-            "agent to write; when false, saves silently."
-        )
-
-    def test_verbose_mode_blocks(self):
-        """When verbose, hook should use decision: block so agent writes in chat."""
-        hook_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "hooks",
-            "mempal_save_hook.sh",
-        )
-        src = open(hook_path).read()
-        # There should be TWO decision paths: block (verbose) and allow (silent)
-        has_block = '"decision": "block"' in src or "'decision': 'block'" in src
-        has_allow = '"decision": "allow"' in src or "'decision': 'allow'" in src
-        assert has_block and has_allow, (
-            "Hook needs both 'block' (verbose/developer) and 'allow' (silent) paths. "
-            f"Has block: {has_block}, has allow: {has_allow}"
-        )
+def test_save_hook_does_not_reimplement_verbose_mode():
+    src = (Path(__file__).resolve().parents[1] / "hooks" / "mempal_save_hook.sh").read_text(
+        encoding="utf-8"
+    )
+    code = "\n".join(line for line in src.splitlines() if not line.lstrip().startswith("#"))
+    assert "MEMPAL_VERBOSE" not in code
+    assert "decision" not in code
+    assert "hook run --hook stop --harness claude-code" in code
