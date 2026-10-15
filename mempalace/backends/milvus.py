@@ -27,6 +27,7 @@ from ..config import (
     normalize_milvus_consistency_level,
     strip_lone_surrogates,
 )
+from ._remote_common import jsonable_metadata, publish_marker
 from ._sidecar import EMBEDDER_SIDECAR_FILENAME, read_embedder_sidecar, write_embedder_sidecar
 from .base import (
     BackendClosedError,
@@ -235,16 +236,10 @@ def _utf8_len(value: str) -> int:
 
 
 def _jsonable_metadata(meta: dict | None) -> dict:
-    cleaned = {}
-    for key, value in (meta or {}).items():
+    for key in meta or {}:
         if key in RESERVED_FIELDS:
             raise ValueError(f"metadata key {key!r} clashes with a reserved Milvus field")
-        try:
-            json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            value = str(value)
-        cleaned[str(key)] = value
-    return cleaned
+    return jsonable_metadata(meta)
 
 
 def _slug(value: str, fallback: str = "collection") -> str:
@@ -1035,13 +1030,7 @@ class MilvusBackend(BaseBackend):
             "palace_id": palace.id,
             "milvus": self._marker_target(palace, config),
         }
-        marker_path = self._marker_path(palace.local_path)
-        with open(marker_path, "w", encoding="utf-8") as f:
-            json.dump(marker, f, indent=2, ensure_ascii=False)
-        try:
-            os.chmod(marker_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
+        publish_marker(self._marker_path(palace.local_path), marker, target_key="milvus")
 
     @staticmethod
     def _embedder_sidecar_path(palace: PalaceRef) -> Optional[str]:

@@ -49,6 +49,7 @@ from urllib import parse as urlparse
 import numpy as np
 
 from ..config import strip_lone_surrogates
+from ._remote_common import jsonable_metadata, publish_marker
 from ._sidecar import EMBEDDER_SIDECAR_FILENAME, read_embedder_sidecar, write_embedder_sidecar
 from .base import (
     BackendClosedError,
@@ -367,11 +368,7 @@ def _normalize_vectors(embeddings: list[list[float]]) -> tuple[list[list[float]]
 
 
 def _jsonable_metadata(meta: dict | None) -> dict:
-    try:
-        value = json.loads(json.dumps(meta or {}, ensure_ascii=False))
-    except (TypeError, ValueError):
-        value = {}
-    return value if isinstance(value, dict) else {}
+    return jsonable_metadata(meta)
 
 
 def _vector_distance(query: np.ndarray, vector: list[float] | None) -> Optional[float]:
@@ -1867,13 +1864,7 @@ class PgVectorBackend(BaseBackend):
             "palace_id": palace.id,
             "pgvector": self._marker_target(palace, config),
         }
-        marker_path = self._marker_path(palace.local_path)
-        with open(marker_path, "w", encoding="utf-8") as f:
-            json.dump(marker, f, indent=2, ensure_ascii=False)
-        try:
-            os.chmod(marker_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
+        publish_marker(self._marker_path(palace.local_path), marker, target_key="pgvector")
 
     # Embedder identity lives in a sidecar, NOT the backend marker: the marker's
     # presence signals "palace initialized" (reads raise CollectionNotInitialized
