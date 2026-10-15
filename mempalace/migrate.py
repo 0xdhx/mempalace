@@ -22,11 +22,9 @@ import errno
 import glob
 import os
 import shutil
-import sqlite3
 import tempfile
 import uuid
 from collections import defaultdict
-from contextlib import closing
 from datetime import datetime
 
 from .backups import copy_palace_dir, prune_backups
@@ -54,75 +52,152 @@ def _restore_stale_palace(palace_path: str, stale_path: str) -> None:
 
 
 def extract_drawers_from_sqlite(db_path: str) -> list:
-    """Read all drawers directly from ChromaDB's SQLite, bypassing the API.
+    """Read drawer rows from ChromaDB's SQLite, bypassing the API.
 
     Works regardless of which ChromaDB version created the database.
     Returns list of dicts with 'id', 'document', and 'metadata' keys.
 
-    The connection is wrapped in ``contextlib.closing`` so an exception
-    during extraction does not leak the SQLite handle. On Windows that
-    would leave a file lock on ``chroma.sqlite3`` and prevent the rest
-    of the migration from touching the palace directory.
+    Only the drawers collection is read. An unscoped join also returns
+    closets and assets, and filing those rows into ``mempalace_drawers``
+    is how a migrate used to destroy the other collections. The read goes
+    through :func:`mempalace.repair.extract_via_sqlite`, which opens the
+    database with :func:`mempalace.backends._inproc_sqlite.open_reader` and
+    closes it before returning.
     """
-    with closing(sqlite3.connect(db_path)) as conn:
-        conn.row_factory = sqlite3.Row
+    from .repair import _drawers_collection_name, extract_via_sqlite
 
-        # Get all embedding IDs and their documents
-        rows = conn.execute(
-            """
-            SELECT e.embedding_id,
-                   MAX(CASE WHEN em.key = 'chroma:document' THEN em.string_value END) as document
-            FROM embeddings e
-            JOIN embedding_metadata em ON em.id = e.id
-            GROUP BY e.embedding_id
-        """
-        ).fetchall()
+    palace_path = os.path.dirname(os.path.abspath(db_path))
+    drawers = []
+    for embedding_id, document, metadata in extract_via_sqlite(
+        palace_path, _drawers_collection_name()
+    ):
+        if not document:
+            continue
+        drawers.append(
+            {
+                "id": embedding_id,
+                "document": document,
+                "metadata": metadata,
+            }
+        )
+    return drawers
 
-        drawers = []
-        for row in rows:
-            embedding_id = row["embedding_id"]
-            document = row["document"]
+
+def _sibling_collection_rows(palace_path: str) -> dict:
+    """Rows in recoverable collections other than drawers.
+
+    A file that is not a SQLite database yields nothing. Callers that are
+    exercising the swap with a stand-in ``chroma.sqlite3`` never see a
+    schema error from this helper. A real palace that fails to read raises.
+    """
+    from .backends._magic import has_sqlite_magic
+    from .repair import _drawers_collection_name, _recoverable_collections, extract_via_sqlite
+
+    db_path = os.path.join(palace_path, "chroma.sqlite3")
+    if not has_sqlite_magic(db_path):
+        return {}
+
+    drawer_name = _drawers_collection_name()
+    found = {}
+    for name in _recoverable_collections(palace_path):
+        if name == drawer_name:
+            continue
+        rows = []
+        for embedding_id, document, metadata in extract_via_sqlite(palace_path, name):
             if not document:
                 continue
-
-            # Get metadata for this embedding
-            meta_rows = conn.execute(
-                """
-                SELECT em.key, em.string_value, em.int_value, em.float_value, em.bool_value
-                FROM embedding_metadata em
-                JOIN embeddings e ON e.id = em.id
-                WHERE e.embedding_id = ?
-                  AND em.key NOT LIKE 'chroma:%'
-            """,
-                (embedding_id,),
-            ).fetchall()
-
-            metadata = {}
-            for mr in meta_rows:
-                key = mr["key"]
-                if mr["string_value"] is not None:
-                    metadata[key] = mr["string_value"]
-                elif mr["int_value"] is not None:
-                    metadata[key] = mr["int_value"]
-                elif mr["float_value"] is not None:
-                    metadata[key] = mr["float_value"]
-                elif mr["bool_value"] is not None:
-                    metadata[key] = bool(mr["bool_value"])
-
-            drawers.append(
+            rows.append(
                 {
                     "id": embedding_id,
                     "document": document,
-                    "metadata": metadata,
+                    "metadata": metadata or {},
                 }
             )
+        if rows:
+            found[name] = rows
+    return found
 
-    return drawers
+
+def _import_collection_rows(backend, palace_path: str, collection_name: str, rows: list) -> int:
+    """Add ``rows`` to ``collection_name`` and return the collection's count."""
+    col = backend.get_or_create_collection(palace_path, collection_name)
+    batch_size = 500
+    for i in range(0, len(rows), batch_size):
+        batch = rows[i : i + batch_size]
+        col.add(
+            ids=[row["id"] for row in batch],
+            documents=[row["document"] for row in batch],
+            metadatas=[row["metadata"] for row in batch],
+        )
+    return col.count()
+
+
+def _preserve_sidecars(source_palace: str, dest_palace: str) -> None:
+    """Copy the knowledge graph and embedder sidecar into ``dest_palace``.
+
+    The rebuilt directory replaces the live palace. Anything not copied
+    here is gone after the swap, including the graph and the recorded
+    embedder identity.
+    """
+    from .backends._sidecar import EMBEDDER_SIDECAR_FILENAME
+    from .repair import _copy_file_no_follow, _preserve_knowledge_graph_sqlite
+
+    _preserve_knowledge_graph_sqlite(source_palace, dest_palace)
+    sidecar = os.path.join(source_palace, EMBEDDER_SIDECAR_FILENAME)
+    if not os.path.isfile(sidecar):
+        return
+    os.makedirs(dest_palace, exist_ok=True)
+    _copy_file_no_follow(
+        sidecar,
+        os.path.join(dest_palace, EMBEDDER_SIDECAR_FILENAME),
+        replace=True,
+    )
+
+
+def _counts_match(
+    drawer_count: int, drawers: list, sibling_rows: dict, sibling_counts: dict
+) -> bool:
+    if drawer_count != len(drawers):
+        return False
+    for name, rows in sibling_rows.items():
+        if sibling_counts.get(name) != len(rows):
+            return False
+    return True
+
+
+def _unique_aside_path(palace_path: str) -> str:
+    """A rollback directory this call creates, never an existing ``.old``.
+
+    ``_restore_stale_palace`` tells the operator the original palace is at
+    the aside path. Deleting a pre-existing ``.old`` removes the only copy
+    that message can point at.
+    """
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = f"{palace_path}.old.{stamp}.{os.getpid()}"
+    if not os.path.lexists(candidate):
+        return candidate
+    return f"{candidate}.{uuid.uuid4().hex[:8]}"
+
+
+def _refuse_swap(
+    drawer_count: int, drawers: list, sibling_rows: dict, sibling_counts: dict
+) -> None:
+    print(
+        "  ERROR: verification failed before swap. Refusing to swap; the palace was left unchanged."
+    )
+    if drawer_count != len(drawers):
+        print(f"  ERROR: drawers count {drawer_count} != {len(drawers)} extracted.")
+    for name, rows in sibling_rows.items():
+        got = sibling_counts.get(name)
+        if got != len(rows):
+            print(f"  ERROR: {name} count {got} != {len(rows)} extracted.")
 
 
 def detect_chromadb_version(db_path: str) -> str:
     """Detect which ChromaDB version created the database by checking schema."""
-    conn = sqlite3.connect(db_path)
+    from .backends._inproc_sqlite import open_reader as open_palace_reader
+
+    conn = open_palace_reader(db_path)
     try:
         # 1.x has schema_str column in collections table
         cols = [r[1] for r in conn.execute("PRAGMA table_info(collections)").fetchall()]
@@ -217,7 +292,7 @@ def collection_write_roundtrip_works(col) -> bool:
 
 def migrate(palace_path: str, dry_run: bool = False, confirm: bool = False):
     """Migrate a palace to the currently installed ChromaDB version."""
-    from .backends.chroma import ChromaBackend
+    from .palace import MineAlreadyRunning, mine_palace_lock
 
     palace_path = os.path.abspath(os.path.expanduser(palace_path))
     db_path = os.path.join(palace_path, "chroma.sqlite3")
@@ -225,6 +300,21 @@ def migrate(palace_path: str, dry_run: bool = False, confirm: bool = False):
     if not os.path.isdir(palace_path) or not contains_palace_database(palace_path):
         print(f"\n  No palace database found at {db_path}")
         return False
+
+    try:
+        with mine_palace_lock(palace_path):
+            return _migrate_locked(palace_path, dry_run=dry_run, confirm=confirm)
+    except MineAlreadyRunning as exc:
+        print(f"  Another writer already holds this palace: {exc}")
+        print("  Migration stopped before reading or copying anything; nothing changed.")
+        raise SystemExit(2) from exc
+
+
+def _migrate_locked(palace_path: str, dry_run: bool = False, confirm: bool = False):
+    """Body of :func:`migrate`, called while holding ``mine_palace_lock``."""
+    from .backends.chroma import ChromaBackend
+
+    db_path = os.path.join(palace_path, "chroma.sqlite3")
 
     print(f"\n{'=' * 60}")
     print("  MemPalace Migrate")
@@ -265,8 +355,9 @@ def migrate(palace_path: str, dry_run: bool = False, confirm: bool = False):
         print(f" ({capacity_info.get('message', 'divergence detected')})")
         print(" Extracting from SQLite directly...")
     else:
+        probe = ChromaBackend()
         try:
-            col = ChromaBackend().get_collection(palace_path, "mempalace_drawers")
+            col = probe.get_collection(palace_path, "mempalace_drawers")
             count = col.count()
 
             if collection_write_roundtrip_works(col):
@@ -281,6 +372,10 @@ def migrate(palace_path: str, dry_run: bool = False, confirm: bool = False):
         except Exception:
             print(f"\n Palace is NOT readable by chromadb {target_version}.")
             print(" Extracting from SQLite directly...")
+        finally:
+            # Drop the probe client before the SQLite read. A raw connect
+            # beside a live Chroma handle releases Chroma's POSIX lock.
+            probe.close()
 
     # Extract all drawers via raw SQL
     drawers = extract_drawers_from_sqlite(db_path)
@@ -337,32 +432,44 @@ def migrate(palace_path: str, dry_run: bool = False, confirm: bool = False):
     try:
         print(f"  Creating fresh palace in {temp_palace}...")
         fresh_backend = ChromaBackend()
-        col = fresh_backend.get_or_create_collection(temp_palace, "mempalace_drawers")
+        try:
+            col = fresh_backend.get_or_create_collection(temp_palace, "mempalace_drawers")
 
-        # Re-import in batches
-        batch_size = 500
-        imported = 0
-        for i in range(0, len(drawers), batch_size):
-            batch = drawers[i : i + batch_size]
-            col.add(
-                ids=[d["id"] for d in batch],
-                documents=[d["document"] for d in batch],
-                metadatas=[d["metadata"] for d in batch],
-            )
-            imported += len(batch)
-            print(f"  Imported {imported}/{len(drawers)} drawers...")
+            # Re-import drawers in batches. Closets and assets are separate
+            # collections; they are not added here.
+            batch_size = 500
+            imported = 0
+            for i in range(0, len(drawers), batch_size):
+                batch = drawers[i : i + batch_size]
+                col.add(
+                    ids=[d["id"] for d in batch],
+                    documents=[d["document"] for d in batch],
+                    metadatas=[d["metadata"] for d in batch],
+                )
+                imported += len(batch)
+                print(f"  Imported {imported}/{len(drawers)} drawers...")
 
-        # Verify before swapping
-        final_count = col.count()
-        del col
-        del fresh_backend
+            final_count = col.count()
+            sibling_rows = _sibling_collection_rows(palace_path)
+            sibling_counts = {
+                name: _import_collection_rows(fresh_backend, temp_palace, name, rows)
+                for name, rows in sibling_rows.items()
+            }
+            _preserve_sidecars(palace_path, temp_palace)
+            # Compare before the rename. A mismatch after the swap can only
+            # warn, and the aside copy is already what a rollback would need.
+            if not _counts_match(final_count, drawers, sibling_rows, sibling_counts):
+                _refuse_swap(final_count, drawers, sibling_rows, sibling_counts)
+                return False
+        finally:
+            fresh_backend.close()
 
         # Swap: rename old palace aside, then move new one into place.
         # This avoids a window where both old and new are missing.
+        # The aside name is unique so a pre-existing ``.old`` — the path a
+        # failed rollback's CRITICAL line points at — is not deleted.
         print("  Swapping old palace for migrated version...")
-        stale_path = palace_path + ".old"
-        if os.path.exists(stale_path):
-            shutil.rmtree(stale_path)
+        stale_path = _unique_aside_path(palace_path)
         os.replace(palace_path, stale_path)
         try:
             os.replace(temp_palace, palace_path)
@@ -377,6 +484,9 @@ def migrate(palace_path: str, dry_run: bool = False, confirm: bool = False):
             except Exception:
                 _restore_stale_palace(palace_path, stale_path)
                 raise
+        # This aside is the one this call just created. The CRITICAL message
+        # is only printed when rollback fails, and that path raises before
+        # this removal, so the directory the message names is still on disk.
         shutil.rmtree(stale_path, ignore_errors=True)
     finally:
         # On the happy path os.replace/shutil.move consumed temp_palace, so
@@ -389,9 +499,6 @@ def migrate(palace_path: str, dry_run: bool = False, confirm: bool = False):
     print("\n  Migration complete.")
     print(f"  Drawers migrated: {final_count}")
     print(f"  Backup at: {backup_path}")
-
-    if final_count != len(drawers):
-        print(f"  WARNING: Expected {len(drawers)}, got {final_count}")
 
     print(f"\n{'=' * 60}\n")
     return True
@@ -547,6 +654,21 @@ def migrate_wing_names(palace_path: str, dry_run: bool = False, confirm: bool = 
 
     Returns True if anything was (or, in dry-run, would be) migrated.
     """
+    from .palace import MineAlreadyRunning, mine_palace_lock
+
+    palace_path = os.path.abspath(os.path.expanduser(palace_path))
+    try:
+        with mine_palace_lock(palace_path):
+            return _migrate_wing_names_locked(palace_path, dry_run=dry_run, confirm=confirm)
+    except MineAlreadyRunning as exc:
+        print(f"  Another writer already holds this palace: {exc}")
+        print("  Wing-name migration stopped before changing anything; nothing changed.")
+        raise SystemExit(2) from exc
+
+
+def _migrate_wing_names_locked(
+    palace_path: str, dry_run: bool = False, confirm: bool = False
+) -> bool:
     from .palace import get_closets_collection, get_collection
 
     try:

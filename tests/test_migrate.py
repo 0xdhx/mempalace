@@ -168,21 +168,32 @@ def test_collection_write_roundtrip_fails_when_delete_silently_drops():
 
 
 def _make_minimal_chromadb_sqlite(tmp_path):
-    """Build a SQLite file with the minimal schema extract_drawers_from_sqlite reads."""
+    """Schema ``extract_via_sqlite`` reads, with a closet row that must not leak."""
     db = tmp_path / "chroma.sqlite3"
     conn = sqlite3.connect(str(db))
     conn.executescript(
         """
-        CREATE TABLE embeddings (id INTEGER PRIMARY KEY, embedding_id TEXT);
+        CREATE TABLE collections (id TEXT PRIMARY KEY, name TEXT);
+        CREATE TABLE segments (id TEXT PRIMARY KEY, collection TEXT, scope TEXT);
+        CREATE TABLE embeddings (
+            id INTEGER PRIMARY KEY, embedding_id TEXT, segment_id TEXT
+        );
         CREATE TABLE embedding_metadata (
             id INTEGER, key TEXT,
             string_value TEXT, int_value INTEGER,
             float_value REAL, bool_value INTEGER
         );
-        INSERT INTO embeddings VALUES (1, 'd-001');
+        INSERT INTO collections VALUES ('col-d', 'mempalace_drawers');
+        INSERT INTO collections VALUES ('col-c', 'mempalace_closets');
+        INSERT INTO segments VALUES ('seg-d', 'col-d', 'METADATA');
+        INSERT INTO segments VALUES ('seg-c', 'col-c', 'METADATA');
+        INSERT INTO embeddings VALUES (1, 'd-001', 'seg-d');
+        INSERT INTO embeddings VALUES (2, 'c-001', 'seg-c');
         INSERT INTO embedding_metadata VALUES (1, 'chroma:document', 'hello', NULL, NULL, NULL);
         INSERT INTO embedding_metadata VALUES (1, 'wing', 'personal', NULL, NULL, NULL);
         INSERT INTO embedding_metadata VALUES (1, 'room', '2026-04-26', NULL, NULL, NULL);
+        INSERT INTO embedding_metadata VALUES (2, 'chroma:document', 'closet line', NULL, NULL, NULL);
+        INSERT INTO embedding_metadata VALUES (2, 'wing', 'personal', NULL, NULL, NULL);
         """
     )
     conn.commit()
@@ -197,6 +208,7 @@ def test_extract_drawers_returns_drawers(tmp_path):
     assert drawers[0]["id"] == "d-001"
     assert drawers[0]["document"] == "hello"
     assert drawers[0]["metadata"] == {"wing": "personal", "room": "2026-04-26"}
+    assert all(row["id"] != "c-001" for row in drawers)
 
 
 def test_migrate_skips_count_on_hnsw_divergence(tmp_path, capsys):
@@ -501,3 +513,133 @@ def test_migrate_restores_palace_on_swap_failure(tmp_path, capsys):
     # No CRITICAL message — rollback succeeded cleanly.
     out = capsys.readouterr().out
     assert "CRITICAL" not in out
+
+
+def _ids_and_docs(collection):
+    result = collection.get(include=["documents"])
+    ids = list(result.ids if hasattr(result, "ids") else result["ids"])
+    docs = list(result.documents if hasattr(result, "documents") else result["documents"])
+    return dict(zip(ids, docs))
+
+
+def _seed_real_palace(palace):
+    """Drawers, a closet, an asset, the graph, and the embedder sidecar."""
+    from mempalace.backends.chroma import ChromaBackend
+
+    backend = ChromaBackend()
+    try:
+        backend.get_or_create_collection(str(palace), "mempalace_drawers").add(
+            ids=["d1"],
+            documents=["drawer words stay here"],
+            metadatas=[{"wing": "w", "room": "r"}],
+        )
+        backend.get_or_create_collection(str(palace), "mempalace_closets").add(
+            ids=["c1"],
+            documents=["topic|Alice|→d1"],
+            metadatas=[{"wing": "w", "source_file": "a.md"}],
+        )
+        backend.get_or_create_collection(str(palace), "mempalace_assets").add(
+            ids=["a1"],
+            documents=["photo of the dock"],
+            metadatas=[{"wing": "w", "room": "r"}],
+        )
+    finally:
+        backend.close()
+    (palace / "knowledge_graph.sqlite3").write_bytes(b"kg-bytes-v1")
+    (palace / "mempalace_embedder.json").write_text(
+        '{"mempalace_drawers": {"model": "test-model"}}',
+        encoding="utf-8",
+    )
+
+
+def test_migrate_rebuild_keeps_closets_graph_sidecar_and_old_rollback(tmp_path, monkeypatch):
+    """The extractor is not mocked. A real multi-collection palace is rebuilt.
+
+    Closet and asset rows must not come back as drawers, and the knowledge
+    graph, embedder sidecar, and a pre-existing ``.old`` rollback must survive.
+    """
+    monkeypatch.setenv("MEMPALACE_MAX_BACKUPS", "4")
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    _seed_real_palace(palace)
+    (palace / "sentinel.txt").write_text("live", encoding="utf-8")
+    rollback = tmp_path / "palace.old"
+    rollback.mkdir()
+    (rollback / "DO_NOT_DELETE").write_text("previous rollback", encoding="utf-8")
+
+    with patch("mempalace.migrate.collection_write_roundtrip_works", return_value=False):
+        assert migrate(str(palace), confirm=True) is True
+
+    from mempalace.backends.chroma import ChromaBackend
+
+    backend = ChromaBackend()
+    try:
+        drawers = _ids_and_docs(backend.get_collection(str(palace), "mempalace_drawers"))
+        closets = _ids_and_docs(backend.get_collection(str(palace), "mempalace_closets"))
+        assets = _ids_and_docs(backend.get_collection(str(palace), "mempalace_assets"))
+    finally:
+        backend.close()
+
+    # The live directory was replaced. A no-op "already writable" return would
+    # have left this file in place, and the assertions below would pass
+    # without ever running the extractor.
+    assert not (palace / "sentinel.txt").exists()
+    assert drawers == {"d1": "drawer words stay here"}
+    assert "c1" not in drawers
+    assert "a1" not in drawers
+    assert closets == {"c1": "topic|Alice|→d1"}
+    assert assets == {"a1": "photo of the dock"}
+    assert (palace / "knowledge_graph.sqlite3").read_bytes() == b"kg-bytes-v1"
+    assert "test-model" in (palace / "mempalace_embedder.json").read_text(encoding="utf-8")
+    assert (rollback / "DO_NOT_DELETE").read_text(encoding="utf-8") == "previous rollback"
+
+
+def test_count_mismatch_does_not_swap_or_delete_rollback(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MEMPALACE_MAX_BACKUPS", "4")
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    _seed_real_palace(palace)
+    (palace / "sentinel.txt").write_text("live", encoding="utf-8")
+    rollback = tmp_path / "palace.old"
+    rollback.mkdir()
+    (rollback / "DO_NOT_DELETE").write_text("previous rollback", encoding="utf-8")
+
+    from mempalace.backends.chroma import ChromaCollection
+
+    real_count = ChromaCollection.count
+
+    def inflated(self):
+        return real_count(self) + 1
+
+    monkeypatch.setattr(ChromaCollection, "count", inflated)
+    with patch("mempalace.migrate.collection_write_roundtrip_works", return_value=False):
+        assert migrate(str(palace), confirm=True) is False
+
+    out = capsys.readouterr().out
+    assert "left unchanged" in out
+    assert "Migration complete" not in out
+    assert (palace / "sentinel.txt").read_text(encoding="utf-8") == "live"
+    assert (rollback / "DO_NOT_DELETE").read_text(encoding="utf-8") == "previous rollback"
+    assert (palace / "knowledge_graph.sqlite3").read_bytes() == b"kg-bytes-v1"
+
+
+def test_migrate_reports_a_held_palace_lock(tmp_path, capsys):
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    (palace / "chroma.sqlite3").write_bytes(b"db")
+    from mempalace.palace import MineAlreadyRunning
+
+    with (
+        patch(
+            "mempalace.palace.mine_palace_lock",
+            side_effect=MineAlreadyRunning("palace held by 9"),
+        ),
+        pytest.raises(SystemExit) as caught,
+    ):
+        migrate(str(palace), dry_run=True)
+
+    assert caught.value.code == 2
+    out = capsys.readouterr().out
+    assert "Another writer already holds this palace" in out
+    assert "nothing changed" in out
+    assert (palace / "chroma.sqlite3").read_bytes() == b"db"
