@@ -30,11 +30,14 @@ from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from .backends.base import BaseCollection, PalaceNotFoundError
 from .config import MempalaceConfig, normalize_wing_name
 from .dynamics import initialize_dynamics_fields, potentiate
+from .fsio import CorruptStateError
+from .fsio import atomic_write_json as _atomic_write_json
+from .fsio import read_json_for_update as _read_json_for_update
 from .palace import get_collection as _get_palace_collection
 from .palace import mine_lock
-from .backends.base import BaseCollection
 
 logger = logging.getLogger("mempalace_graph")
 
@@ -182,6 +185,16 @@ def invalidate_graph_cache():
         _graph_cache_time = 0.0
 
 
+class GraphUnavailable(RuntimeError):
+    """The palace could not be opened for a graph read.
+
+    Absence (no directory, no collection yet) is not this error: callers
+    still see an empty graph. A lock, a corrupt database, or any other
+    open failure is, so a tool can say the palace is unavailable instead
+    of reporting that it has no rooms.
+    """
+
+
 def _get_collection(config=None):
     config = config or MempalaceConfig()
     try:
@@ -189,9 +202,19 @@ def _get_collection(config=None):
             config.palace_path,
             collection_name=config.collection_name,
             create=False,
+            read_only=True,
         )
-    except Exception:
+    except PalaceNotFoundError:
         return None
+    except Exception as exc:
+        logger.warning(
+            "Palace at %s could not be opened for a graph read: %s",
+            config.palace_path,
+            exc,
+        )
+        raise GraphUnavailable(
+            f"palace at {config.palace_path} could not be opened: {exc}"
+        ) from exc
 
 
 def _iter_all_metadata(col):
@@ -497,11 +520,15 @@ def _legacy_tunnel_file() -> str:
     return os.path.join(os.path.expanduser("~"), ".mempalace", "tunnels.json")
 
 
-def _load_tunnels(config=None):
+def _load_tunnels(config=None, *, for_write=False):
     """Load explicit tunnels from disk.
 
-    Returns an empty list if the file is missing or corrupt (e.g. truncated
-    by a crash mid-write on a system that lacks atomic-rename semantics).
+    A read (``for_write=False``) returns an empty list if the file is
+    missing or corrupt and leaves the file where it is. A write
+    (``for_write=True``) returns that empty list only when the file is
+    missing. A file that does not parse is moved aside and
+    :class:`CorruptStateError` is raised, so the following save cannot
+    publish a one-entry document over it.
 
     Backwards-compatibility: prior to 3.3.6 the tunnel file was hardcoded at
     ``~/.mempalace/tunnels.json`` regardless of the configured palace_path.
@@ -516,6 +543,8 @@ def _load_tunnels(config=None):
     every helper call within a single create_tunnel cycle.
     """
     current_tunnel_file = _get_tunnel_file(config)
+    if for_write:
+        return list(_read_json_for_update(current_tunnel_file, expect=list) or [])
     if os.path.exists(current_tunnel_file):
         try:
             with open(current_tunnel_file, "r", encoding="utf-8") as f:
@@ -542,15 +571,10 @@ def _load_tunnels(config=None):
 def _save_tunnels(tunnels, config=None):
     """Persist explicit tunnels atomically.
 
-    Writes to ``tunnels.json.tmp`` then ``os.replace``s it into place, so
-    a crash mid-write can never leave a partial/empty tunnels.json that
-    silently wipes every tunnel on next read.
-
-    Also restricts the parent directory to 0o700 and the file to 0o600 —
-    tunnels reveal cross-wing connections (which projects/people/rooms
-    the user has explicitly linked) and should not be world-readable on
-    shared Linux/multi-user systems. Matches the file-permission pattern
-    established by #814 for the other sensitive palace files.
+    The bytes are published by :func:`mempalace.fsio.atomic_write_json`, so
+    a crash mid-write leaves the previous file in place. The parent
+    directory is restricted to 0o700 and the file to 0o600 — tunnels
+    reveal cross-wing connections and should not be world-readable.
 
     ``config`` may be passed in by the caller to avoid re-instantiating
     ``MempalaceConfig`` on every save.
@@ -563,20 +587,7 @@ def _save_tunnels(tunnels, config=None):
     except (OSError, NotImplementedError):
         # Windows / unsupported filesystems — tolerate.
         pass
-    tmp_path = tunnel_file + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(tunnels, f, indent=2)
-        f.flush()
-        try:
-            os.fsync(f.fileno())
-        except OSError:
-            # Not all filesystems (or Windows file handles) support fsync — tolerate.
-            pass
-    os.replace(tmp_path, tunnel_file)
-    try:
-        os.chmod(tunnel_file, 0o600)
-    except (OSError, NotImplementedError):
-        pass
+    _atomic_write_json(tunnel_file, tunnels)
 
 
 def _endpoint_key(wing: str, room: str) -> str:
@@ -657,7 +668,7 @@ class _TunnelBatchState:
 
     def load(self):
         if self.tunnels is None:
-            self.tunnels = _load_tunnels(self.config)
+            self.tunnels = _load_tunnels(self.config, for_write=True)
             # setdefault keeps the first record for a duplicated id, matching
             # the per-call path's linear scan.
             self.index = {}
@@ -853,7 +864,7 @@ def create_tunnel(
     # create_tunnel calls can both read the same snapshot and the later
     # writer silently drops the earlier writer's tunnel.
     with mine_lock(tunnel_file):
-        tunnels = _load_tunnels(config)
+        tunnels = _load_tunnels(config, for_write=True)
         existing = next((t for t in tunnels if t.get("id") == tunnel_id), None)
         stored = _upsert_tunnel(tunnels, existing, tunnel)
         _save_tunnels(tunnels, config)
@@ -887,7 +898,7 @@ def list_tunnels(wing: str = None):
 def delete_tunnel(tunnel_id: str):
     """Delete an explicit tunnel by ID. Returns ``{"deleted": <id>}``."""
     with mine_lock(_get_tunnel_file()):
-        tunnels = _load_tunnels()
+        tunnels = _load_tunnels(for_write=True)
         tunnels = [t for t in tunnels if t.get("id") != tunnel_id]
         _save_tunnels(tunnels)
     return {"deleted": tunnel_id}
@@ -907,7 +918,7 @@ def record_tunnel_traversal(tunnel_ids, config=None) -> int:
     touched = 0
     try:
         with mine_lock(_get_tunnel_file(config)):
-            tunnels = _load_tunnels(config)
+            tunnels = _load_tunnels(config, for_write=True)
             for t in tunnels:
                 if isinstance(t, dict) and t.get("id") in wanted:
                     initialize_dynamics_fields(t)
@@ -915,6 +926,8 @@ def record_tunnel_traversal(tunnel_ids, config=None) -> int:
                     touched += 1
             if touched:
                 _save_tunnels(tunnels, config)
+    except CorruptStateError:
+        raise
     except Exception:
         logger.debug("Recording tunnel traversal failed", exc_info=True)
         return 0

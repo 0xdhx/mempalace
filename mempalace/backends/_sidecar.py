@@ -11,8 +11,11 @@ identity immediately — the same approach the chroma backend uses.
 
 import json
 import os
-import tempfile
 from typing import Optional
+
+from ..fsio import CorruptStateError
+from ..fsio import atomic_write_json as _atomic_write_json
+from ..fsio import read_json_for_update as _read_json_for_update
 
 EMBEDDER_SIDECAR_FILENAME = "mempalace_embedder.json"
 
@@ -70,23 +73,33 @@ def write_embedder_sidecar(path: Optional[str], collection_name: Optional[str], 
             os.chmod(directory, 0o700)
         except (OSError, NotImplementedError):
             pass
-    data: dict = {}
-    if os.path.isfile(path):
-        try:
-            with open(path, encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                data = loaded
-        except (OSError, json.JSONDecodeError):
-            data = {}
-    data[collection_name] = {
-        "model_name": str(identity.model_name),
-        "dimension": int(identity.dimension or 0),
-    }
+    from ..palace import mine_lock
+
     try:
-        _write_atomically(path, data)
+        with mine_lock(path):
+            data = _sidecar_for_update(path)
+            data[collection_name] = {
+                "model_name": str(identity.model_name),
+                "dimension": int(identity.dimension or 0),
+            }
+            _write_atomically(path, data)
     except (OSError, NotImplementedError, TypeError, ValueError) as exc:
         raise _record_error(path, collection_name, exc) from exc
+
+
+def _sidecar_for_update(path: str) -> dict:
+    """The sidecar dict a write may merge into.
+
+    A missing file is ``{}``. A file that does not parse is not replaced
+    with that empty dict: the bytes are moved aside and the write is refused.
+    """
+    if not os.path.lexists(path):
+        return {}
+    try:
+        loaded = _read_json_for_update(path, expect=dict)
+    except CorruptStateError:
+        raise
+    return dict(loaded or {})
 
 
 def _record_error(path: str, collection_name: str, exc: BaseException):
@@ -102,33 +115,8 @@ def _record_error(path: str, collection_name: str, exc: BaseException):
 def _write_atomically(path: str, data: dict) -> None:
     """Replace ``path`` with ``data`` as JSON, or leave it untouched.
 
-    The JSON goes to a temp file in the same directory (so ``os.replace``
-    stays on one filesystem), is fsynced, then renamed over the sidecar. An
-    interrupted or failed write leaves the previous sidecar intact instead
-    of a truncated file, which would read back as "no identity recorded".
-    A failure re-raises after the temp file is removed.
+    Published through :func:`mempalace.fsio.atomic_write_json`, so a crash
+    mid-write leaves the previous sidecar intact instead of a truncated
+    file, which would read back as "no identity recorded".
     """
-    tmp_path = None
-    try:
-        fd, tmp_path = tempfile.mkstemp(
-            dir=os.path.dirname(path) or ".", prefix=".mempalace_embedder.", suffix=".tmp"
-        )
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-            f.flush()
-            try:
-                os.fsync(f.fileno())
-            except OSError:
-                pass  # not every filesystem supports fsync
-        try:
-            os.chmod(tmp_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        os.replace(tmp_path, path)
-        tmp_path = None
-    finally:
-        if tmp_path is not None:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    _atomic_write_json(path, data)
