@@ -13,20 +13,18 @@ with back-compat for existing installs:
   4. ~/.config/mempalace (XDG default fallback)
 """
 
-import errno
 import hashlib
 import json
 import math
 import logging
 import os
-import stat
 import re
 import sys
-import tempfile
 from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 
+from . import fsio
 from .write_routing import (
     ResolvedWriteRoutingPolicy,
     RoutingPolicyCandidate,
@@ -484,34 +482,12 @@ def _write_target(path: Path) -> Path:
     where the link was. The error is raised instead, since the caller has to
     write somewhere and there is no safe guess about where.
     """
-    try:
-        is_link = stat.S_ISLNK(os.lstat(str(path)).st_mode)
-    except FileNotFoundError:
-        return path
-    if is_link:
-        return Path(os.path.realpath(str(path)))
-    return path
+    return fsio.write_target(path)
 
 
 def _fsync_directory(directory: Path) -> None:
-    """Make the rename itself durable.
-
-    ``EntityRegistry.save`` spells out why: on ext4 the kernel can acknowledge
-    a rename and, after a crash, come back to the temporary file present and
-    the target still holding the old bytes. Windows cannot open a directory
-    this way at all, and answering nothing there is the same as answering
-    nothing on a filesystem that does not implement it.
-    """
-    try:
-        fd = os.open(str(directory), os.O_RDONLY)
-    except OSError:
-        return
-    try:
-        os.fsync(fd)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
+    """Make the rename itself durable. See ``fsio.fsync_directory``."""
+    fsio.fsync_directory(directory)
 
 
 def _keep_unreadable_file(path: Path):
@@ -529,22 +505,7 @@ def _keep_unreadable_file(path: Path):
     Returns the path the old file now lives at, or ``None`` when there was
     nothing there.
     """
-    path = _write_target(path)
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    fd, target = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f"{path.name}.unreadable-{stamp}-",
-    )
-    os.close(fd)
-    try:
-        os.replace(str(path), target)
-    except FileNotFoundError:
-        _unlink_quietly(target)
-        return None
-    except OSError:
-        _unlink_quietly(target)
-        raise
-    return target
+    return fsio.move_aside(path, label="unreadable", resolve_target=_write_target)
 
 
 def _make_config_dir(directory: Path) -> None:
@@ -572,13 +533,6 @@ def _make_config_dir(directory: Path) -> None:
             pass  # Windows has no Unix permission bits; init() tolerates this too.
 
 
-def _unlink_quietly(path) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
-
-
 def _write_json_in_place(path: Path, payload) -> None:
     """Write without the rename, for a directory that refuses a new name.
 
@@ -587,135 +541,23 @@ def _write_json_in_place(path: Path, payload) -> None:
     setting that is lost outright is worse than one written without
     crash-safety.
     """
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    try:
-        os.chmod(path, 0o600)
-    except (OSError, NotImplementedError):
-        pass
+    fsio.write_json_in_place(path, payload)
 
 
 def _atomic_write_json(path: Path, payload) -> None:
-    """Serialize ``payload`` into ``path`` through a temporary file.
+    """Serialize ``payload`` into ``path`` through ``fsio.atomic_write_json``.
 
-    The rename is what publishes the new contents, so an interrupted write
-    leaves the previous file exactly where it was rather than emptied or half
-    serialized, and the directory is synced afterwards so the rename itself
-    survives a crash, the way ``EntityRegistry.save`` does.
-
-    The temporary file carries this process's pid, so two processes writing
-    the same config never share one. A run killed between the write and the
-    rename leaves that file behind, and nothing here removes it. It is opened
-    ``O_NOFOLLOW``, so a symlink dropped at that name is not written through,
-    and anything else in the way of that name sends the write to a name the
-    directory picks rather than to a write without the rename.
-
-    A directory that will not take a name it chose itself is the one case that
-    falls back to writing in place: a read-only config directory whose config
-    is still writable is what reaches it, and the setters wrote into it
-    without complaint before this.
+    The local names are what a caller (and the regression tests) patch: the
+    directory fsync and the in-place fallback. The publish itself no longer
+    calls ``tempfile.mkstemp``.
     """
-    path = _write_target(path)
-    tmp = str(path.with_name(f"{path.name}.tmp-{os.getpid()}"))
-    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(tmp, flags, 0o600)
-        if os.fstat(fd).st_nlink > 1:
-            # A hard link at that name is not a symlink, so ``O_NOFOLLOW`` lets
-            # it through, and truncating through it would empty a file nobody
-            # named here. The truncate happens below, after this has ruled that
-            # out, and the write goes to a name the directory chose instead.
-            os.close(fd)
-            raise OSError(errno.EMLINK, "temporary name has another link", tmp)
-    except OSError:
-        # This errno belongs to the name, not to the directory. An orphan
-        # another user's run left at that name, a directory dropped there, and
-        # a symlink planted there all answer the way a directory that takes no
-        # new names answers, and giving up the rename on that reading is how
-        # the atomic write turns itself off where it was needed. Ask the
-        # directory for a name of its own instead: what it says about a name
-        # it chooses is about the directory.
-        try:
-            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
-        except OSError as exc:
-            if exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
-                raise
-            # The message follows the write rather than announcing it: a
-            # directory that refuses the temporary file often refuses the
-            # write too, and saying the file was written in place before
-            # finding that out is how the caller's failure message ends up
-            # contradicted.
-            _write_json_in_place(path, payload)
-            print(
-                f"  ! {path.parent} would not take a temporary file, so {path.name} was "
-                "written in place and an interrupted write can truncate it",
-                file=sys.stderr,
-            )
-            return
-    try:
-        # The mode is set before anything is written rather than after: under a
-        # umask that clears the owner's write bit, ``O_CREAT`` leaves the file
-        # at 0400, and one left behind by a killed run is then a name its own
-        # owner cannot open next time.
-        try:
-            os.chmod(tmp, 0o600)
-        except (OSError, NotImplementedError):
-            pass
-        os.ftruncate(fd, 0)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2, ensure_ascii=False)
-            f.flush()
-            os.fsync(f.fileno())
-    except BaseException:
-        _unlink_quietly(tmp)
-        raise
-    try:
-        os.replace(tmp, str(path))
-    except BaseException as exc:
-        if not isinstance(exc, OSError):
-            # A signal between the write and the rename leaves the temporary
-            # file behind for no reason: nothing has been published yet.
-            _unlink_quietly(tmp)
-            raise
-        # Opening a temporary file that already exists needs the file, not the
-        # directory, so a run that reused an orphan at the pid name never asked
-        # the directory anything. The rename is where the directory answers,
-        # and a read-only one answers here rather than above.
-        if exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
-            _unlink_quietly(tmp)
-            raise
-        # The temporary file holds this write, complete and fsynced. Removing
-        # it before writing in place would trade a finished copy for a write
-        # that truncates first, so it is removed after that write returns, and
-        # named if it could not be.
-        try:
-            _write_json_in_place(path, payload)
-        except BaseException:
-            # That write truncates before it serializes, so what was there is
-            # gone whether or not this one finished.
-            print(
-                f"  ! {path.name} was not written and may have been truncated; "
-                f"{tmp} holds what this call was asked to save",
-                file=sys.stderr,
-            )
-            raise
-        _unlink_quietly(tmp)
-        if os.path.exists(tmp):
-            # Removing it needs the directory too, which is what just refused.
-            print(
-                f"  ! {tmp} holds a copy of what was written and could not be "
-                "removed; nothing here removes it later either",
-                file=sys.stderr,
-            )
-        print(
-            f"  ! {path.parent} would not take the rename, so {path.name} was "
-            "written in place and an interrupted write can truncate it",
-            file=sys.stderr,
-        )
-        return
-    _fsync_directory(path.parent)
+    fsio.atomic_write_json(
+        path,
+        payload,
+        resolve_target=_write_target,
+        write_in_place=_write_json_in_place,
+        sync_directory=_fsync_directory,
+    )
 
 
 def _json_type_name(value) -> str:
