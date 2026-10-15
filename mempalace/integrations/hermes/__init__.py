@@ -7,12 +7,9 @@ so MemPalace can be selected as ``memory.provider: mempalace`` in
 Design notes
 ------------
 
-* ChromaDB access goes through ``mempalace.backends.chroma.ChromaBackend``
-  rather than a raw ``chromadb.PersistentClient``. This ensures the
-  embedding function returned by ``mempalace.embedding.get_embedding_function``
-  is bound to the collection, fixing the embedding-dimension mismatch that
-  silently broke the three earlier Hermes-side PRs (NousResearch/hermes-agent
-  #5671, #12203, #9761) on existing palaces.
+* Collection access goes through ``mempalace.palace.get_collection`` so the
+  configured backend is used (not a hidden Chroma palace) and the embedding
+  function stays bound to the collection. Writes take ``mine_palace_lock``.
 
 * Per-turn writes go through a bounded background queue. The agent loop
   never blocks on ChromaDB or SQLite.
@@ -67,11 +64,10 @@ import queue
 import re
 import threading
 from collections import deque
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from mempalace.backends.chroma import ChromaBackend
 from mempalace.config import (
     MempalaceConfig,
     sanitize_iso_temporal,
@@ -81,6 +77,7 @@ from mempalace.config import (
 from mempalace.convo_miner import file_conversation_exchange
 from mempalace.knowledge_graph import KnowledgeGraph
 from mempalace.layers import Layer0
+from mempalace.palace import MineAlreadyRunning, get_collection, mine_palace_lock
 from mempalace.searcher import search_memories
 
 # When this plugin is loaded by Hermes, ``agent.memory_provider`` is on the
@@ -652,11 +649,10 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         self._hermes_home: str = ""
         self._turn_count = 0
 
-        # ChromaDB access through mempalace's own backend (matches embedding
-        # function, fixes the dim-mismatch bug from prior PRs).
-        self._backend = None
+        # Configured backend collection from palace.get_collection.
         self._collection = None
         self._collection_lock = threading.Lock()
+        self._write_failures = 0
 
         # Background worker for non-blocking writes.
         self._worker_queue: queue.Queue = queue.Queue(maxsize=self.WORKER_QUEUE_MAX)
@@ -742,11 +738,11 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             # context until the next successful initialize().
             backend_ready = False
             try:
-                self._backend = ChromaBackend()
                 with self._collection_lock:
-                    self._collection = self._backend.get_or_create_collection(
+                    self._collection = get_collection(
                         self._palace_path,
-                        self._collection_name,
+                        collection_name=self._collection_name,
+                        create=True,
                     )
                 logger.info(
                     "MemPalace: collection '%s' ready (palace=%s)",
@@ -1028,7 +1024,12 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             if tool_name == "mempalace_diary_write":
                 return json.dumps(self._tool_diary_write(args.get("entry", "")))
             if tool_name == "mempalace_diary_read":
-                return json.dumps(self._tool_diary_read(int(args.get("n", 10))))
+                return json.dumps(
+                    self._tool_diary_read(
+                        int(args.get("n", 10)),
+                        import_legacy=bool(args.get("import_legacy", False)),
+                    )
+                )
 
             # Tools that delegate directly to ``mempalace.mcp_server``'s
             # public ``tool_*`` entry points. mcp_server resolves its palace
@@ -1256,6 +1257,15 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             return str(forced)
         return _match_wing_by_keywords(text, self._wing_config)
 
+    def _note_write_failure(self, operation: str) -> None:
+        """Count a failed write and log it without the verbatim payload."""
+        self._write_failures += 1
+        logger.warning(
+            "MemPalace %s failed; write_failures=%d",
+            operation,
+            self._write_failures,
+        )
+
     # ----- Internal: filing + background worker --------------------------
 
     def _file_turn(self, payload: Dict[str, Any]) -> None:
@@ -1270,29 +1280,32 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         extra: Dict[str, Any] = {"source": "hermes"}
         if session_id:
             extra["session_id"] = session_id
-        # Hold the collection lock across the whole upsert so wake-up L1
-        # scans (same client) never interleave with writes mid-compactor.
+        # Hold the palace write lease and the collection lock across the
+        # upsert so wake-up L1 scans never interleave with writes.
         try:
-            with self._collection_lock:
-                col = self._collection
-                if col is None:
-                    return
-                # Always file under a stable room name ("conversations"). Using
-                # session_id here would mint one room per session — pollutes
-                # ``mempalace_list_rooms`` and splits live writes from backfill
-                # drawers (which also write to "conversations"). The session id
-                # stays available on the dedicated metadata field below.
-                file_conversation_exchange(
-                    col,
-                    wing=wing,
-                    room="conversations",
-                    text=text,
-                    source_file=f"hermes-session:{session_id or 'unknown'}",
-                    agent="hermes",
-                    extra_metadata=extra,
-                )
-        except Exception as exc:
-            logger.debug("MemPalace _file_turn error: %s", exc)
+            with mine_palace_lock(self._palace_path):
+                with self._collection_lock:
+                    col = self._collection
+                    if col is None:
+                        return
+                    # Always file under a stable room name ("conversations"). Using
+                    # session_id here would mint one room per session — pollutes
+                    # ``mempalace_list_rooms`` and splits live writes from backfill
+                    # drawers (which also write to "conversations"). The session id
+                    # stays available on the dedicated metadata field below.
+                    file_conversation_exchange(
+                        col,
+                        wing=wing,
+                        room="conversations",
+                        text=text,
+                        source_file=f"hermes-session:{session_id or 'unknown'}",
+                        agent="hermes",
+                        extra_metadata=extra,
+                    )
+        except MineAlreadyRunning:
+            self._note_write_failure("file_turn")
+        except Exception:
+            self._note_write_failure("file_turn")
 
     def _mirror_mem_write(self, payload: Dict[str, Any]) -> None:
         # target "user" carries facts about the user; target "memory" carries
@@ -1311,8 +1324,8 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
                 predicate=predicate,
                 obj=payload.get("content", ""),
             )
-        except Exception as exc:
-            logger.debug("MemPalace _mirror_mem_write error: %s", exc)
+        except Exception:
+            self._note_write_failure("mem_write")
         finally:
             if kg is not None:
                 try:
@@ -1336,8 +1349,8 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
                     self._file_turn(payload)
                 elif task == "mem_write":
                     self._mirror_mem_write(payload)
-            except Exception as exc:
-                logger.debug("MemPalace worker task %s error: %s", task, exc)
+            except Exception:
+                self._note_write_failure("worker")
             finally:
                 try:
                     self._worker_queue.task_done()
@@ -1411,6 +1424,7 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             "total_drawers": total,
             "wings": wings,
             "palace_path": self._palace_path,
+            "write_failures": self._write_failures,
         }
         if truncated:
             # ``total_drawers`` already gives the model the 100% reference;
@@ -1554,36 +1568,96 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             except Exception:
                 pass
 
-    def _tool_diary_write(self, entry: str) -> Dict[str, Any]:
-        if not entry:
-            return {"error": "Missing required parameter: entry"}
-        diary_path = Path(self._palace_path).parent / "diary.jsonl"
-        diary_path.parent.mkdir(parents=True, exist_ok=True)
-        record = {"ts": datetime.now(timezone.utc).isoformat(), "entry": entry}
-        with open(diary_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
-            f.flush()
-            os.fsync(f.fileno())
-        return {"status": "ok"}
+    def _legacy_diary_path(self) -> Path:
+        return Path(self._palace_path).parent / "diary.jsonl"
 
-    def _tool_diary_read(self, n: int = 10) -> Dict[str, Any]:
+    def _read_legacy_diary(self, n: int) -> List[Dict[str, Any]]:
+        """Read an existing private diary.jsonl. Never written by this provider."""
         if n <= 0:
-            return {"entries": []}
-        diary_path = Path(self._palace_path).parent / "diary.jsonl"
+            return []
+        diary_path = self._legacy_diary_path()
         if not diary_path.exists():
-            return {"entries": []}
-        # Stream the file and keep only the trailing ``n`` lines. Avoids
-        # loading multi-megabyte diaries into memory just to discard the
-        # head.
+            return []
         with open(diary_path, encoding="utf-8") as f:
             tail = deque(f, maxlen=n)
         recent: List[Dict[str, Any]] = []
         for raw_line in tail:
             try:
-                recent.append(json.loads(raw_line))
+                record = json.loads(raw_line)
             except json.JSONDecodeError:
                 logger.debug("MemPalace: skipping malformed diary line")
-        return {"entries": recent}
+                continue
+            if isinstance(record, dict):
+                record.setdefault("source", "legacy_jsonl")
+                recent.append(record)
+        return recent
+
+    def _import_legacy_diary(self) -> int:
+        """Copy legacy diary.jsonl lines into core diary drawers.
+
+        Explicit only. The jsonl file is left in place so it stays readable.
+        """
+        imported = 0
+        for record in self._read_legacy_diary(10_000):
+            entry = record.get("entry")
+            if not isinstance(entry, str) or not entry:
+                continue
+            result = self._tool_diary_write(entry)
+            if result.get("success"):
+                imported += 1
+        return imported
+
+    def _tool_diary_write(self, entry: str) -> Dict[str, Any]:
+        if not entry:
+            return {"error": "Missing required parameter: entry"}
+        try:
+            from mempalace.mcp_server import tool_diary_write
+
+            with mine_palace_lock(self._palace_path):
+                result = tool_diary_write(agent_name="hermes", entry=entry, topic="general")
+        except MineAlreadyRunning:
+            self._note_write_failure("diary_write")
+            return {"error": "diary write failed"}
+        except Exception:
+            self._note_write_failure("diary_write")
+            return {"error": "diary write failed"}
+        if not isinstance(result, dict) or not result.get("success"):
+            self._note_write_failure("diary_write")
+            return {"error": "diary write failed"}
+        out = {"status": "ok", "success": True}
+        if result.get("entry_id"):
+            out["entry_id"] = result["entry_id"]
+        return out
+
+    def _tool_diary_read(self, n: int = 10, import_legacy: bool = False) -> Dict[str, Any]:
+        if n <= 0:
+            return {"entries": []}
+        imported = self._import_legacy_diary() if import_legacy else 0
+        entries: List[Dict[str, Any]] = []
+        try:
+            from mempalace.mcp_server import tool_diary_read
+
+            result = tool_diary_read(agent_name="hermes", last_n=max(1, n))
+            for item in (result or {}).get("entries") or []:
+                if not isinstance(item, dict):
+                    continue
+                content = item.get("content") or ""
+                entries.append(
+                    {
+                        "ts": item.get("timestamp") or item.get("date") or "",
+                        "entry": content,
+                        "source": "drawer",
+                    }
+                )
+        except Exception:
+            logger.warning("MemPalace diary_read failed")
+        legacy = self._read_legacy_diary(n)
+        # Drawers are the stored diary. Legacy lines stay visible beside them.
+        combined = entries[-n:] + [row for row in legacy if row.get("entry")]
+        out: Dict[str, Any] = {"entries": combined[-n:]}
+        if import_legacy:
+            out["imported"] = imported
+        return out
 
 
 # ---------------------------------------------------------------------------
