@@ -3318,27 +3318,22 @@ class ChromaCollection(BaseCollection):
         applied to surrogates: sanitize input we don't control before it
         reaches a datastore we don't control.
         """
-        if documents is None:
-            return None
-        from ..config import strip_lone_surrogates, strip_nul_bytes
-
-        def _sanitize(d):
-            return strip_nul_bytes(strip_lone_surrogates(d))
-
-        # chromadb accepts OneOrMany[Document]: a bare str is a single document,
-        # not an iterable of characters. Handle it explicitly so we don't split
-        # it into per-character documents — that would be exactly the kind of
-        # silent corruption this method exists to prevent.
-        if isinstance(documents, str):
-            return _sanitize(documents)
-        return [_sanitize(d) if isinstance(d, str) else d for d in documents]
+        # NUL and lone surrogates are escaped, not stripped, by
+        # prepare_stored_write before this runs. The escaped form is what
+        # FTS indexes: it is valid UTF-8 and contains no NUL, so the index
+        # is not fed the byte that corrupts it. This method no longer
+        # rewrites the text.
+        return documents
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
         if getattr(self, "_require_embeddings", False) and embeddings is None:
             raise ValueError("caller-vector collection requires explicit embeddings")
 
+        from ..stored_text import prepare_stored_write
+
+        documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {
-            "documents": self._sanitize_documents_for_chromadb(documents),
+            "documents": documents,
             "ids": ids,
         }
         sanitized = self._sanitize_metadatas_for_chromadb(metadatas)
@@ -3370,8 +3365,11 @@ class ChromaCollection(BaseCollection):
         if getattr(self, "_require_embeddings", False) and embeddings is None:
             raise ValueError("caller-vector collection requires explicit embeddings")
 
+        from ..stored_text import prepare_stored_write
+
+        documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {
-            "documents": self._sanitize_documents_for_chromadb(documents),
+            "documents": documents,
             "ids": ids,
         }
         sanitized = self._sanitize_metadatas_for_chromadb(metadatas)
@@ -3420,9 +3418,15 @@ class ChromaCollection(BaseCollection):
 
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
+        from ..stored_text import prepare_stored_write
+
         kwargs: dict[str, Any] = {"ids": ids}
         if documents is not None:
-            kwargs["documents"] = self._sanitize_documents_for_chromadb(documents)
+            documents, ids, encoded_metas = prepare_stored_write(documents, ids, metadatas)
+            kwargs["ids"] = ids
+            kwargs["documents"] = documents
+            if metadatas is not None:
+                metadatas = encoded_metas
         if metadatas is not None:
             kwargs["metadatas"] = metadatas
         if embeddings is not None:
@@ -3506,13 +3510,23 @@ class ChromaCollection(BaseCollection):
         distances = raw.get("distances") or [[] for _ in ids]
         embeddings_raw = raw.get("embeddings") if spec.embeddings else None
 
+        from ..stored_text import restore_documents, restore_metadatas
+
         def _none_list_to_empty(outer):
             return [(inner or []) for inner in outer]
 
         return QueryResult(
             ids=_none_list_to_empty(ids),
-            documents=_none_list_to_empty(documents),
-            metadatas=_none_list_to_empty(metadatas),
+            documents=(
+                restore_documents(_none_list_to_empty(documents))
+                if spec.documents
+                else _none_list_to_empty(documents)
+            ),
+            metadatas=(
+                restore_metadatas(_none_list_to_empty(metadatas))
+                if spec.metadatas
+                else _none_list_to_empty(metadatas)
+            ),
             distances=_none_list_to_empty(distances),
             embeddings=(
                 [list(inner) for inner in embeddings_raw]
@@ -3556,9 +3570,11 @@ class ChromaCollection(BaseCollection):
             kwargs["offset"] = offset
 
         raw = self._collection.get(**kwargs)
+        from ..stored_text import restore_documents, restore_metadatas
+
         out_ids = list(raw.get("ids") or [])
-        out_docs = list(raw.get("documents") or []) if spec.documents else []
-        out_metas = list(raw.get("metadatas") or []) if spec.metadatas else []
+        out_docs = restore_documents(list(raw.get("documents") or [])) if spec.documents else []
+        out_metas = restore_metadatas(list(raw.get("metadatas") or [])) if spec.metadatas else []
         out_embeds = raw.get("embeddings") if spec.embeddings else None
 
         # Pad doc/meta lists to match ids so downstream zipping is safe.
@@ -3686,10 +3702,20 @@ class ChromaCollection(BaseCollection):
             return super().get_recent(
                 limit=limit, where=where, order_field=order_field, include=include
             )
+        from ..stored_text import restore_documents, restore_metadatas
+
         return GetResult(
             ids=[record_id for record_id, _, _ in records],
-            documents=[document for _, document, _ in records] if spec.documents else [],
-            metadatas=[metadata for _, _, metadata in records] if spec.metadatas else [],
+            documents=(
+                restore_documents([document for _, document, _ in records])
+                if spec.documents
+                else []
+            ),
+            metadatas=(
+                restore_metadatas([metadata for _, _, metadata in records])
+                if spec.metadatas
+                else []
+            ),
             embeddings=None,
         )
 

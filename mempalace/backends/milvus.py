@@ -25,7 +25,6 @@ import numpy as np
 from ..config import (
     DEFAULT_MILVUS_CONSISTENCY_LEVEL,
     normalize_milvus_consistency_level,
-    strip_lone_surrogates,
 )
 from ._remote_common import jsonable_metadata, publish_marker
 from ._sidecar import EMBEDDER_SIDECAR_FILENAME, read_embedder_sidecar, write_embedder_sidecar
@@ -224,11 +223,6 @@ def _normalize_vectors(embeddings: list[list[float]]) -> tuple[list[list[float]]
     if len(dims) > 1:
         raise DimensionMismatchError(f"milvus batch cannot mix embedding dimensions {sorted(dims)}")
     return vectors, dims.pop() if dims else 0
-
-
-def _clean_text(value: Any) -> str:
-    text = "" if value is None else str(value)
-    return strip_lone_surrogates(text).replace("\x00", "")
 
 
 def _utf8_len(value: str) -> int:
@@ -498,14 +492,21 @@ class MilvusCollection(BaseCollection):
         for idx, (doc_id, document, metadata, vector) in enumerate(
             zip(ids, documents, metadatas, vectors)
         ):
+            from ..stored_text import StoredTextError, prepare_stored_write
+
             if not isinstance(doc_id, str) or not doc_id:
                 raise ValueError(f"row {idx}: id must be a non-empty string")
+            try:
+                document, _, encoded_metas = prepare_stored_write([document], [doc_id], [metadata])
+            except StoredTextError as exc:
+                raise ValueError(f"row {idx}: {exc}") from exc
+            document = document[0]
+            metadata = encoded_metas[0]
             doc_id_bytes = _utf8_len(doc_id)
             if doc_id_bytes > DRAWER_ID_MAX_LENGTH:
                 raise ValueError(
                     f"row {idx}: id byte length {doc_id_bytes} exceeds {DRAWER_ID_MAX_LENGTH}"
                 )
-            document = _clean_text(document)
             document_bytes = _utf8_len(document)
             if document_bytes > DOCUMENT_MAX_LENGTH:
                 raise ValueError(
@@ -773,10 +774,20 @@ class MilvusCollection(BaseCollection):
                 limit=limit,
                 offset=offset or 0,
             )
+        from ..stored_text import restore_documents, restore_metadatas
+
         return GetResult(
             ids=[str(row.get(FIELD_ID, "")) for row in rows],
-            documents=[row.get(FIELD_DOCUMENT, "") for row in rows] if spec.documents else [],
-            metadatas=[self._extract_metadata(row) for row in rows] if spec.metadatas else [],
+            documents=(
+                restore_documents([row.get(FIELD_DOCUMENT, "") for row in rows])
+                if spec.documents
+                else []
+            ),
+            metadatas=(
+                restore_metadatas([self._extract_metadata(row) for row in rows])
+                if spec.metadatas
+                else []
+            ),
             embeddings=[row.get(FIELD_VECTOR) or [] for row in rows] if spec.embeddings else None,
         )
 

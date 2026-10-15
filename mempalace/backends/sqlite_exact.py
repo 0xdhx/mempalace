@@ -758,7 +758,11 @@ class SQLiteExactCollection(BaseCollection):
         )
         if embeddings is None:
             raise ValueError("sqlite_exact requires explicit embeddings")
-        metadatas = metadatas or [{} for _ in ids]
+        from ..stored_text import prepare_stored_write
+
+        documents, ids, metadatas = prepare_stored_write(
+            documents, ids, metadatas or [{} for _ in ids]
+        )
         now = _utcnow()
         with self._cursor(write=True) as cur:
             collection_id = self._collection_id(cur)
@@ -805,7 +809,11 @@ class SQLiteExactCollection(BaseCollection):
         )
         if embeddings is None:
             raise ValueError("sqlite_exact requires explicit embeddings")
-        metadatas = metadatas or [{} for _ in ids]
+        from ..stored_text import prepare_stored_write
+
+        documents, ids, metadatas = prepare_stored_write(
+            documents, ids, metadatas or [{} for _ in ids]
+        )
         now = _utcnow()
         with self._cursor(write=True) as cur:
             collection_id = self._collection_id(cur)
@@ -1202,10 +1210,12 @@ class SQLiteExactCollection(BaseCollection):
             if snapshot != self._index_version(cur):
                 raise _SnapshotChanged()
 
+        from ..stored_text import restore_documents, restore_metadatas
+
         return QueryResult(
             ids=outer_ids,
-            documents=outer_docs,
-            metadatas=outer_metas,
+            documents=restore_documents(outer_docs),
+            metadatas=restore_metadatas(outer_metas),
             distances=outer_dists,
             embeddings=outer_embeds if spec.embeddings else None,
         )
@@ -1403,10 +1413,16 @@ class SQLiteExactCollection(BaseCollection):
 
     @staticmethod
     def _get_result(rows: list[dict], spec: _IncludeSpec) -> GetResult:
+        from ..stored_text import restore_documents, restore_metadatas
+
         return GetResult(
             ids=[row["id"] for row in rows],
-            documents=[row["document"] for row in rows] if spec.documents else [],
-            metadatas=[row["metadata"] for row in rows] if spec.metadatas else [],
+            documents=(
+                restore_documents([row["document"] for row in rows]) if spec.documents else []
+            ),
+            metadatas=(
+                restore_metadatas([row["metadata"] for row in rows]) if spec.metadatas else []
+            ),
             embeddings=(
                 [_decode_vector(row["embedding"]) for row in rows] if spec.embeddings else None
             ),

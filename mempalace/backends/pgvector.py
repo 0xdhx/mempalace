@@ -48,7 +48,6 @@ from urllib import parse as urlparse
 
 import numpy as np
 
-from ..config import strip_lone_surrogates
 from ._remote_common import jsonable_metadata, publish_marker
 from ._sidecar import EMBEDDER_SIDECAR_FILENAME, read_embedder_sidecar, write_embedder_sidecar
 from .base import (
@@ -123,29 +122,12 @@ def _json_dumps(obj: Any) -> str:
 
 
 def _strip_nul(value: Any) -> Any:
-    """Recursively strip NUL (0x00) from strings, list/tuple items, and dict keys
-    and values so pgvector can store the result.
+    """Recursively remove NUL from strings and nested containers.
 
-    PostgreSQL cannot store NUL in ``text`` or ``jsonb``: psycopg rejects a raw
-    NUL in a text column ("PostgreSQL text fields cannot contain NUL (0x00)
-    bytes"), and a NUL in metadata serializes to a JSON unicode escape that the
-    ``jsonb`` cast rejects ("unsupported Unicode escape sequence"). A single
-    transcript that captured NUL in tool output would otherwise abort the whole
-    mine run (#1829). ChromaDB and the SQLite backend store the byte verbatim,
-    so stripping only here keeps the same inputs ingestible.
-
-    Applied to id, document, and metadata in :meth:`_PgVectorClient.upsert_rows`
-    so the write path never carries a NUL into Postgres. Only ``str`` values are
-    rewritten; the ``int``/``float``/``bool``/``None`` scalars JSON metadata
-    normalizes to pass through unchanged. Stripping is not injective, so two keys
-    (or ids)
-    differing only by a NUL collapse to one (last wins); this does not occur in
-    practice because drawer ids are SHA-256 hashes and metadata keys are fixed
-    field names, so only transcript-derived values are ever actually changed.
-    Unlike ``config.sanitize_content`` (which rejects NUL in user-supplied
-    content), the bulk-mine path strips so one stray byte cannot abort a whole
-    backfill. ``str.replace`` returns the original string when it holds no NUL,
-    so a clean document is not reallocated.
+    The write path does not call this. NUL and lone surrogates are escaped
+    by :func:`mempalace.stored_text.prepare_stored_write` and restored on
+    read, on every backend including Chroma. Ids that contain either are
+    rejected rather than rewritten.
     """
     if isinstance(value, str):
         return value.replace("\x00", "")
@@ -832,27 +814,22 @@ class _PgVectorClient:
             "document = EXCLUDED.document, metadata = EXCLUDED.metadata, "
             "embedding = EXCLUDED.embedding, updated_at = EXCLUDED.updated_at"
         )
+        from ..stored_text import prepare_stored_write
+
+        documents, ids, metadatas = prepare_stored_write(
+            [row["document"] for row in rows],
+            [row["id"] for row in rows],
+            [row.get("metadata") for row in rows],
+        )
         params = [
             (
-                # Strip both unstorable byte classes Postgres rejects before
-                # binding, so one stray byte in a transcript cannot abort the
-                # whole mine (#1829 NUL, #1833 lone surrogate).
-                #
-                # Order matters for metadata: NUL must be stripped *before*
-                # serialization (json escapes it to \\u0000, which the jsonb cast
-                # rejects), while a lone surrogate must be stripped *after*
-                # serialization (json.dumps(ensure_ascii=False) leaves it raw, so
-                # one pass over the serialized string cleans it without walking
-                # the dict). id/document are plain strings, so the two passes
-                # commute there. ids are NUL- and surrogate-free in practice, so
-                # those passes are defensive no-ops on the ON CONFLICT key.
-                strip_lone_surrogates(_strip_nul(row["id"])),
-                strip_lone_surrogates(_strip_nul(row["document"])),
-                strip_lone_surrogates(_json_dumps(_strip_nul(row.get("metadata")))),
+                doc_id,
+                document,
+                _json_dumps(meta),
                 _vector_literal(row["embedding"]),
                 row.get("updated_at") or _utcnow(),
             )
-            for row in rows
+            for doc_id, document, meta, row in zip(ids, documents, metadatas, rows)
         ]
         self._execute(sql, params, many=True)
 
@@ -1040,12 +1017,17 @@ class _PgVectorClient:
     @staticmethod
     def _row(record, *, with_embedding: bool, with_distance: bool) -> dict:
         record = list(record)
+        from ..stored_text import decode_text, restore_metadatas
+
+        metadata = (
+            record[2]
+            if isinstance(record[2], dict)
+            else (json.loads(record[2]) if record[2] else {})
+        )
         row = {
             "id": str(record[0]),
-            "document": record[1] if record[1] is not None else "",
-            "metadata": record[2]
-            if isinstance(record[2], dict)
-            else (json.loads(record[2]) if record[2] else {}),
+            "document": decode_text(record[1] if record[1] is not None else ""),
+            "metadata": restore_metadatas([metadata])[0],
             "embedding": None,
             "distance": None,
         }

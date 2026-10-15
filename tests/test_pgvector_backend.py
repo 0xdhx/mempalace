@@ -30,7 +30,6 @@ from mempalace.backends.pgvector import (
     _shared_namespace_key,
     _shared_namespace_slug,
     _strip_nul,
-    _json_dumps,
 )
 
 
@@ -1497,42 +1496,51 @@ def _fake_upsert_client(monkeypatch):
     return client, captured
 
 
-def test_pgvector_upsert_strips_nul_bytes(monkeypatch):
-    """A NUL (0x00) byte in id/document/metadata must never reach Postgres.
+def test_pgvector_upsert_escapes_nul_bytes(monkeypatch):
+    """A NUL in a document is stored as a reversible escape, not deleted.
 
-    psycopg's text/jsonb dumpers reject NUL outright ("PostgreSQL text fields
-    cannot contain NUL (0x00) bytes"), which aborts the entire mine run (#1829)
-    when a single transcript captured a NUL in tool output. ChromaDB and the
-    SQLite backend store the byte verbatim, so pgvector strips it to keep the
-    same inputs ingestible. Strip, not reject: rejecting would re-abort the
-    mine or drop the drawer entirely (recall loss).
+    Postgres text cannot hold NUL. The id is rejected instead of rewritten.
+    The document and metadata values round-trip through the same escape
+    every backend uses. Chroma does not keep the raw byte either.
     """
+    from mempalace.stored_text import FLAG, StoredTextError, decode_text, restore_metadatas
+
     client, captured = _fake_upsert_client(monkeypatch)
+    with pytest.raises(StoredTextError):
+        client.upsert_rows(
+            "drawers",
+            [
+                {
+                    "id": "draw\x00er",
+                    "document": "before\x00after",
+                    "metadata": {},
+                    "embedding": [1.0, 0.0],
+                }
+            ],
+        )
+
     client.upsert_rows(
         "drawers",
         [
             {
-                "id": "draw\x00er",
+                "id": "drawer",
                 "document": "before\x00after",
-                "metadata": {"go\x00od": "v\x00w", "nested": ["a\x00b", 7]},
+                "metadata": {"good": "v\x00w", "nested": ["a\x00b", 7]},
                 "embedding": [1.0, 0.0],
                 "updated_at": "2026-06-20T00:00:00Z",
             }
         ],
     )
-
-    assert len(captured) == 1, "upsert_rows should bind exactly one row"
     row_id, document, metadata_json = captured[0][0], captured[0][1], captured[0][2]
-
-    # No NUL survives into any text-bound parameter (id, document, metadata).
-    assert "\x00" not in row_id
-    assert "\x00" not in document
-    assert "\x00" not in metadata_json
-
-    # Stripping removes only the NUL; surrounding content is otherwise preserved.
+    for field in (row_id, document, metadata_json):
+        assert "\x00" not in field
+        field.encode("utf-8")
     assert row_id == "drawer"
-    assert document == "beforeafter"
-    assert json.loads(metadata_json) == {"good": "vw", "nested": ["ab", 7]}
+    assert decode_text(document) == "before\x00after"
+    meta = restore_metadatas([json.loads(metadata_json)])[0]
+    assert meta["good"] == "v\x00w"
+    assert meta["nested"] == ["a\x00b", 7]
+    assert meta[FLAG] == 1
 
 
 def test_strip_nul_helper():
@@ -1558,103 +1566,82 @@ def test_strip_nul_helper():
     assert _strip_nul(None) is None
 
 
-def test_pgvector_upsert_replaces_lone_surrogates(monkeypatch):
-    """A lone UTF-16 surrogate in id/document/metadata must never reach Postgres.
+def test_pgvector_upsert_escapes_lone_surrogates(monkeypatch):
+    """A lone surrogate is escaped, not replaced with U+FFFD, and ids are rejected."""
+    from mempalace.stored_text import StoredTextError, decode_text, restore_metadatas
 
-    psycopg encodes text/jsonb parameters as UTF-8, and a lone surrogate has no
-    UTF-8 encoding, so it raises UnicodeEncodeError ("surrogates not allowed") and
-    aborts the entire mine run (the surrogate sibling of the NUL abort in #1829).
-    ChromaDB sanitizes document text via config.strip_lone_surrogates;
-    pgvector matches it (for document and metadata) by replacing the surrogate with
-    U+FFFD rather than dropping the drawer (recall loss) or re-aborting the mine.
-    """
-    # Build the surrogates with chr() so this source file stays valid UTF-8 (a raw
-    # lone surrogate has no UTF-8 encoding and would not parse).
-    hi, lo, s3, s4, s5 = (chr(c) for c in (0xD800, 0xDFFF, 0xD834, 0xDCA1, 0xDC00))
-    repl = chr(0xFFFD)
+    hi, lo, s4, s5 = (chr(c) for c in (0xD800, 0xDFFF, 0xDCA1, 0xDC00))
     client, captured = _fake_upsert_client(monkeypatch)
+    with pytest.raises(StoredTextError):
+        client.upsert_rows(
+            "drawers",
+            [{"id": f"draw{hi}er", "document": "x", "metadata": {}, "embedding": [1.0, 0.0]}],
+        )
     client.upsert_rows(
         "drawers",
         [
             {
-                "id": f"draw{hi}er",
+                "id": "drawer",
                 "document": f"before{lo}after",
-                "metadata": {f"go{s3}od": f"v{s4}w", "nested": [f"a{s5}b", 7]},
+                "metadata": {"good": f"v{s4}w", "nested": [f"a{s5}b", 7]},
                 "embedding": [1.0, 0.0],
                 "updated_at": "2026-06-20T00:00:00Z",
             }
         ],
     )
-
-    assert len(captured) == 1, "upsert_rows should bind exactly one row"
     row_id, document, metadata_json = captured[0][0], captured[0][1], captured[0][2]
-
-    # Every text-bound parameter must now be UTF-8 encodable (what psycopg does to
-    # bind it); a surviving lone surrogate would raise here.
     for field in (row_id, document, metadata_json):
         field.encode("utf-8")
+        assert lo not in field and s4 not in field and s5 not in field
+    assert decode_text(document) == f"before{lo}after"
+    meta = restore_metadatas([json.loads(metadata_json)])[0]
+    assert meta["good"] == f"v{s4}w"
+    assert meta["nested"] == [f"a{s5}b", 7]
 
-    # Surrogates are replaced with U+FFFD, not dropped: surrounding content stays
-    # and each lone surrogate maps to exactly one replacement character.
-    assert row_id == f"draw{repl}er"
-    assert document == f"before{repl}after"
-    assert json.loads(metadata_json) == {f"go{repl}od": f"v{repl}w", "nested": [f"a{repl}b", 7]}
 
+def test_pgvector_upsert_escapes_nul_and_surrogate_together(monkeypatch):
+    """One row can carry both a NUL and a lone surrogate and still round-trip."""
+    from mempalace.stored_text import decode_text, restore_metadatas
 
-def test_pgvector_upsert_strips_nul_and_surrogate_together(monkeypatch):
-    """A single row carrying *both* a NUL and a lone surrogate must come out
-    clean on every text-bound field.
-
-    This pins the composition of the two sibling fixes (#1829 NUL, #1833
-    surrogate), which edit the same ``upsert_rows`` binding: NUL is stripped
-    pre-serialization and the surrogate replaced post-serialization. A rebase
-    that kept only one strip would regress the other byte class silently, since
-    neither sibling test exercises both at once.
-    """
     sur = chr(0xD800)
-    repl = chr(0xFFFD)
     client, captured = _fake_upsert_client(monkeypatch)
     client.upsert_rows(
         "drawers",
         [
             {
-                "id": f"id\x00{sur}x",
+                "id": "drawer",
                 "document": f"doc\x00{sur}y",
-                "metadata": {f"k\x00{sur}": f"v\x00{sur}", "nested": [f"a\x00{sur}b", 7]},
+                "metadata": {"key": f"v\x00{sur}", "nested": [f"a\x00{sur}b", 7]},
                 "embedding": [1.0, 0.0],
                 "updated_at": "2026-06-20T00:00:00Z",
             }
         ],
     )
-
-    assert len(captured) == 1, "upsert_rows should bind exactly one row"
-    row_id, document, metadata_json = captured[0][0], captured[0][1], captured[0][2]
-
-    # Neither unstorable byte survives, and each bound field is UTF-8 encodable.
-    for field in (row_id, document, metadata_json):
+    document, metadata_json = captured[0][1], captured[0][2]
+    for field in (document, metadata_json):
         assert "\x00" not in field
         assert sur not in field
         field.encode("utf-8")
+    assert decode_text(document) == f"doc\x00{sur}y"
+    meta = restore_metadatas([json.loads(metadata_json)])[0]
+    assert meta["key"] == f"v\x00{sur}"
+    assert meta["nested"] == [f"a\x00{sur}b", 7]
 
-    # NUL dropped, surrogate -> U+FFFD, surrounding content preserved.
-    assert row_id == f"id{repl}x"
-    assert document == f"doc{repl}y"
-    assert json.loads(metadata_json) == {f"k{repl}": f"v{repl}", "nested": [f"a{repl}b", 7]}
 
+def test_pgvector_write_uses_the_shared_escape_not_a_replacement_character():
+    """The pgvector docstring used to claim Chroma stores NUL verbatim.
 
-def test_strip_lone_surrogates_reuses_config_util():
-    """The pgvector write path strips surrogates via ``config.strip_lone_surrogates``
-    applied to id/document and the serialized metadata JSON (no pgvector-local
-    helper). End-to-end coverage is ``test_pgvector_upsert_replaces_lone_surrogates``;
-    the utility's own edge cases live in ``tests/test_clean_lone_surrogates.py``."""
-    from mempalace.config import strip_lone_surrogates
+    Both backends now escape it. ``strip_lone_surrogates`` is not the write path.
+    """
+    from mempalace.stored_text import decode_text, encode_text
 
-    # ensure_ascii=False leaves a metadata surrogate raw in the JSON, so a single
-    # pass over the serialized string cleans it (the property the write path relies on).
-    raw = _json_dumps({"k": f"v{chr(0xD800)}w"})
-    cleaned = strip_lone_surrogates(raw)
-    assert chr(0xD800) not in cleaned
-    assert json.loads(cleaned) == {"k": f"v{chr(0xFFFD)}w"}
+    original = f"v{chr(0xD800)}w\x00"
+    stored = encode_text(original)
+    stored.encode("utf-8")
+    assert "\x00" not in stored
+    assert chr(0xD800) not in stored
+    assert chr(0xFFFD) not in stored
+    assert decode_text(stored) == original
 
 
 def test_pgvector_backend_advertises_supports_metadata_facets():

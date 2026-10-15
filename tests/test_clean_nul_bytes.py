@@ -118,19 +118,33 @@ class TestBackendChokepointStripsNulBytes:
         fake, col = self._collection()
         col.add(documents=["clean\x00doc"], ids=["1"])
         _, kwargs = fake.calls[0]
-        assert kwargs["documents"] == ["clean�doc"]
+        from mempalace.stored_text import decode_text
+
+        stored = kwargs["documents"][0]
+        assert "\x00" not in stored
+        stored.encode("utf-8")
+        assert decode_text(stored) == "clean\x00doc"
 
     def test_upsert_strips_nul_in_document(self):
         fake, col = self._collection()
         col.upsert(documents=["a\x00b"], ids=["1"], metadatas=[{"wing": "w"}])
         _, kwargs = fake.calls[0]
-        assert kwargs["documents"] == ["a�b"]
+        from mempalace.stored_text import FLAG, decode_text
+
+        stored = kwargs["documents"][0]
+        assert "\x00" not in stored
+        assert decode_text(stored) == "a\x00b"
+        assert kwargs["metadatas"][0][FLAG] == 1
 
     def test_update_strips_nul_in_document(self):
         fake, col = self._collection()
         col.update(ids=["1"], documents=["x\x00y"])
         _, kwargs = fake.calls[0]
-        assert kwargs["documents"] == ["x�y"]
+        from mempalace.stored_text import decode_text
+
+        stored = kwargs["documents"][0]
+        assert "\x00" not in stored
+        assert decode_text(stored) == "x\x00y"
 
     def test_one_nul_message_does_not_corrupt_the_batch(self):
         """The reporter's shape: a single NUL-heavy row alongside ordinary
@@ -141,16 +155,30 @@ class TestBackendChokepointStripsNulBytes:
             ids=["1", "2", "3"],
         )
         _, kwargs = fake.calls[0]
-        assert kwargs["documents"] == ["ok one", "poison�row", "ok three"]
+        from mempalace.stored_text import decode_text
+
+        assert [decode_text(doc) for doc in kwargs["documents"]] == [
+            "ok one",
+            "poison\x00row",
+            "ok three",
+        ]
+        assert all("\x00" not in doc for doc in kwargs["documents"])
         assert len(kwargs["ids"]) == 3
 
     def test_both_surrogates_and_nuls_in_same_document(self):
         """Both sanitizers apply to the same document — order doesn't
         leave either kind of bad character behind."""
         fake, col = self._collection()
-        col.upsert(documents=["a\udc95b\x00c"], ids=["1"])
+        original = "a\udc95b\x00c"
+        col.upsert(documents=[original], ids=["1"])
         _, kwargs = fake.calls[0]
-        assert kwargs["documents"] == ["a�b�c"]
+        from mempalace.stored_text import decode_text
+
+        stored = kwargs["documents"][0]
+        stored.encode("utf-8")
+        assert "\x00" not in stored
+        assert "\udc95" not in stored
+        assert decode_text(stored) == original
 
     def test_single_string_document_is_not_split_into_chars(self):
         """chromadb accepts a bare str as one document (OneOrMany[Document]).
@@ -159,5 +187,8 @@ class TestBackendChokepointStripsNulBytes:
         fake, col = self._collection()
         col.upsert(documents="one\x00document", ids=["1"])
         _, kwargs = fake.calls[0]
-        assert kwargs["documents"] == "one�document"
+        from mempalace.stored_text import decode_text
+
         assert isinstance(kwargs["documents"], str)
+        assert "\x00" not in kwargs["documents"]
+        assert decode_text(kwargs["documents"]) == "one\x00document"
