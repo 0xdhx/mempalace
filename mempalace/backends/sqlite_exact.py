@@ -46,6 +46,11 @@ from .base import (
 logger = logging.getLogger(__name__)
 
 _DB_FILENAME = "sqlite_exact.sqlite3"
+# Compared by immutable readers. A leaf commit does not change the SQLite
+# header fields those readers already probe, and the filesystem clock can
+# stamp the checkpoint with the same mtime as the previous one.
+_WRITE_GENERATION_KEY = "write_generation"
+_WRITE_GENERATION_SQL = "SELECT value FROM meta WHERE key = ?"
 _TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
 _SUPPORTED_OPERATORS = frozenset(
     {"$eq", "$ne", "$in", "$nin", "$and", "$or", "$contains", "$gt", "$gte", "$lt", "$lte"}
@@ -54,6 +59,18 @@ _SUPPORTED_OPERATORS = frozenset(
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _bump_write_generation(executor) -> None:
+    """Advance the immutable-reader generation inside the open write transaction."""
+    executor.execute(
+        """
+        INSERT INTO meta(key, value) VALUES (?, '1')
+        ON CONFLICT(key) DO UPDATE SET
+            value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)
+        """,
+        (_WRITE_GENERATION_KEY,),
+    )
 
 
 def _json_dumps(obj: Any) -> str:
@@ -602,6 +619,10 @@ class SQLiteExactCollection(BaseCollection):
                 self._handle.conn.rollback()
                 raise
             else:
+                # No-op write cursors never start a transaction. Bumping them
+                # would drop a warm immutable snapshot that still matches disk.
+                if write and self._handle.conn.in_transaction:
+                    _bump_write_generation(cur)
                 self._handle.conn.commit()
                 if write:
                     self._handle._vector_cache.clear()
@@ -1661,10 +1682,11 @@ class SQLiteExactBackend(BaseBackend):
         """Detect completed writer/checkpoint cycles, even with unchanged size.
 
         Stat identity and times detect replacement and updates between
-        checkpoints; the header fields SQLite exposes through pragmas
-        (schema cookie, page count, freelist count, user version, application
-        id) cover the page-1 changes a checkpoint can land without touching the
-        size. Never return a cached snapshot after a failed filesystem read.
+        checkpoints. The header pragmas cover page-1 changes. A leaf commit
+        changes neither, and the filesystem clock can reuse ``st_mtime_ns``,
+        so the header tuple ends with ``meta.write_generation``, advanced on
+        each write transaction. Never return a cached snapshot after a failed
+        filesystem read.
 
         The header is read through a throwaway ``immutable=1`` connection, not
         a plain ``open()``: closing a non-SQLite descriptor on the database
@@ -1673,7 +1695,10 @@ class SQLiteExactBackend(BaseBackend):
         :mod:`mempalace.backends._magic`.
         """
         stat = os.stat(db_path)
-        header = read_header_fields(db_path)
+        header = read_header_fields(
+            db_path,
+            extra=(_WRITE_GENERATION_SQL, (_WRITE_GENERATION_KEY,)),
+        )
         return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, header)
 
     @staticmethod
@@ -2003,6 +2028,7 @@ class SQLiteExactBackend(BaseBackend):
                         "INSERT INTO collections(name, created_at) VALUES (?, ?)",
                         (collection_name, _utcnow()),
                     )
+                    _bump_write_generation(handle.conn)
                     handle.conn.commit()
         return SQLiteExactCollection(handle, collection_name, backend=self)
 
@@ -2145,6 +2171,7 @@ class SQLiteExactBackend(BaseBackend):
                 pass
             handle.conn.execute("DELETE FROM documents WHERE collection_id = ?", (collection_id,))
             handle.conn.execute("DELETE FROM collections WHERE id = ?", (collection_id,))
+            _bump_write_generation(handle.conn)
             handle.conn.commit()
 
 
