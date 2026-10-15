@@ -3,26 +3,6 @@ if __name__ != "mempalace.searcher":
     raise ImportError(f"{__name__} is an implementation fragment; import mempalace.searcher")
 
 
-def build_where_filter(wing: str = None, room: str = None, source_file: str = None) -> dict:
-    """Build a ChromaDB where filter from optional wing/room/source_file.
-
-    ChromaDB needs a ``$and`` only when ≥2 clauses are present; a single
-    clause is returned bare and zero clauses yield an empty filter (#1815).
-    """
-    clauses = []
-    if wing:
-        clauses.append({"wing": wing})
-    if room:
-        clauses.append({"room": room})
-    if source_file:
-        clauses.append({"source_file": source_file})
-    if not clauses:
-        return {}
-    if len(clauses) == 1:
-        return clauses[0]
-    return {"$and": clauses}
-
-
 def _extract_drawer_ids_from_closet(closet_doc: str) -> list:
     """Parse all `→drawer_id_a,drawer_id_b` pointers out of a closet document.
 
