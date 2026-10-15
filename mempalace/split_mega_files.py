@@ -69,7 +69,15 @@ def _load_known_people() -> list:
     return []
 
 
-KNOWN_PEOPLE = _load_known_people()
+# Loaded on first use so importing this module does not read the home directory.
+KNOWN_PEOPLE = None
+
+
+def _active_known_people() -> list:
+    global KNOWN_PEOPLE
+    if KNOWN_PEOPLE is None:
+        KNOWN_PEOPLE = _load_known_people()
+    return KNOWN_PEOPLE
 
 
 def _load_username_map() -> dict:
@@ -140,8 +148,10 @@ def extract_people(lines):
     text = "".join(lines[:100])
 
     # Speaker tags: "Alice:", "Ben:", etc.
-    for person in KNOWN_PEOPLE:
-        if re.search(rf"\b{person}\b", text, re.IGNORECASE):
+    for person in _active_known_people():
+        # Lookarounds, not \\b: a name like ``C++`` ends on a non-word
+        # character, so a trailing word-boundary never matches it.
+        if re.search(rf"(?<!\w){re.escape(person)}(?!\w)", text, re.IGNORECASE):
             found.add(person)
 
     # Working directory username hint — map to known people if configured
@@ -176,71 +186,147 @@ def extract_subject(lines):
     return "session"
 
 
-def split_file(filepath, output_dir, dry_run=False):
+def _decode_source_bytes(raw: bytes) -> str:
+    """Decode transcript bytes without the locale codec or ``errors='replace'``.
+
+    UTF-8 first, so valid UTF-8 stays verbatim. Otherwise cp1252, then
+    latin-1, which maps every byte and does not invent U+FFFD.
+    """
+    if not raw:
+        return ""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("cp1252")
+    except UnicodeDecodeError:
+        return raw.decode("latin-1")
+
+
+def _read_lines(path: Path) -> list[str]:
+    return _decode_source_bytes(path.read_bytes()).splitlines(keepends=True)
+
+
+def _session_segments(lines: list[str], boundaries: list[int]) -> list[tuple[list[str], bool, int]]:
+    """Preamble plus every session, including sessions under 10 lines."""
+    segments = []
+    if boundaries[0] > 0:
+        preamble = lines[: boundaries[0]]
+        if any(line.strip() for line in preamble):
+            segments.append((preamble, True, 0))
+    ends = boundaries + [len(lines)]
+    for index, (start, end) in enumerate(zip(ends, ends[1:])):
+        chunk = lines[start:end]
+        if chunk:
+            segments.append((chunk, False, index))
+    return segments
+
+
+def _suffixed_names(base_name: str):
+    suffix = Path(base_name).suffix
+    stem = base_name[: -len(suffix)] if suffix else base_name
+    yield base_name
+    number = 2
+    while True:
+        yield f"{stem}-{number}{suffix}"
+        number += 1
+
+
+def _output_name(path: Path, chunk: list[str], is_preamble: bool, index: int) -> str:
+    ts_human, _ts_iso = extract_timestamp(chunk)
+    people = extract_people(chunk)
+    subject = extract_subject(chunk)
+    if is_preamble:
+        ts_part = "part00"
+    else:
+        ts_part = ts_human or f"part{index + 1:02d}"
+    people_part = "-".join(people[:3]) if people else "unknown"
+    src_stem = re.sub(r"[^\w-]", "_", path.stem)[:40]
+    name = f"{src_stem}__{ts_part}_{people_part}_{subject}.txt"
+    name = re.sub(r"[^\w\.\-]", "_", name)
+    return re.sub(r"_+", "_", name)
+
+
+def _claim_output_path(out_dir: Path, base_name: str, reserved: set, dry_run: bool):
+    """Return a path that does not collide, opening it with ``O_EXCL`` when writing."""
+    for name in _suffixed_names(base_name):
+        candidate = out_dir / name
+        if candidate in reserved or os.path.lexists(candidate):
+            continue
+        if dry_run:
+            reserved.add(candidate)
+            return candidate, None
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        reserved.add(candidate)
+        return candidate, fd
+    raise RuntimeError(f"could not allocate an output name for {base_name}")
+
+
+def _write_exclusive(out_path: Path, fd: int, text: str) -> None:
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+    except Exception:
+        out_path.unlink(missing_ok=True)
+        raise
+
+
+def split_file(filepath, output_dir, dry_run=False, lines=None):
     """
     Split a single mega-file into per-session files.
     Returns list of output paths written (or would be written if dry_run).
+
+    Text before the first session and sessions under 10 lines are written
+    too. Two sessions that generate the same filename get ``-2``, ``-3``, ...
+    instead of overwriting each other.
     """
     path = Path(filepath)
     max_size = 500 * 1024 * 1024  # 500 MB safety limit
-    if path.stat().st_size > max_size:
-        print(f"  SKIP: {path.name} exceeds {max_size // (1024 * 1024)} MB limit")
-        return []
-    lines = path.read_text(errors="replace").splitlines(keepends=True)
+    if lines is None:
+        if path.stat().st_size > max_size:
+            print(f"  SKIP: {path.name} exceeds {max_size // (1024 * 1024)} MB limit")
+            return []
+        lines = _read_lines(path)
 
     boundaries = find_session_boundaries(lines)
     if len(boundaries) < 2:
         return []  # Not a mega-file
 
-    # Add sentinel at end
-    boundaries.append(len(lines))
-
     out_dir = Path(output_dir) if output_dir else path.parent
+    segments = _session_segments(lines, boundaries)
     written = []
+    reserved: set = set()
 
-    for i, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
-        chunk = lines[start:end]
-        if len(chunk) < 10:
-            continue  # Skip tiny fragments
-
-        ts_human, ts_iso = extract_timestamp(chunk)
-        people = extract_people(chunk)
-        subject = extract_subject(chunk)
-
-        # Build filename: SOURCESTEM__DATE_TIME_People_subject.txt
-        # Source stem prefix prevents collisions when multiple mega-files
-        # produce sessions with the same timestamp/people/subject.
-        ts_part = ts_human or f"part{i + 1:02d}"
-        people_part = "-".join(people[:3]) if people else "unknown"
-        src_stem = re.sub(r"[^\w-]", "_", path.stem)[:40]
-        name = f"{src_stem}__{ts_part}_{people_part}_{subject}.txt"
-        # Sanitize
-        name = re.sub(r"[^\w\.\-]", "_", name)
-        name = re.sub(r"_+", "_", name)
-
-        out_path = out_dir / name
-
+    for position, (chunk, is_preamble, index) in enumerate(segments, 1):
+        name = _output_name(path, chunk, is_preamble, index)
+        out_path, fd = _claim_output_path(out_dir, name, reserved, dry_run)
         if dry_run:
-            print(f"  [{i + 1}/{len(boundaries) - 1}] {name}  ({len(chunk)} lines)")
+            print(f"  [{position}/{len(segments)}] {out_path.name}  ({len(chunk)} lines)")
         else:
-            # The gate in ``main`` covers the files the glob listed; this name
-            # is built here, so nothing has vetted it. Opening a pre-existing
-            # FIFO for writing blocks in the kernel until a reader appears.
-            # ``lexists`` rather than ``exists``: the latter follows the link
-            # and so answers False for a DANGLING symlink, and writing through
-            # one creates the target instead — a chunk landing wherever the
-            # link points, outside the output directory entirely.
-            # ``os.path`` rather than ``Path``: neither call can raise, so a
-            # write that fails still fails at ``write_text`` as it always did.
-            if os.path.lexists(out_path) and not os.path.isfile(out_path):
-                print(f"  SKIP: {name} (not a regular file)")
-                continue
-            out_path.write_text("".join(chunk), encoding="utf-8")
-            print(f"  + {name}  ({len(chunk)} lines)")
-
+            _write_exclusive(out_path, fd, "".join(chunk))
+            print(f"  + {out_path.name}  ({len(chunk)} lines)")
         written.append(out_path)
 
     return written
+
+
+def _retire_original(path: Path) -> bool:
+    """Rename ``path`` to ``.mega_backup`` without replacing an existing backup.
+
+    The rename is how the original bytes stay recoverable. If that name is
+    already taken, the source file is left where it is.
+    """
+    backup = path.with_suffix(".mega_backup")
+    if os.path.lexists(backup):
+        print(f"  ! leaving {path.name} in place; {backup.name} already exists")
+        return False
+    path.rename(backup)
+    print(f"  -> Original renamed to {backup.name}\n")
+    return True
 
 
 def main():
@@ -294,10 +380,10 @@ def main():
         if file_stat.st_size > max_scan_size:
             print(f"  SKIP: {f.name} exceeds {max_scan_size // (1024 * 1024)} MB limit")
             continue
-        lines = f.read_text(errors="replace").splitlines(keepends=True)
+        lines = _read_lines(f)
         boundaries = find_session_boundaries(lines)
         if len(boundaries) >= args.min_sessions:
-            mega_files.append((f, len(boundaries)))
+            mega_files.append((f, len(boundaries), lines))
 
     if not mega_files:
         print(f"No mega-files found in {src_dir} (min {args.min_sessions} sessions).")
@@ -312,15 +398,13 @@ def main():
     print(f"{'-' * 60}\n")
 
     total_written = 0
-    for f, n_sessions in mega_files:
+    for f, n_sessions, lines in mega_files:
         print(f"  {f.name}  ({n_sessions} sessions, {f.stat().st_size // 1024}KB)")
-        written = split_file(f, output_dir, dry_run=args.dry_run)
+        written = split_file(f, output_dir, dry_run=args.dry_run, lines=lines)
         total_written += len(written)
 
         if not args.dry_run and written:
-            backup = f.with_suffix(".mega_backup")
-            f.rename(backup)
-            print(f"  -> Original renamed to {backup.name}\n")
+            _retire_original(f)
         else:
             print()
 

@@ -288,12 +288,95 @@ def test_split_file_output_dir_none(tmp_path):
         assert str(p.parent) == str(tmp_path)
 
 
-def test_split_file_tiny_fragments_skipped(tmp_path):
-    """Tiny chunks (< 10 lines) are skipped."""
-    content = "Claude Code v1.0\nline\n" * 2 + "Claude Code v1.0\n" + "line\n" * 20
+def test_split_file_keeps_short_sessions(tmp_path):
+    """Sessions under 10 lines are written, not dropped."""
+    content = "Claude Code v1.0\nSHORT_SESSION_KEPT\n" * 2 + "Claude Code v1.0\n" + "line\n" * 20
     path = tmp_path / "tiny.txt"
     path.write_text(content)
     written = smf.split_file(str(path), str(tmp_path))
-    # The first chunk is very small, should be skipped
-    for p in written:
-        assert p.stat().st_size > 0
+    assert len(written) == 3
+    blob = "".join(p.read_text(encoding="utf-8") for p in written)
+    assert blob.count("SHORT_SESSION_KEPT") == 2
+
+
+def test_split_file_keeps_preamble(tmp_path):
+    content = (
+        "PREAMBLE_KEPT before any session\n"
+        "Claude Code v1.0\n"
+        "first session body\n"
+        "Claude Code v1.0\n" + "second session line\n" * 12
+    )
+    path = tmp_path / "mega.txt"
+    path.write_text(content, encoding="utf-8")
+    written = smf.split_file(str(path), str(tmp_path))
+    blob = "".join(path.read_text(encoding="utf-8") for path in written)
+    assert "PREAMBLE_KEPT" in blob
+    assert any("part00" in path.name for path in written)
+    assert path.read_text(encoding="utf-8") == content
+
+
+def test_split_file_does_not_overwrite_colliding_names(tmp_path):
+    def session(marker: str) -> str:
+        return (
+            "Claude Code v1.0\n"
+            "⏺ 2:30 PM Wednesday, March 25, 2026\n"
+            "> What about topic and how it works?\n"
+            f"{marker}\n"
+        )
+
+    content = session("FIRST_SESSION_MARKER") + session("SECOND_SESSION_MARKER")
+    path = tmp_path / "mega.txt"
+    path.write_text(content, encoding="utf-8")
+    written = smf.split_file(str(path), str(tmp_path))
+    texts = [item.read_text(encoding="utf-8") for item in written]
+    assert len(written) == 2
+    assert len({item.name for item in written}) == 2
+    assert any(
+        "FIRST_SESSION_MARKER" in text and "SECOND_SESSION_MARKER" not in text for text in texts
+    )
+    assert any(
+        "SECOND_SESSION_MARKER" in text and "FIRST_SESSION_MARKER" not in text for text in texts
+    )
+
+
+def test_split_file_decodes_cp1252_without_replacement_char(tmp_path):
+    def session(body: bytes) -> bytes:
+        return b"Claude Code v1.0\n" + body
+
+    raw = session(b"\x93FIRST quote\x94\n") + session(b"second session\n" * 4)
+    path = tmp_path / "mega.txt"
+    path.write_bytes(raw)
+    written = smf.split_file(str(path), str(tmp_path))
+    blob = "".join(item.read_text(encoding="utf-8") for item in written)
+    assert "\ufffd" not in blob
+    assert "\u201cFIRST quote\u201d" in blob
+    assert path.read_bytes() == raw
+
+
+def test_retire_original_preserves_bytes_and_refuses_to_clobber(tmp_path):
+    src = tmp_path / "mega.txt"
+    src.write_bytes(b"original-bytes-\xff")
+    assert smf._retire_original(src) is True
+    backup = tmp_path / "mega.mega_backup"
+    assert backup.read_bytes() == b"original-bytes-\xff"
+    assert not src.exists()
+
+    src.write_bytes(b"newer-original")
+    assert smf._retire_original(src) is False
+    assert backup.read_bytes() == b"original-bytes-\xff"
+    assert src.read_bytes() == b"newer-original"
+
+
+def test_extract_people_escapes_regex_metacharacters(monkeypatch):
+    monkeypatch.setattr(smf, "KNOWN_PEOPLE", ["C++", "Dr. X"])
+    assert smf.extract_people(["We shipped C++ and asked Dr. X\n"]) == ["C++", "Dr. X"]
+    assert smf.extract_people(["Hello DrZ X\n"]) == []
+
+
+def test_known_people_load_when_first_used(monkeypatch, tmp_path):
+    config_path = tmp_path / "known_names.json"
+    config_path.write_text(json.dumps(["Alice"]))
+    monkeypatch.setattr(smf, "_KNOWN_NAMES_PATH", config_path)
+    monkeypatch.setattr(smf, "KNOWN_PEOPLE", None)
+    smf._KNOWN_NAMES_CACHE = None
+    assert smf.extract_people(["Alice reviewed it\n"]) == ["Alice"]
