@@ -1010,7 +1010,7 @@ def _diary_checkpoint_argv(payload_path: Path) -> list[str]:
 
 def _queue_diary_checkpoint(payload: dict) -> bool:
     """Detach the diary write. The foreground must not import mcp_server."""
-    from .config import _atomic_write_json
+    from .fsio import atomic_write_json
 
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     payload_path = _diary_checkpoint_path(str(payload.get("session_id") or "unknown"))
@@ -1019,7 +1019,7 @@ def _queue_diary_checkpoint(payload: dict) -> bool:
     if _mine_already_running(cmd):
         _log("Skipping diary checkpoint: already running")
         return False
-    _atomic_write_json(payload_path, payload)
+    atomic_write_json(payload_path, payload)
     return _spawn_mine(cmd)
 
 
