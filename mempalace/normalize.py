@@ -40,9 +40,16 @@ _SLACK_PROVENANCE_FOOTER = (
     "\n[source: slack-export | multi-party chat — speaker roles are positional, not verified]"
 )
 
-# The ``SpellcheckRun`` of an open ``spellchecking_user_turns`` block; None
-# (the default) keeps user turns as written.
-_USER_TURN_SPELLCHECK = ContextVar("_USER_TURN_SPELLCHECK", default=None)
+# The ``NormalizeRun`` of an open ``recording_transforms`` block; None (the
+# default) records nothing and keeps user turns as written.
+_NORMALIZE_RUN = ContextVar("_NORMALIZE_RUN", default=None)
+
+
+def _record(transform: str) -> None:
+    """Note that the parse in progress applied an RFC 002 transformation."""
+    run = _NORMALIZE_RUN.get()
+    if run is not None:
+        run.applied.add(transform)
 
 
 # ─── Noise stripping ─────────────────────────────────────────────────────
@@ -106,6 +113,10 @@ _HOOK_LINE_RE = re.compile(
 # "… +N lines" collapsed-output marker, line-anchored.
 _COLLAPSED_LINES_RE = re.compile(r"(?m)^(?:> )?…\s*\+\d+ lines.*\n?")
 
+# Claude Code collapsed-output chrome "[N tokens] (ctrl+o to expand)". Narrow
+# shape — a bare "(ctrl+o to expand)" in user prose stays intact.
+_CTRL_O_RE = re.compile(r"\s*\[\d+\s+tokens?\]\s*\(ctrl\+o to expand\)")
+
 
 def strip_noise(text: str) -> str:
     """Remove system tags, hook output, and Claude Code UI chrome from text.
@@ -113,15 +124,18 @@ def strip_noise(text: str) -> str:
     All patterns are line-anchored. User prose that happens to mention these
     strings inline (e.g., documenting them) is preserved verbatim.
     """
-    for pat in _NOISE_TAG_PATTERNS:
-        text = pat.sub("", text)
-    for pat in _NOISE_LINE_PATTERNS:
-        text = pat.sub("", text)
-    text = _HOOK_LINE_RE.sub("", text)
-    text = _COLLAPSED_LINES_RE.sub("", text)
-    # Strip the Claude Code collapsed-output chrome "[N tokens] (ctrl+o to expand)".
-    # Narrow shape — a bare "(ctrl+o to expand)" in user prose stays intact.
-    text = re.sub(r"\s*\[\d+\s+tokens?\]\s*\(ctrl\+o to expand\)", "", text)
+    removed = 0
+    for pat in (
+        *_NOISE_TAG_PATTERNS,
+        *_NOISE_LINE_PATTERNS,
+        _HOOK_LINE_RE,
+        _COLLAPSED_LINES_RE,
+        _CTRL_O_RE,
+    ):
+        text, n = pat.subn("", text)
+        removed += n
+    if removed:
+        _record("strip_tool_chrome")
     # Collapse runs of blank lines created by the removals
     text = re.sub(r"\n{4,}", "\n\n\n", text)
     return text.strip()
@@ -229,13 +243,13 @@ def normalize_conversations(filepath: str) -> list:
 def normalize_conversations_with_mtime(filepath: str) -> Tuple[list, float]:
     """``normalize_conversations`` plus the mtime of the bytes it read."""
     content, mtime = _read_transcript_file_with_mtime(filepath)
-    run = _USER_TURN_SPELLCHECK.get()
-    if run is not None:
-        token = _USER_TURN_SPELLCHECK.set(None)
+    run = _NORMALIZE_RUN.get()
+    if run is not None and run.spellcheck:
+        token = _NORMALIZE_RUN.set(None)
         try:
             run.verbatim = _split_conversations(content, filepath)
         finally:
-            _USER_TURN_SPELLCHECK.reset(token)
+            _NORMALIZE_RUN.reset(token)
     return _split_conversations(content, filepath), mtime
 
 
@@ -853,6 +867,8 @@ def _try_slack_json(data) -> Optional[str]:
         # Prefix with speaker ID so the original author is preserved
         messages.append((seen_users[user_id], f"[{user_id}] {text}"))
     if len(messages) >= 2:
+        _record("speaker_role_assignment")
+        _record("synthesized_marker")
         return _messages_to_transcript(messages) + _SLACK_PROVENANCE_FOOTER
     return None
 
@@ -940,6 +956,9 @@ def _extract_content(content, tool_use_map: dict = None) -> str:
                     formatted = _format_tool_result(result_content, tname)
                     if formatted:
                         parts.append(formatted)
+                else:
+                    # Thinking, image, document and other blocks are not filed.
+                    _record("conversations.content_block_drop")
         return "\n".join(p for p in parts if p).strip()
     if isinstance(content, dict):
         return content.get("text", "").strip()
@@ -948,6 +967,8 @@ def _extract_content(content, tool_use_map: dict = None) -> str:
 
 def _format_tool_use(block: dict) -> str:
     """Format a tool_use block into a human-readable one-liner."""
+    # Only the command, path or pattern survives; other input is dropped.
+    _record("conversations.tool_input_summarize")
     name = block.get("name", "Unknown")
     inp = block.get("input", {})
     if isinstance(inp, list):
@@ -1023,6 +1044,7 @@ def _format_tool_result(content, tool_name: str) -> str:
 
     # Read/Edit/Write — omit result (content is in palace or git)
     if tool_name in ("Read", "Edit", "Write"):
+        _record("tool_result_omitted")
         return ""
 
     lines = text.split("\n")
@@ -1032,6 +1054,7 @@ def _format_tool_result(content, tool_name: str) -> str:
         n = _TOOL_RESULT_MAX_LINES_BASH
         if len(lines) <= n * 2:
             return "→ " + "\n→ ".join(lines)
+        _record("tool_result_truncate")
         head = lines[:n]
         tail = lines[-n:]
         omitted = len(lines) - 2 * n
@@ -1048,57 +1071,72 @@ def _format_tool_result(content, tool_name: str) -> str:
         cap = _TOOL_RESULT_MAX_MATCHES
         if len(lines) <= cap:
             return "→ " + "\n→ ".join(lines)
+        _record("tool_result_truncate")
         kept = lines[:cap]
         remaining = len(lines) - cap
         return "→ " + "\n→ ".join(kept) + f"\n→ ... [{remaining} more matches]"
 
     # Unknown — byte cap
     if len(text) > _TOOL_RESULT_MAX_BYTES:
+        _record("tool_result_truncate")
         return "→ " + text[:_TOOL_RESULT_MAX_BYTES] + f"... [truncated, {len(text)} chars]"
     return "→ " + text
 
 
-class SpellcheckRun:
-    """What ``spellchecking_user_turns`` did: whether the speller changed any
-    user message, and the conversations as written (``verbatim``), parsed
-    from the same bytes so callers can hash the uncorrected text."""
+class NormalizeRun:
+    """What one file's parse inside ``recording_transforms`` did: the RFC 002
+    transformations it applied (``applied``), and, with spell correction on,
+    the conversations as written (``verbatim``), parsed from the same bytes so
+    callers can hash the uncorrected text."""
 
-    def __init__(self):
-        self.changed = False
+    def __init__(self, spellcheck: bool):
+        self.spellcheck = spellcheck
+        self.applied: set = set()
         self.verbatim: Optional[list] = None
+
+    @property
+    def transforms(self) -> str:
+        """The ``transforms`` drawer metadata value for ``applied``."""
+        # Lazy: importing the sources package loads its adapter registry.
+        from mempalace.sources.transforms import format_transforms
+
+        return format_transforms(self.applied)
 
 
 @contextmanager
-def spellchecking_user_turns(enabled: bool):
-    """Spell-correct user messages parsed inside this block when ``enabled``.
+def recording_transforms(spellcheck: bool = False):
+    """Record the transformations applied to conversations parsed inside this
+    block, and spell-correct their user messages when ``spellcheck`` is on.
 
-    Yields a ``SpellcheckRun``. Turns are kept as written otherwise.
+    Yields a ``NormalizeRun``. Turns are kept as written otherwise.
     """
-    run = SpellcheckRun()
-    token = _USER_TURN_SPELLCHECK.set(run if enabled else None)
+    run = NormalizeRun(spellcheck)
+    token = _NORMALIZE_RUN.set(run)
     try:
         yield run
     finally:
-        _USER_TURN_SPELLCHECK.reset(token)
+        _NORMALIZE_RUN.reset(token)
 
 
 def _messages_to_transcript(messages: list) -> str:
     """Convert [(role, text), ...] to transcript format with > markers.
 
     Turns are kept as written unless the caller opted in to spell correction
-    with ``spellchecking_user_turns``, which only touches user messages.
+    with ``recording_transforms(spellcheck=True)``, which only touches user
+    messages.
     """
-    run = _USER_TURN_SPELLCHECK.get()
+    run = _NORMALIZE_RUN.get()
     lines = []
     i = 0
     while i < len(messages):
         role, text = messages[i]
         if role == "user":
-            if run is not None:
+            if run is not None and run.spellcheck:
                 from mempalace.spellcheck import spellcheck_user_text
 
                 corrected = spellcheck_user_text(text)
-                run.changed = run.changed or corrected != text
+                if corrected != text:
+                    run.applied.add("spellcheck_user")
                 text = corrected
             lines.append(f"> {text}")
             if i + 1 < len(messages) and messages[i + 1][0] == "assistant":

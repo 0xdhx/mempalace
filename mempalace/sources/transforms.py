@@ -153,6 +153,28 @@ def speaker_role_assignment(text: str) -> str:
     return text
 
 
+# Custom transformations of the conversations adapter (``conversations.<name>``),
+# identity shims for the same reason as the adapter-supplied ones above.
+
+
+def conversations_tool_input_summarize(text: str) -> str:
+    """Tool calls filed as one-liners: only the command, path or pattern of a
+    tool's input is kept (``normalize._format_tool_use``)."""
+    return text
+
+
+def conversations_content_block_drop(text: str) -> str:
+    """Message blocks other than text, tool calls and tool results (thinking,
+    images, documents) are not filed (``normalize._extract_content``)."""
+    return text
+
+
+def format_transforms(names) -> str:
+    """The ``transforms`` drawer metadata value: the applied transformation
+    names, sorted and comma-joined, so every backend stores one plain string."""
+    return ",".join(sorted(set(names)))
+
+
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------

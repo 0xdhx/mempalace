@@ -8,7 +8,7 @@ import pytest
 
 from mempalace.config import MempalaceConfig
 from mempalace.convo_miner import mine_convos
-from mempalace.normalize import _messages_to_transcript, spellchecking_user_turns
+from mempalace.normalize import _messages_to_transcript, recording_transforms
 
 
 def _export(*turns):
@@ -110,18 +110,18 @@ def test_spellcheck_corrects_every_line_of_a_user_turn_and_no_assistant_text(spe
         ("user", "i knoe this\nand befor that"),
         ("assistant", "> quoted befor\nplain befor"),
     ]
-    with spellchecking_user_turns(True) as run:
+    with recording_transforms(spellcheck=True) as run:
         result = _messages_to_transcript(msgs)
     assert "> i know this\nand before that" in result
     assert "> quoted befor\nplain befor" in result
-    assert run.changed
+    assert run.applied == {"spellcheck_user"}
 
 
 def test_spellchecking_disabled_keeps_turns_and_records_nothing(speller):
-    with spellchecking_user_turns(False) as run:
+    with recording_transforms(spellcheck=False) as run:
         result = _messages_to_transcript([("user", "i knoe"), ("assistant", "ok")])
     assert "> i knoe" in result
-    assert not run.changed
+    assert run.applied == set()
     assert run.verbatim is None
 
 

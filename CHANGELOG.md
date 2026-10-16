@@ -31,7 +31,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   old behaviour, set `"convo": {"spellcheck": true}` in `config.json` or
   `MEMPALACE_CONVO_SPELLCHECK=1`; it corrects user messages only, and every
   drawer from a file whose text the speller changed carries
-  `transforms: "spellcheck_user"` in its metadata. Drawers filed before this
+  `spellcheck_user` in its `transforms` metadata. Drawers filed before this
   release keep their corrected text until the source file is mined again.
 - **`mempalace_search` no longer applies a default distance cutoff.** It used to
   drop every hit past cosine distance 1.5, which could hide a relevant but
@@ -54,6 +54,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   not the first draft of every regenerated or edited turn.
 - A Slack message with `"user": null` is filed under `unknown` instead of
   failing the whole export.
+- **Conversation drawers now say when their text is not the source as
+  written.** Mining a chat transcript truncates long tool output, leaves out
+  Read/Edit/Write results, reduces tool calls to one line, strips UI chrome and
+  drops thinking and image blocks, and none of that was recorded. Every drawer
+  from a file whose parse did any of these now carries a `transforms` field
+  listing the RFC 002 names, sorted and comma-joined (for example
+  `strip_tool_chrome,tool_result_truncate`). The text itself is unchanged.
+  Drawers filed before this release carry no stamp until their file is mined
+  again.
 
 ---
 
