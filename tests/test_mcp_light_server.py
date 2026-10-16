@@ -380,7 +380,7 @@ class TestLightMcpPreflightAndGates:
             called_args["apply"] = apply
             return {"synced": True}
 
-        monkeypatch.setattr(mcp_server, "tool_sync", mock_tool_sync)
+        monkeypatch.setitem(mcp_server.TOOLS["mempalace_sync"], "handler", mock_tool_sync)
         req = {
             "jsonrpc": "2.0",
             "id": 71,
@@ -461,7 +461,7 @@ class TestUnwrapAndStructuredMerge:
             captured.update(kwargs)
             return {"results": []}
 
-        monkeypatch.setattr(mcp_server, "tool_search", fake_search)
+        monkeypatch.setitem(mcp_server.TOOLS["mempalace_search"], "handler", fake_search)
         req = {
             "jsonrpc": "2.0",
             "id": 80,
@@ -1052,6 +1052,33 @@ def test_palace_exec_unknown_action_is_not_a_tool_name(monkeypatch):
     assert response["error"]["message"] == "unknown target"
 
 
+def test_palace_query_settings_forwards_no_arguments(monkeypatch):
+    """palace_query reads settings; a silent_save argument must not write config.json."""
+    captured = {}
+
+    def _capture(request):
+        captured.update(request["params"])
+        return {
+            "jsonrpc": "2.0",
+            "id": request.get("id"),
+            "result": {"content": [{"type": "text", "text": "{}"}]},
+        }
+
+    monkeypatch.setattr(mcp_server, "_dispatch_stdio_request", _capture)
+    mcp_light_server.dispatch_light_stdio_request(
+        {
+            "jsonrpc": "2.0",
+            "id": 45,
+            "method": "tools/call",
+            "params": {
+                "name": "palace_query",
+                "arguments": {"target": "settings", "silent_save": False},
+            },
+        }
+    )
+    assert captured == {"name": "mempalace_hook_settings", "arguments": {}}
+
+
 def test_palace_coordinate_peers_rewrites_to_mesh_peers(monkeypatch):
     captured = {}
 
@@ -1077,25 +1104,24 @@ def test_palace_coordinate_peers_rewrites_to_mesh_peers(monkeypatch):
     assert captured["name"] == "mempalace_mesh_peers"
 
 
-def test_light_stdio_dispatch_exception_replies(monkeypatch):
+def test_light_stdio_dispatch_exception_replies():
     def _boom(_request):
         raise RuntimeError("dispatch failed")
 
-    monkeypatch.setattr(mcp_light_server, "dispatch_light_stdio_request", _boom)
-    payload = mcp_light_server._light_stdio_payload('{"jsonrpc": "2.0", "id": 9, "method": "ping"}')
+    payload = mcp_server._stdio_reply('{"jsonrpc": "2.0", "id": 9, "method": "ping"}', _boom)
     response = json.loads(payload)
     assert response["id"] == 9
     assert response["error"]["code"] == -32603
     assert response["error"]["message"] == "Internal error"
 
-    notified = mcp_light_server._light_stdio_payload(
-        '{"jsonrpc": "2.0", "method": "notifications/cancelled"}'
+    notified = mcp_server._stdio_reply(
+        '{"jsonrpc": "2.0", "method": "notifications/cancelled"}', _boom
     )
     assert notified is None
 
 
 def test_light_stdio_parse_error_is_32700():
-    payload = mcp_light_server._light_stdio_payload("{")
+    payload = mcp_server._stdio_reply("{", mcp_light_server.dispatch_light_stdio_request)
     response = json.loads(payload)
     assert response["id"] is None
     assert response["error"]["code"] == -32700
