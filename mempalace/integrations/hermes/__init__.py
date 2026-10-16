@@ -9,7 +9,8 @@ Design notes
 
 * Collection access goes through ``mempalace.palace.get_collection`` so the
   configured backend is used (not a hidden Chroma palace) and the embedding
-  function stays bound to the collection. Writes take ``mine_palace_lock``.
+  function stays bound to the collection. The backend takes the palace write
+  lock itself; a turn that meets a held lock waits and retries.
 
 * Per-turn writes go through a bounded background queue. The agent loop
   never blocks on ChromaDB or SQLite.
@@ -63,6 +64,7 @@ import os
 import queue
 import re
 import threading
+import time
 from collections import deque
 from datetime import date
 from pathlib import Path
@@ -77,7 +79,7 @@ from mempalace.config import (
 from mempalace.convo_miner import file_conversation_exchange
 from mempalace.knowledge_graph import KnowledgeGraph
 from mempalace.layers import Layer0
-from mempalace.palace import MineAlreadyRunning, get_collection, mine_palace_lock
+from mempalace.palace import MineAlreadyRunning, get_collection
 from mempalace.searcher import search_memories
 
 # When this plugin is loaded by Hermes, ``agent.memory_provider`` is on the
@@ -623,6 +625,8 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
     DEFAULT_PALACE_PATH = "~/.mempalace/palace"
     DEFAULT_IDENTITY_PATH = "~/.mempalace/identity.txt"
     WORKER_QUEUE_MAX = 500
+    # Waits for a palace lock held by a mine before a turn is dropped: ~30s.
+    LOCK_RETRY_DELAYS = (1, 2, 4, 8, 16)
     # Cap for status-style metadata scans. On large palaces (200k+ drawers)
     # an unbounded ``col.get(include=["metadatas"])`` would materialize every
     # row into Python memory just to compute counts — multi-second hangs and
@@ -1257,12 +1261,13 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             return str(forced)
         return _match_wing_by_keywords(text, self._wing_config)
 
-    def _note_write_failure(self, operation: str) -> None:
+    def _note_write_failure(self, operation: str, exc: Optional[BaseException] = None) -> None:
         """Count a failed write and log it without the verbatim payload."""
         self._write_failures += 1
         logger.warning(
-            "MemPalace %s failed; write_failures=%d",
+            "MemPalace %s failed (%s); write_failures=%d",
             operation,
+            type(exc).__name__ if exc is not None else "refused",
             self._write_failures,
         )
 
@@ -1280,10 +1285,11 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         extra: Dict[str, Any] = {"source": "hermes"}
         if session_id:
             extra["session_id"] = session_id
-        # Hold the palace write lease and the collection lock across the
-        # upsert so wake-up L1 scans never interleave with writes.
-        try:
-            with mine_palace_lock(self._palace_path):
+        # Hold the collection lock across the upsert so wake-up L1 scans
+        # never interleave with writes. A palace lock held by a mine is waited
+        # out here, in order, rather than dropping the turn.
+        for delay in self.LOCK_RETRY_DELAYS + (None,):
+            try:
                 with self._collection_lock:
                     col = self._collection
                     if col is None:
@@ -1302,10 +1308,15 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
                         agent="hermes",
                         extra_metadata=extra,
                     )
-        except MineAlreadyRunning:
-            self._note_write_failure("file_turn")
-        except Exception:
-            self._note_write_failure("file_turn")
+                return
+            except MineAlreadyRunning as exc:
+                if delay is None or self._worker_stop.is_set():
+                    self._note_write_failure("file_turn", exc)
+                    return
+                time.sleep(delay)
+            except Exception as exc:
+                self._note_write_failure("file_turn", exc)
+                return
 
     def _mirror_mem_write(self, payload: Dict[str, Any]) -> None:
         # target "user" carries facts about the user; target "memory" carries
@@ -1324,8 +1335,8 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
                 predicate=predicate,
                 obj=payload.get("content", ""),
             )
-        except Exception:
-            self._note_write_failure("mem_write")
+        except Exception as exc:
+            self._note_write_failure("mem_write", exc)
         finally:
             if kg is not None:
                 try:
@@ -1349,8 +1360,8 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
                     self._file_turn(payload)
                 elif task == "mem_write":
                     self._mirror_mem_write(payload)
-            except Exception:
-                self._note_write_failure("worker")
+            except Exception as exc:
+                self._note_write_failure("worker", exc)
             finally:
                 try:
                     self._worker_queue.task_done()
@@ -1572,11 +1583,9 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         return Path(self._palace_path).parent / "diary.jsonl"
 
     def _read_legacy_diary(self, n: int) -> List[Dict[str, Any]]:
-        """Read an existing private diary.jsonl. Never written by this provider."""
-        if n <= 0:
-            return []
+        """The last ``n`` entries of a diary.jsonl from before diary drawers."""
         diary_path = self._legacy_diary_path()
-        if not diary_path.exists():
+        if n <= 0 or not diary_path.exists():
             return []
         with open(diary_path, encoding="utf-8") as f:
             tail = deque(f, maxlen=n)
@@ -1587,76 +1596,88 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             except json.JSONDecodeError:
                 logger.debug("MemPalace: skipping malformed diary line")
                 continue
-            if isinstance(record, dict):
-                record.setdefault("source", "legacy_jsonl")
-                recent.append(record)
+            if isinstance(record, dict) and record.get("entry"):
+                recent.append({**record, "source": "legacy_jsonl"})
         return recent
 
     def _import_legacy_diary(self) -> int:
-        """Copy legacy diary.jsonl lines into core diary drawers.
+        """File diary.jsonl entries as diary drawers, then set the file aside.
 
-        Explicit only. The jsonl file is left in place so it stays readable.
+        A progress file records how many lines are filed, so an import that
+        stops partway resumes where it left off instead of filing twice. The
+        finished file is renamed to ``diary.jsonl.imported``, not deleted.
         """
+        diary_path = self._legacy_diary_path()
+        if not diary_path.exists():
+            return 0
+        progress = diary_path.with_name(diary_path.name + ".import-progress")
+        try:
+            done = int(progress.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            done = 0
         imported = 0
-        for record in self._read_legacy_diary(10_000):
-            entry = record.get("entry")
-            if not isinstance(entry, str) or not entry:
-                continue
-            result = self._tool_diary_write(entry)
-            if result.get("success"):
-                imported += 1
+        with open(diary_path, encoding="utf-8") as f:
+            for lineno, raw_line in enumerate(f):
+                if lineno < done:
+                    continue
+                try:
+                    entry = json.loads(raw_line).get("entry")
+                except (json.JSONDecodeError, AttributeError):
+                    entry = None
+                if isinstance(entry, str) and entry:
+                    if not self._tool_diary_write(entry).get("success"):
+                        return imported
+                    imported += 1
+                progress.write_text(str(lineno + 1), encoding="utf-8")
+        os.replace(diary_path, diary_path.with_name(diary_path.name + ".imported"))
+        progress.unlink(missing_ok=True)
         return imported
 
     def _tool_diary_write(self, entry: str) -> Dict[str, Any]:
         if not entry:
             return {"error": "Missing required parameter: entry"}
-        try:
-            from mempalace.mcp_server import tool_diary_write
+        from mempalace.mcp_server import tool_diary_write
 
-            with mine_palace_lock(self._palace_path):
-                result = tool_diary_write(agent_name="hermes", entry=entry, topic="general")
-        except MineAlreadyRunning:
-            self._note_write_failure("diary_write")
-            return {"error": "diary write failed"}
-        except Exception:
-            self._note_write_failure("diary_write")
+        try:
+            result = tool_diary_write(agent_name="hermes", entry=entry, topic="general")
+        except Exception as exc:
+            self._note_write_failure("diary_write", exc)
             return {"error": "diary write failed"}
         if not isinstance(result, dict) or not result.get("success"):
             self._note_write_failure("diary_write")
             return {"error": "diary write failed"}
-        out = {"status": "ok", "success": True}
-        if result.get("entry_id"):
-            out["entry_id"] = result["entry_id"]
-        return out
+        return {"status": "ok", "success": True, "entry_id": result.get("entry_id")}
 
     def _tool_diary_read(self, n: int = 10, import_legacy: bool = False) -> Dict[str, Any]:
+        """The last ``n`` diary entries, oldest first.
+
+        Entries still in a diary.jsonl predate every diary drawer, so they
+        come first; drawers follow in the order they were written.
+        """
         if n <= 0:
             return {"entries": []}
-        imported = self._import_legacy_diary() if import_legacy else 0
-        entries: List[Dict[str, Any]] = []
-        try:
-            from mempalace.mcp_server import tool_diary_read
+        out: Dict[str, Any] = {}
+        if import_legacy:
+            out["imported"] = self._import_legacy_diary()
+        from mempalace.mcp_server import tool_diary_read
 
-            result = tool_diary_read(agent_name="hermes", last_n=max(1, n))
+        drawers: List[Dict[str, Any]] = []
+        try:
+            result = tool_diary_read(agent_name="hermes", last_n=n)
             for item in (result or {}).get("entries") or []:
-                if not isinstance(item, dict):
-                    continue
-                content = item.get("content") or ""
-                entries.append(
-                    {
-                        "ts": item.get("timestamp") or item.get("date") or "",
-                        "entry": content,
-                        "source": "drawer",
-                    }
-                )
+                if isinstance(item, dict):
+                    drawers.append(
+                        {
+                            "ts": item.get("timestamp") or item.get("date") or "",
+                            "entry": item.get("content") or "",
+                            "source": "drawer",
+                        }
+                    )
         except Exception:
             logger.warning("MemPalace diary_read failed")
-        legacy = self._read_legacy_diary(n)
-        # Drawers are the stored diary. Legacy lines stay visible beside them.
-        combined = entries[-n:] + [row for row in legacy if row.get("entry")]
-        out: Dict[str, Any] = {"entries": combined[-n:]}
-        if import_legacy:
-            out["imported"] = imported
+        # tool_diary_read lists newest first.
+        drawers.reverse()
+        out["entries"] = (self._read_legacy_diary(n) + drawers)[-n:]
         return out
 
 

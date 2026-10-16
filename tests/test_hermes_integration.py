@@ -616,28 +616,13 @@ def test_diary_read_empty_when_no_writes(initialized_provider):
     assert result["entries"] == []
 
 
-def test_diary_write_takes_palace_lock_and_files_a_drawer(
-    initialized_provider, integration_module, monkeypatch
-):
-    from contextlib import contextmanager
-
-    entered = []
-    real_lock = integration_module.mine_palace_lock
-
-    @contextmanager
-    def wrapped(path):
-        entered.append(path)
-        with real_lock(path):
-            yield
-
-    monkeypatch.setattr(integration_module, "mine_palace_lock", wrapped)
-    text = "verbatim diary line for the lock test"
+def test_diary_write_files_a_drawer(initialized_provider):
+    text = "verbatim diary line for the drawer test"
     write = json.loads(
         initialized_provider.handle_tool_call("mempalace_diary_write", {"entry": text})
     )
     assert write["status"] == "ok"
     assert write["success"] is True
-    assert entered, "diary write did not take the palace write lock"
 
     read = json.loads(initialized_provider.handle_tool_call("mempalace_diary_read", {"n": 5}))
     assert any(
@@ -645,63 +630,117 @@ def test_diary_write_takes_palace_lock_and_files_a_drawer(
     )
 
 
-def test_legacy_diary_jsonl_stays_readable_and_imports_on_request(initialized_provider):
-    legacy = Path(initialized_provider._palace_path).parent / "diary.jsonl"
+def _write_legacy_diary(provider, entries):
+    legacy = Path(provider._palace_path).parent / "diary.jsonl"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text(
-        json.dumps({"ts": "2020-01-01T00:00:00+00:00", "entry": "legacy verbatim"}) + "\n",
+        "".join(
+            json.dumps({"ts": f"2020-01-01T00:00:{i:02d}+00:00", "entry": e}) + "\n"
+            for i, e in enumerate(entries)
+        ),
         encoding="utf-8",
     )
-    read = json.loads(initialized_provider.handle_tool_call("mempalace_diary_read", {"n": 5}))
-    assert any(
-        item.get("entry") == "legacy verbatim" and item.get("source") == "legacy_jsonl"
-        for item in read["entries"]
-    )
+    return legacy
 
-    imported = json.loads(
+
+def test_diary_read_keeps_the_newest_entries_beside_a_legacy_jsonl(initialized_provider):
+    _write_legacy_diary(initialized_provider, [f"old {i}" for i in range(12)])
+    for i in range(3):
+        initialized_provider.handle_tool_call("mempalace_diary_write", {"entry": f"new {i}"})
+
+    read = json.loads(initialized_provider.handle_tool_call("mempalace_diary_read", {"n": 5}))
+
+    assert [item["entry"] for item in read["entries"]] == [
+        "old 10",
+        "old 11",
+        "new 0",
+        "new 1",
+        "new 2",
+    ]
+    assert [item["source"] for item in read["entries"]][-3:] == ["drawer"] * 3
+
+
+def test_legacy_diary_import_runs_once_and_keeps_the_file(initialized_provider):
+    legacy = _write_legacy_diary(initialized_provider, ["legacy verbatim", "second line"])
+
+    first = json.loads(
         initialized_provider.handle_tool_call(
-            "mempalace_diary_read",
-            {"n": 5, "import_legacy": True},
+            "mempalace_diary_read", {"n": 10, "import_legacy": True}
         )
     )
-    assert imported["imported"] == 1
-    assert "legacy verbatim" in legacy.read_text(encoding="utf-8")
-    assert any(
-        item.get("entry") == "legacy verbatim" and item.get("source") == "drawer"
-        for item in imported["entries"]
+    second = json.loads(
+        initialized_provider.handle_tool_call(
+            "mempalace_diary_read", {"n": 10, "import_legacy": True}
+        )
     )
 
+    assert first["imported"] == 2
+    assert second["imported"] == 0
+    assert not legacy.exists()
+    kept = legacy.with_name("diary.jsonl.imported")
+    assert "legacy verbatim" in kept.read_text(encoding="utf-8")
+    entries = [(item["entry"], item["source"]) for item in second["entries"]]
+    assert entries == [("legacy verbatim", "drawer"), ("second line", "drawer")]
 
-def test_file_turn_lock_and_warning_omit_verbatim(
+
+def test_legacy_diary_import_resumes_after_a_failed_write(initialized_provider, monkeypatch):
+    legacy = _write_legacy_diary(initialized_provider, ["one", "two", "three"])
+    real_write = initialized_provider._tool_diary_write
+    calls = []
+
+    def flaky(entry):
+        calls.append(entry)
+        if entry == "two" and calls.count("two") == 1:
+            return {"error": "diary write failed"}
+        return real_write(entry)
+
+    monkeypatch.setattr(initialized_provider, "_tool_diary_write", flaky)
+    assert initialized_provider._import_legacy_diary() == 1
+    assert legacy.exists()
+    assert initialized_provider._import_legacy_diary() == 2
+    assert calls == ["one", "two", "two", "three"]
+
+
+def test_file_turn_failure_warning_omits_verbatim(
     provider, integration_module, monkeypatch, caplog
 ):
     import logging
-    from contextlib import contextmanager
 
-    held = {"on": False}
     secret = "user said the secret phrase"
 
-    @contextmanager
-    def wrapped(path):
-        held["on"] = True
-        try:
-            yield
-        finally:
-            held["on"] = False
-
     def boom(*args, **kwargs):
-        assert held["on"] is True
         raise RuntimeError(secret)
 
-    monkeypatch.setattr(integration_module, "mine_palace_lock", wrapped)
     monkeypatch.setattr(integration_module, "file_conversation_exchange", boom)
-    provider._palace_path = "/tmp/palace"
     provider._collection = object()
     with caplog.at_level(logging.DEBUG, logger="mempalace.hermes"):
         provider._file_turn({"user": secret, "assistant": "noted"})
     assert provider._write_failures == 1
     assert secret not in caplog.text
+    assert "RuntimeError" in caplog.text
     assert any(record.levelno == logging.WARNING for record in caplog.records)
+
+
+def test_file_turn_waits_out_a_held_palace_lock(provider, integration_module, monkeypatch):
+    from mempalace.palace import MineAlreadyRunning
+
+    filed = []
+
+    def busy_then_file(*args, **kwargs):
+        if len(filed) < 2:
+            filed.append("refused")
+            raise MineAlreadyRunning("mine in progress")
+        filed.append(kwargs["text"])
+
+    sleeps = []
+    monkeypatch.setattr(integration_module, "file_conversation_exchange", busy_then_file)
+    monkeypatch.setattr(integration_module.time, "sleep", sleeps.append)
+    provider._collection = object()
+    provider._file_turn({"user": "hello", "assistant": "hi"})
+    assert filed[:2] == ["refused", "refused"]
+    assert len(filed) == 3
+    assert sleeps == [1, 2]
+    assert provider._write_failures == 0
 
 
 def test_status_surfaces_write_failure_counter(provider):
