@@ -569,9 +569,10 @@ def run_mcp_tool(payload: dict[str, Any]) -> dict[str, Any]:
     exfiltrate verbatim palace content into the queue DB and the job result,
     and maintenance tools already have their own dedicated kinds (mine/sync).
 
-    Dispatch goes through ``mcp_server.handle_request`` so the read-only,
-    sqlite-integrity, stale-library, diverged-index, and peer-writer gates run,
-    and so argument filtering and type coercion match a real tools/call.
+    Dispatch goes through ``mcp_server.call_tool``, the tools/call path of
+    ``handle_request``, so the read-only, sqlite-integrity, stale-library,
+    diverged-index, and peer-writer gates run, and argument filtering and type
+    coercion match a real tools/call.
     """
     name = payload.get("name")
     arguments = payload.get("arguments") or {}
