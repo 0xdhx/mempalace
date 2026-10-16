@@ -275,6 +275,62 @@ def atomic_write_text(path: PathLike, text: str) -> None:
     atomic_publish(path, lambda handle: handle.write(text))
 
 
+class CorruptStateError(OSError):
+    """A state file did not parse and must not be overwritten.
+
+    ``kept_at`` is where the previous bytes were moved, when the directory
+    allowed the rename. The original path is not replaced with an empty
+    or partial document.
+    """
+
+    def __init__(self, path: PathLike, reason: str, kept_at: Optional[PathLike] = None):
+        self.path = os.fspath(path)
+        self.reason = reason
+        self.kept_at = None if kept_at is None else os.fspath(kept_at)
+        message = f"{self.path} {reason}"
+        if self.kept_at:
+            message += f"; kept the previous bytes at {self.kept_at}"
+        message += "; refusing to overwrite it"
+        super().__init__(message)
+
+
+def refuse_unparsed(path: PathLike, reason: str) -> None:
+    """Move ``path`` aside and raise. Never returns.
+
+    A failed rename leaves the file where it was and still raises, so the
+    caller cannot write a fresh document over bytes it did not understand.
+    """
+    try:
+        kept = move_aside(path, label="corrupt")
+    except OSError as exc:
+        raise CorruptStateError(path, f"{reason} and could not be moved aside ({exc})") from exc
+    raise CorruptStateError(path, reason, kept_at=kept)
+
+
+def read_json_for_update(path: PathLike, *, expect: Optional[type] = None):
+    """Parse JSON that a later save is allowed to replace.
+
+    A missing file returns ``None`` (the caller may create one). A file
+    that cannot be read raises :class:`CorruptStateError` and stays put.
+    Bytes that are not JSON, or JSON of the wrong top-level type, are
+    renamed to ``<name>.corrupt-<stamp>-<random>`` and then refused.
+    """
+    path = Path(path)
+    if not os.path.lexists(path):
+        return None
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise CorruptStateError(path, f"could not be read ({exc})") from exc
+    try:
+        loaded = json.loads(raw.decode("utf-8-sig"))
+    except ValueError:
+        refuse_unparsed(path, "does not parse")
+    if expect is not None and not isinstance(loaded, expect):
+        refuse_unparsed(path, f"is not a JSON {expect.__name__}")
+    return loaded
+
+
 def move_aside(path: PathLike, *, label: str) -> Optional[str]:
     """Rename ``path`` to ``<name>.<label>-<stamp>-<random>``, keeping its bytes.
 

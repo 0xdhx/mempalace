@@ -33,9 +33,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   drawer from a file whose text the speller changed carries
   `transforms: "spellcheck_user"` in its metadata. Drawers filed before this
   release keep their corrected text until the source file is mined again.
+- **`mempalace_search` no longer applies a default distance cutoff.** It used to
+  drop every hit past cosine distance 1.5, which could hide a relevant but
+  distant drawer. Pass `max_distance` to keep a cutoff; it is now read on the
+  cosine scale (0 = identical, 2 = opposite) whatever metric the palace uses,
+  and the response reports how many hits it dropped in
+  `filtered_by_max_distance`. In `candidate_strategy: "union"`, a lexical-only
+  hit whose vector distance can't be computed is kept with `distance: null` and
+  `fallback_reason: "distance_unavailable"` instead of disappearing.
 
-### Fixed
+### Bug Fixes
 
+- **A mine stops when it cannot read which files are already filed.** The
+  already-mined check used to answer "not mined" on any palace read error, so a
+  re-mine re-filed files it could not see. It now raises `MinedSetUnavailable`
+  and the project, conversation and format miners all abort the run on it. A
+  pass that crashed between batches (fewer drawers than the largest
+  `chunk_total` any of them names) reads as unfinished on every check.
 - ChatGPT imports file the branch the conversation ended on (`current_node`),
   not the first draft of every regenerated or edited turn.
 - A Slack message with `"user": null` is filed under `unknown` instead of

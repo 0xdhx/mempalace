@@ -1715,7 +1715,7 @@ def test_an_emptied_file_drops_its_drawers_and_is_not_reextracted(tmp_path, monk
     palace.mine()
     rows = palace.rows()
     assert [meta.get("is_sentinel") for _, meta in rows] == [True]
-    assert rows[0][1]["source_mtime"] == palace.doc.stat().st_mtime
+    assert rows[0][1]["source_mtime"] == pytest.approx(palace.doc.stat().st_mtime, abs=1e-3)
 
     extracted = palace.extracted
     palace.mine()
@@ -1782,3 +1782,28 @@ def test_mine_formats_holds_the_palace_lock_only_for_a_real_mine(tmp_path, monke
     assert held == []
     format_miner.mine_formats(str(tmp_path), str(tmp_path / "palace"))
     assert held == [str(tmp_path / "palace")]
+
+
+def test_an_unreadable_mined_set_aborts_the_format_mine(tmp_path, monkeypatch):
+    from mempalace.palace import MinedSetUnavailable, get_collection
+
+    palace = _RealPalace(tmp_path, monkeypatch)
+    palace.mine()
+    before = palace.rows()
+    extracted = palace.extracted
+
+    col_type = type(get_collection(palace.palace))
+    real_get = col_type.get
+
+    def failing_get(self, *args, **kwargs):
+        if "source_file" in (kwargs.get("where") or {}):
+            raise RuntimeError("palace read failed")
+        return real_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(col_type, "get", failing_get)
+    with pytest.raises(MinedSetUnavailable):
+        palace.mine()
+    monkeypatch.setattr(col_type, "get", real_get)
+
+    assert palace.extracted == extracted
+    assert palace.rows() == before

@@ -1625,10 +1625,51 @@ def test_get_client_if_running_uses_short_probe_timeout(monkeypatch):
 
     monkeypatch.setattr(daemon, "DaemonClient", _FakeClient)
 
-    assert daemon.HOOK_PROBE_TIMEOUT <= 0.5
+    assert daemon.HOOK_PROBE_TIMEOUT <= 0.15
     client = daemon.get_client_if_running("/p", health_timeout=daemon.HOOK_PROBE_TIMEOUT)
     assert client is not None
     assert captured["timeout"] == daemon.HOOK_PROBE_TIMEOUT
+
+
+def test_wedged_daemon_probe_stays_under_hook_budget(tmp_path, monkeypatch):
+    """A socket that accepts and never answers must not burn the 500ms budget."""
+    import socket
+
+    monkeypatch.setenv(daemon.STATE_ROOT_ENV, str(tmp_path / "state"))
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def _hang():
+        try:
+            conn, _addr = server.accept()
+            time.sleep(2)
+            conn.close()
+        except OSError:
+            pass
+
+    threading.Thread(target=_hang, daemon=True).start()
+    try:
+        daemon.ensure_token(str(palace))
+        endpoint = daemon.state_dir(str(palace)) / "endpoint.json"
+        endpoint.write_text(
+            json.dumps({"host": "127.0.0.1", "port": port, "pid": os.getpid()}),
+            encoding="utf-8",
+        )
+        started = time.perf_counter()
+        client = daemon.get_client_if_running(str(palace), health_timeout=daemon.HOOK_PROBE_TIMEOUT)
+        elapsed = time.perf_counter() - started
+    finally:
+        server.close()
+
+    assert client is None
+    assert daemon.HOOK_PROBE_TIMEOUT <= 0.15
+    assert elapsed < 0.5, f"probe used {elapsed:.3f}s of the 500ms hook budget"
+    # The timeout is the bound; allow a little scheduler slack, not 500ms.
+    assert elapsed < daemon.HOOK_PROBE_TIMEOUT + 0.2
 
 
 # --- _detached_kwargs ---

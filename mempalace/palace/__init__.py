@@ -24,6 +24,7 @@ from typing import List, Optional
 
 from ..backends import (
     BackendClosedError,
+    BackendError,
     BackendMismatchError,
     CollectionNotInitializedError,
     PalaceNotFoundError,
@@ -35,6 +36,7 @@ from ..backends import (
     resolve_backend_for_palace,
 )
 from ..backends.embedding_wrapper import EmbeddingCollection
+from ..collision_scan import CollisionError
 from ..entity_detector import (
     _apply_known_systems_prepass,
     _collapse_long_ascii_runs,

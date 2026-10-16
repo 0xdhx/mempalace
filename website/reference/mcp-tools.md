@@ -70,8 +70,15 @@ Semantic search. Returns verbatim drawer content with similarity scores.
 | `room` | string | No | Filter by room |
 | `since` | string | No | Include drawers filed on or after this ISO date/datetime |
 | `before` | string | No | Include drawers filed strictly before this ISO date/datetime |
+| `max_distance` | number | No | Distance cutoff on the cosine scale (0 = identical, 2 = opposite), applied the same way whatever metric the palace uses. Default: no cutoff |
 
 **Returns:** `{ query, filters, results: [{ text, wing, room, source_file, similarity }] }`
+
+When `max_distance` drops results, the response says how many in
+`filtered_by_max_distance`. With `candidate_strategy: "union"`, a lexical-only
+hit whose vector distance can't be computed is kept with `distance: null` and
+`fallback_reason: "distance_unavailable"`, and a failed lexical fetch sets
+`candidate_strategy_fallback: "lexical_search_failed"`.
 
 Each hit also includes date provenance: `filed_at` (equal to legacy `created_at`),
 legacy `authored_at`, `authored_at_source`, `content_date`, and

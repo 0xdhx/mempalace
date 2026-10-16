@@ -579,6 +579,11 @@ def tool_get_taxonomy():
     return result
 
 
+# The cosine distance ``min_similarity >= 1.0`` maps to: float error on an
+# identical vector stays below it.
+_EXACT_MATCH_DISTANCE = 1e-5
+
+
 def tool_search(
     query: str,
     limit: int = 5,
@@ -690,10 +695,13 @@ def tool_search(
         return result
 
     # Backwards compat: convert old similarity scale (higher=stricter) to
-    # distance scale (lower=stricter). Similarity 0.8 → distance 0.2.
-    dist = (1.0 - min_similarity) if min_similarity is not None else max_distance
-    if dist is None:
-        dist = 1.5
+    # distance scale (lower=stricter). Similarity 0.8 → distance 0.2, and
+    # 1.0 or more means exact matches only, not "no cutoff".
+    # No cutoff unless the caller asks for one.
+    if min_similarity is not None:
+        dist = max(1.0 - min_similarity, _EXACT_MATCH_DISTANCE)
+    else:
+        dist = max_distance
 
     # Ensure the vector-disabled probe has been run via the safe
     # sqlite/pickle path before we touch chromadb. Calling _get_client()
