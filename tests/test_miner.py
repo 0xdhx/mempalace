@@ -927,7 +927,7 @@ def test_file_already_mined_check_mtime():
             metadatas=[
                 {
                     "source_file": test_file,
-                    "source_mtime": str(mtime),
+                    "source_mtime": mtime,
                     "normalize_version": NORMALIZE_VERSION,
                 }
             ],
@@ -3672,3 +3672,55 @@ def test_mine_aborts_when_the_mined_set_cannot_be_read(tmp_path, monkeypatch):
 
     monkeypatch.setattr(type(col), "get", real_get)
     assert sorted(get_collection(palace_path).get(include=["metadatas"])["ids"]) == before
+
+
+class _RowsCollection:
+    """Pages stored metadata rows in a fixed order, as a backend would."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def count(self):
+        return len(self.rows)
+
+    def get(self, where=None, limit=1000, offset=0, include=None):
+        src = (where or {}).get("source_file")
+        rows = [r for r in self.rows if src is None or r["source_file"] == src]
+        page = rows[offset : offset + limit]
+        return {"ids": [str(offset + i) for i in range(len(page))], "metadatas": page}
+
+
+def _exchange_rows(src, *totals):
+    rows = []
+    for total in totals:
+        meta = {
+            "source_file": src,
+            "source_mtime": 1.0,
+            "normalize_version": NORMALIZE_VERSION,
+            "extract_mode": "exchange",
+            "convo_chunker_version": CONVO_CHUNKER_VERSION,
+        }
+        if total is not None:
+            meta["chunk_total"] = total
+        rows.append(meta)
+    return rows
+
+
+@pytest.mark.parametrize("totals", [(2, 3), (3, 2)])
+def test_prefetch_mined_set_reads_mixed_totals_the_same_in_any_order(totals):
+    # Two drawers naming totals 2 and 3 are a partial pass, whichever comes back first.
+    col = _RowsCollection(_exchange_rows("s.jsonl", *totals))
+    assert prefetch_mined_set(col, extract_mode="exchange") == {}
+
+
+def test_prefetch_mined_set_leaves_an_unprovable_source_to_the_per_file_check():
+    col = _RowsCollection(_exchange_rows("s.jsonl", "1"))
+    assert prefetch_mined_set(col, extract_mode="exchange") == {}
+    assert file_already_mined(col, "s.jsonl", extract_mode="exchange") is False
+
+
+@pytest.mark.parametrize("totals", [(None, "x"), ("x", None)])
+def test_file_already_mined_answers_the_same_in_any_row_order(totals):
+    # An untracked row next to one whose total cannot be compared proves nothing.
+    col = _RowsCollection(_exchange_rows("s.jsonl", *totals))
+    assert file_already_mined(col, "s.jsonl", extract_mode="exchange") is False
