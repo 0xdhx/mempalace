@@ -341,19 +341,27 @@ def _coerce_field(key: str, val: Any) -> Any:
     return _parse_val(val)
 
 
+def _put_key_value(params: dict, tok: str) -> None:
+    k, v = tok.split(":", 1)
+    params[k.lower()] = _coerce_field(k.lower(), v)
+
+
 def _verbatim_span(source: str, tokens: list) -> str:
-    """Rebuild stored text from the original source span, including spaces."""
+    """Join content tokens, keeping the whitespace written between adjacent ones.
+
+    Tokens separated by anything else (a keyword such as ``IN w/r``) join with
+    one space, so keywords never end up in the stored text.
+    """
     if not tokens:
         return ""
-    if len(tokens) == 1:
-        return _stored_text(tokens[0])
-    if not all(hasattr(tok, "start") and hasattr(tok, "end") for tok in tokens):
-        return " ".join(_stored_text(tok) for tok in tokens)
-    scanned = source.strip()
-    parts: list[str] = []
-    for index, tok in enumerate(tokens):
-        if index:
-            parts.append(scanned[tokens[index - 1].end : tok.start])
+    parts = [_stored_text(tokens[0])]
+    for prev, tok in zip(tokens, tokens[1:]):
+        gap = (
+            source[prev.end : tok.start]
+            if isinstance(prev, Token) and isinstance(tok, Token)
+            else " "
+        )
+        parts.append(gap if not gap.strip() else " ")
         parts.append(_stored_text(tok))
     return "".join(parts)
 
@@ -572,8 +580,7 @@ def parse_query_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C
                 params["before"] = tokens[i + 1]
                 i += 2
             elif ":" in tokens[i]:
-                k, v = tokens[i].split(":", 1)
-                params[k.lower()] = _coerce_field(k.lower(), v)
+                _put_key_value(params, tokens[i])
                 i += 1
             else:
                 i += 1
@@ -628,8 +635,7 @@ def parse_query_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C
                 params["direction"] = tokens[i + 1].lower()
                 i += 2
             elif ":" in tokens[i]:
-                k, v = tokens[i].split(":", 1)
-                params[k.lower()] = _coerce_field(k.lower(), v)
+                _put_key_value(params, tokens[i])
                 i += 1
             else:
                 i += 1
@@ -660,8 +666,7 @@ def parse_query_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C
                 params["wing"] = tokens[i + 1]
                 i += 2
             elif ":" in tokens[i]:
-                k, v = tokens[i].split(":", 1)
-                params[k.lower()] = _coerce_field(k.lower(), v)
+                _put_key_value(params, tokens[i])
                 i += 1
             else:
                 params["wing"] = tokens[i]
@@ -709,8 +714,7 @@ def parse_query_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C
                 params["wing"] = tokens[i + 1]
                 i += 2
             elif ":" in tokens[i]:
-                k, v = tokens[i].split(":", 1)
-                params[k.lower()] = _coerce_field(k.lower(), v)
+                _put_key_value(params, tokens[i])
                 i += 1
             else:
                 i += 1
@@ -760,8 +764,7 @@ def parse_query_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C
             params["context"] = tokens[i + 1]
             i += 2
         elif ":" in tok and not tok.startswith("http") and not isinstance(tok, QuotedToken):
-            k, v = tok.split(":", 1)
-            params[k.lower()] = _coerce_field(k.lower(), v)
+            _put_key_value(params, tok)
             i += 1
         else:
             search_tokens.append(tok)
@@ -979,8 +982,7 @@ def parse_exec_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C9
                 params["added_by"] = tokens[i + 1]
                 i += 2
             elif ":" in tok and not isinstance(tok, QuotedToken):
-                k, v = tok.split(":", 1)
-                params[k.lower()] = _coerce_field(k.lower(), v)
+                _put_key_value(params, tok)
                 i += 1
             else:
                 content_tokens.append(tok)

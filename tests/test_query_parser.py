@@ -214,6 +214,20 @@ class TestPalaceExecParser:
         assert target == "diary_write"
         assert params["entry"] == "keep   these    spaces"
 
+    def test_keywords_between_content_runs_are_not_stored(self):
+        target, params = parse_exec_input("ADD hello  world IN w/r more words SOURCE x.md tail")
+        assert target == "add_drawer"
+        assert params["content"] == "hello  world more words tail"
+        assert (params["wing"], params["room"], params["source_file"]) == ("w", "r", "x.md")
+
+        _, params = parse_exec_input('ADD "quoted part" IN w/r trailing')
+        assert params["content"] == "quoted part trailing"
+
+        target, params = parse_exec_input("DIARY WRITE agent1 did a thing TOPIC work then more")
+        assert target == "diary_write"
+        assert params["entry"] == "did a thing then more"
+        assert params["topic"] == "work"
+
     def test_update_content_keeps_trailing_zero_in_version(self):
         target, params = parse_exec_input("UPDATE drw_1 CONTENT 3.10")
         assert target == "update_drawer"
