@@ -44,6 +44,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **A re-mine no longer loses a file's drawers when it fails part-way.** The
+  project and conversation miners deleted a changed file's drawers before
+  writing the new ones, so a crash or backend error during the write left the
+  file with nothing in the palace. All three miners now file through one
+  write path: the new drawers are written first, marked unfinished, then the
+  stale ones are removed and the marker is cleared. A failure at any point
+  leaves the old or the new text readable, and the next mine finishes the file.
 - **A mine stops when it cannot read which files are already filed.** The
   already-mined check used to answer "not mined" on any palace read error, so a
   re-mine re-filed files it could not see. It now raises `MinedSetUnavailable`

@@ -82,14 +82,13 @@ from .palace import (
     mine_yield_point,
     palace_write_serial,
     raise_if_files_failed,
+    write_file_drawers,
 )
 
 # Module-level imports from .miner so tests can patch them via
 # mempalace.format_miner.<name>. Lazy imports inside functions would not
 # expose these as attributes of this module, breaking the test seams.
 from .config import MempalaceConfig, normalize_wing_name
-from .collision_scan import assert_no_collisions
-from .convo_miner import _source_file_delete_ids
 from .ids import ID_RECIPE, make_drawer_id_from_chunk
 from .source_identity import identity_metadata, source_directory_identity
 from .miner import (
@@ -110,9 +109,6 @@ __all__ = [
     "mine_formats",
 ]
 
-
-# Same batch size as miner.py / convo_miner.py — bounds memory + Chroma payload.
-DRAWER_UPSERT_BATCH_SIZE = 1000
 
 # Minimum chunk size (chars) — drawers below this are dropped as not useful.
 MIN_CHUNK_SIZE = 50
@@ -586,14 +582,9 @@ def _register_file(
     needs to match it.
 
     ``empty`` means the file now holds no text, so its earlier format drawers
-    are stale and are deleted first.
+    are stale and are replaced by the sentinel.
     """
     sentinel_id = f"sentinel_{wing}_{hashlib.sha256(source_file.encode()).hexdigest()[:24]}"
-    if empty:
-        ids = _source_file_delete_ids(collection, source_file, "format")
-        stale = [i for i in ids if i != sentinel_id]
-        if stale:
-            collection.delete(ids=stale)
     meta = {
         "wing": wing,
         "room": "documents",
@@ -612,10 +603,15 @@ def _register_file(
     }
     if source_mtime is not None:
         meta["source_mtime"] = source_mtime
-    try:
-        collection.upsert(documents=["[empty]"], ids=[sentinel_id], metadatas=[meta])
-    except Exception:
-        logger.debug("Sentinel write failed for %s", source_file, exc_info=True)
+    # Replacing the file's drawers takes the same lock a real re-mine does.
+    with mine_lock(source_file) if empty else contextlib.nullcontext():
+        write_file_drawers(
+            collection,
+            source_file,
+            [(sentinel_id, "[empty]", meta)],
+            extract_mode="format",
+            prune=empty,
+        )
 
 
 def _file_chunks_locked(
@@ -629,13 +625,11 @@ def _file_chunks_locked(
     content: Optional[str] = None,
     source_dir_ino: Optional[str] = None,
 ):
-    """Lock the source file, upsert fresh chunks, then drop stale drawers.
+    """Lock the source file and replace its format drawers with fresh chunks.
 
-    New drawers land before any previous format drawer is deleted, and they
-    carry ``chunk_total`` one higher than their count until the stale ones
-    are gone, so ``file_already_mined`` reads a crash anywhere in between as
-    unfinished and the next mine redoes the file. Only this file's format
-    drawers are replaced; project and convo drawers for the same path stay.
+    ``write_file_drawers`` files the new drawers before any previous format
+    drawer is deleted. Only this file's format drawers are replaced; project
+    and convo drawers for the same path stay.
 
     Each drawer's metadata includes:
       - ``source_mtime`` — for mtime-based idempotency (file_already_mined
@@ -661,14 +655,10 @@ def _file_chunks_locked(
         source_file, content or ""
     )
 
-    drawers_added = 0
     with mine_lock(source_file):
         # Re-check after lock — another agent may have just finished this file.
         # Use check_mtime=True so an updated source file is re-mined even
         # though a prior drawer set exists (matches miner.py semantics).
-        # palace.file_already_mined reads current mtime from disk and compares
-        # against the stored source_mtime metadata, so the caller just toggles
-        # the flag; no need to pass mtime explicitly.
         # ``extract_mode="format"`` scopes the idempotency check to format-mode
         # drawers only — drawers from convo_miner / project miner on the same
         # source_file don't falsely indicate "already mined" to the format
@@ -676,81 +666,48 @@ def _file_chunks_locked(
         if file_already_mined(collection, source_file, check_mtime=True, extract_mode="format"):
             return 0, True
 
-        old_ids = _source_file_delete_ids(collection, source_file, "format")
-        new_ids: list = []
-        new_metas: list = []
         filed_at = datetime.now().isoformat()
-        for batch_start in range(0, len(chunks), DRAWER_UPSERT_BATCH_SIZE):
-            batch_docs: list = []
-            batch_ids: list = []
-            batch_metas: list = []
-            for chunk in chunks[batch_start : batch_start + DRAWER_UPSERT_BATCH_SIZE]:
-                drawer_id = make_drawer_id_from_chunk(wing, room, source_file, chunk["chunk_index"])
-                content = chunk["content"]
-                meta: dict = {
-                    "wing": wing,
-                    "room": room,
-                    "source_file": source_file,
-                    "chunk_index": chunk["chunk_index"],
-                    "added_by": agent,
-                    "filed_at": filed_at,
-                    "ingest_mode": "extract",
-                    "extract_mode": "format",
-                    "normalize_version": NORMALIZE_VERSION,
-                    "hall": detect_hall(content),
-                    "id_recipe": ID_RECIPE,
-                    "chunk_total": len(chunks) + 1,
-                }
-                if source_mtime is not None:
-                    meta["source_mtime"] = source_mtime
-                if source_dir_ino:
-                    # Which directory this file was read from, so ``sync``
-                    # can tell a neighbour in the same directory from one on
-                    # a volume mounted there since (#2320).
-                    meta["source_dir_ino"] = source_dir_ino
-                # Tier 6a — propagate line range from chunk dict into drawer
-                # metadata so closet pointers can carry "where in source"
-                # info. Chunks emitted by older code paths without these
-                # keys produce drawers without the keys (graceful fallback).
-                if chunk.get("line_start") is not None:
-                    meta["line_start"] = chunk["line_start"]
-                if chunk.get("line_end") is not None:
-                    meta["line_end"] = chunk["line_end"]
-                # Tier 6a content-date: shared across all chunks of the file.
-                if file_content_date:
-                    meta["content_date"] = file_content_date
-                    meta["content_date_source"] = file_content_date_source
-                entities = _extract_entities_for_metadata(content)
-                if entities:
-                    meta["entities"] = entities
-                batch_docs.append(content)
-                batch_ids.append(drawer_id)
-                batch_metas.append(meta)
-            assert_no_collisions(list(zip(batch_ids, batch_metas)), collection)
-            try:
-                collection.upsert(
-                    documents=batch_docs,
-                    ids=batch_ids,
-                    metadatas=batch_metas,
-                )
-                drawers_added += len(batch_docs)
-            except Exception as exc:
-                if "already exists" not in str(exc).lower():
-                    raise
-            new_ids += batch_ids
-            new_metas += batch_metas
-
-        fresh = set(new_ids)
-        stale = [drawer_id for drawer_id in old_ids if drawer_id not in fresh]
-        if stale:
-            collection.delete(ids=stale)
-        # Metadata only: the documents and their embeddings are already stored.
-        for batch_start in range(0, len(new_ids), DRAWER_UPSERT_BATCH_SIZE):
-            batch = slice(batch_start, batch_start + DRAWER_UPSERT_BATCH_SIZE)
-            collection.update(
-                ids=new_ids[batch],
-                metadatas=[{**meta, "chunk_total": len(chunks)} for meta in new_metas[batch]],
-            )
+        drawers = []
+        for chunk in chunks:
+            text = chunk["content"]
+            meta: dict = {
+                "wing": wing,
+                "room": room,
+                "source_file": source_file,
+                "chunk_index": chunk["chunk_index"],
+                "added_by": agent,
+                "filed_at": filed_at,
+                "ingest_mode": "extract",
+                "extract_mode": "format",
+                "normalize_version": NORMALIZE_VERSION,
+                "hall": detect_hall(text),
+                "id_recipe": ID_RECIPE,
+            }
+            if source_mtime is not None:
+                meta["source_mtime"] = source_mtime
+            if source_dir_ino:
+                # Which directory this file was read from, so ``sync`` can
+                # tell a neighbour in the same directory from one on a volume
+                # mounted there since (#2320).
+                meta["source_dir_ino"] = source_dir_ino
+            # Tier 6a — propagate line range from chunk dict into drawer
+            # metadata so closet pointers can carry "where in source" info.
+            # Chunks emitted by older code paths without these keys produce
+            # drawers without the keys (graceful fallback).
+            if chunk.get("line_start") is not None:
+                meta["line_start"] = chunk["line_start"]
+            if chunk.get("line_end") is not None:
+                meta["line_end"] = chunk["line_end"]
+            # Tier 6a content-date: shared across all chunks of the file.
+            if file_content_date:
+                meta["content_date"] = file_content_date
+                meta["content_date_source"] = file_content_date_source
+            entities = _extract_entities_for_metadata(text)
+            if entities:
+                meta["entities"] = entities
+            drawer_id = make_drawer_id_from_chunk(wing, room, source_file, chunk["chunk_index"])
+            drawers.append((drawer_id, text, meta))
+        drawers_added = write_file_drawers(collection, source_file, drawers, extract_mode="format")
     return drawers_added, False
 
 

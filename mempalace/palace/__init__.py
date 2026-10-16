@@ -36,7 +36,7 @@ from ..backends import (
     resolve_backend_for_palace,
 )
 from ..backends.embedding_wrapper import EmbeddingCollection
-from ..collision_scan import CollisionError
+from ..collision_scan import CollisionError, assert_no_collisions
 from ..entity_detector import (
     _apply_known_systems_prepass,
     _collapse_long_ascii_runs,
@@ -126,6 +126,7 @@ _FRAGMENTS = (
     "mine_lock.py",
     "palace_lock.py",
     "mined.py",
+    "writes.py",
 )
 
 
