@@ -1403,13 +1403,7 @@ def test_empty_file_sentinel_uses_the_read_mtime(tmp_path, monkeypatch):
     client = chromadb.PersistentClient(path=str(palace))
     col = client.get_collection("mempalace_drawers")
     metas = col.get(where={"source_file": str(blank.resolve())}, include=["metadatas"])["metadatas"]
-    if not metas:
-        metas = [
-            meta
-            for meta in col.get(include=["metadatas"])["metadatas"]
-            if meta and str(meta.get("source_file", "")).endswith("blank.txt")
-        ]
-    assert metas
+    assert len(metas) == 1
     assert abs(float(metas[0]["source_mtime"]) - real_mtime) < 0.001
 
 
@@ -1427,14 +1421,14 @@ def test_one_bad_transcript_does_not_abort_the_mine(tmp_path, monkeypatch):
     )
     bad = tmp_path / "bad.json"
     bad.write_text("[]", encoding="utf-8")
-    real = convo_miner._conversations_from_content
+    real = convo_miner.normalize_conversations_with_mtime
 
-    def flaky(filepath, content):
-        if filepath.name == "bad.json":
+    def flaky(filepath):
+        if filepath.endswith("bad.json"):
             raise TypeError("expected string or bytes-like object, got 'NoneType'")
-        return real(filepath, content)
+        return real(filepath)
 
-    monkeypatch.setattr(convo_miner, "_conversations_from_content", flaky)
+    monkeypatch.setattr(convo_miner, "normalize_conversations_with_mtime", flaky)
     palace = tmp_path / "palace"
     with pytest.raises(MineFileErrors) as exc_info:
         mine_convos(str(tmp_path), str(palace), wing="test")
@@ -1448,3 +1442,18 @@ def test_one_bad_transcript_does_not_abort_the_mine(tmp_path, monkeypatch):
         meta and str(meta.get("source_file", "")).endswith("bad.json")
         for meta in stored["metadatas"]
     )
+
+
+def test_a_collision_aborts_the_mine_instead_of_failing_one_file(tmp_path, monkeypatch):
+    """CollisionError means the palace is unsafe to write, not that one file is bad."""
+    from mempalace import convo_miner
+    from mempalace.collision_scan import CollisionError
+
+    (tmp_path / "chat.txt").write_text(_THREE_TURNS, encoding="utf-8")
+
+    def collide(*_args, **_kwargs):
+        raise CollisionError("drawer_x maps to two sources")
+
+    monkeypatch.setattr(convo_miner, "_file_chunks_locked", collide)
+    with pytest.raises(CollisionError):
+        mine_convos(str(tmp_path), str(tmp_path / "palace"), wing="test")

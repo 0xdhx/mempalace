@@ -20,20 +20,22 @@ from datetime import datetime
 from collections import defaultdict
 from typing import Optional
 
-from .backends import PalaceNotFoundError
-from .collision_scan import assert_no_collisions
+from .backends import BackendError, PalaceNotFoundError
+from .collision_scan import CollisionError, assert_no_collisions
 from .ids import (
     ID_RECIPE,
     make_convo_drawer_id,
     make_convo_sentinel_id,
     make_exchange_drawer_id,
 )
-from .normalize import UnparsedCodexTranscriptError, _try_normalize_json_split
+from .normalize import UnparsedCodexTranscriptError, normalize_conversations_with_mtime
 from .source_identity import identity_metadata, source_directory_identity
 from .entities import entities_metadata
 from .palace import (
     CONVO_CHUNKER_VERSION,
     NORMALIZE_VERSION,
+    MineAlreadyRunning,
+    MinedSetUnavailable,
     SKIP_DIRS,
     _metadata_matches_extract_mode,
     _validate_palace_fts5_after_mine,
@@ -54,6 +56,10 @@ logger = logging.getLogger("mempalace_mcp")
 # Third value of _file_chunks_locked when the stale-drawer purge raised: the
 # file was not mined. Truthy, so it still reads as "nothing filed".
 PURGE_FAILED = "purge_failed"
+
+# A file that fails is recorded and the mine moves on; these mean the palace
+# or the run is unusable, so they abort the mine instead.
+_ABORTS_MINE = (BackendError, CollisionError, MineAlreadyRunning, MinedSetUnavailable)
 
 
 # Cached hall keywords — avoids re-reading config per drawer
@@ -227,64 +233,6 @@ def _is_regular_source_file(filepath: Path, root: Path) -> bool:
                 os.close(fd)
             except OSError:
                 pass
-
-
-def _read_transcript_with_mtime(filepath: Path) -> tuple[str, float]:
-    """Return ``(text, mtime)`` from one open of ``filepath``.
-
-    ``fstat`` runs before the read, the same order as
-    ``miner._read_text_no_follow``. Statting after the read can record an
-    mtime for bytes the read never saw, and the next mine then skips the
-    appended tail forever.
-    """
-    path = str(filepath)
-    if os.path.islink(path):
-        raise OSError(f"Could not read {path}: symlinked files are skipped")
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    fd = -1
-    try:
-        try:
-            fd = os.open(path, flags)
-        except OSError as exc:
-            if exc.errno != errno.EAGAIN or not stat.S_ISREG(os.lstat(path).st_mode):
-                raise
-            fd = os.open(path, flags & ~getattr(os, "O_NONBLOCK", 0))
-        file_stat = os.fstat(fd)
-        if not stat.S_ISREG(file_stat.st_mode):
-            raise OSError("not a regular file")
-        if file_stat.st_size > MAX_FILE_SIZE:
-            raise OSError(f"file too large ({file_stat.st_size // (1024 * 1024)} MB)")
-        mtime = file_stat.st_mtime
-        with os.fdopen(fd, "r", encoding="utf-8-sig", errors="replace") as handle:
-            fd = -1
-            return handle.read(), mtime
-    except OSError as exc:
-        raise OSError(f"Could not read {path}: {exc}") from exc
-    finally:
-        if fd != -1:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
-
-
-def _conversations_from_content(filepath: Path, content: str) -> list:
-    """Split ``content`` the way ``normalize.normalize_conversations`` does.
-
-    The text was already read by :func:`_read_transcript_with_mtime`, so this
-    must not open the file again.
-    """
-    if not content.strip():
-        return []
-    lines = content.split("\n")
-    if sum(1 for line in lines if line.strip().startswith(">")) >= 3:
-        return [content]
-    ext = filepath.suffix.lower()
-    if ext in (".json", ".jsonl") or content.strip()[:1] in ("{", "["):
-        split = _try_normalize_json_split(content)
-        if split:
-            return split
-    return [content]
 
 
 def _register_file(
@@ -1101,8 +1049,8 @@ def _normalize_convo_conversations(
     whole-file hash and hides the conversations that didn't change.
     """
     try:
-        content, source_mtime = _read_transcript_with_mtime(filepath)
-        conversations = [c for c in _conversations_from_content(filepath, content) if c]
+        conversations, source_mtime = normalize_conversations_with_mtime(str(filepath))
+        conversations = [c for c in conversations if c]
     except UnparsedCodexTranscriptError as exc:
         logger.warning("Skipping %s: %s; source remains eligible for retry", filepath, exc)
         return None
@@ -1347,15 +1295,12 @@ def _mine_convos_impl(
                     type_counts = Counter(c.get("memory_type", "general") for c in chunks)
                     types_str = ", ".join(f"{t}:{n}" for t, n in type_counts.most_common())
                     print(f"    [DRY RUN] {filepath.name} -> {len(chunks)} memories ({types_str})")
+                    for t, n in type_counts.items():
+                        room_counts[t] += n
                 else:
                     print(f"    [DRY RUN] {filepath.name} -> room:{room} ({len(chunks)} drawers)")
-                total_drawers += len(chunks)
-                # Track room counts
-                if extract_mode == "general":
-                    for c in chunks:
-                        room_counts[c.get("memory_type", "general")] += 1
-                else:
                     room_counts[room] += 1
+                total_drawers += len(chunks)
                 files_mined += 1
                 if limit > 0 and files_mined >= limit:
                     break
@@ -1395,18 +1340,11 @@ def _mine_convos_impl(
             print(f"  + [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers_added}")
             if limit > 0 and files_mined >= limit:
                 break
+        except _ABORTS_MINE:
+            raise
         except Exception as exc:
             files_failed.append(source_file)
-            logger.warning(
-                "mine_convos: error processing %s — %s: %s",
-                source_file,
-                type(exc).__name__,
-                str(exc)[:200],
-            )
-            print(
-                f"  ! [error] {filepath.name}: {type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
+            print(f"  ! [error] {filepath.name}: {type(exc).__name__}: {exc}", file=sys.stderr)
             continue
 
     if not dry_run:
