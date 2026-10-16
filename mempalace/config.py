@@ -991,6 +991,23 @@ class MempalaceConfig:
         return hooks.get("auto_save", True)
 
     @property
+    def convo_spellcheck(self):
+        """Whether the conversation miner spell-corrects user turns. Off by default.
+
+        Opt in with ``convo.spellcheck`` or ``MEMPALACE_CONVO_SPELLCHECK``.
+        Every drawer from a file whose text the speller changed carries
+        ``transforms: "spellcheck_user"``.
+        """
+        env_val = os.environ.get("MEMPALACE_CONVO_SPELLCHECK")
+        if env_val is not None:
+            return env_val.lower() in ("true", "1", "yes", "on")
+        convo = self._file_config.get("convo")
+        value = convo.get("spellcheck", False) if isinstance(convo, dict) else False
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes", "on")
+        return value is True
+
+    @property
     def topic_wings(self):
         """List of topic wing names."""
         return self._file_config.get("topic_wings", DEFAULT_TOPIC_WINGS)
