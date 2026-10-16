@@ -12,8 +12,6 @@ import pytest
 
 from mempalace.palace import MineFileErrors, file_already_mined, get_collection
 
-_W1_12 = "W1-12: re-mines delete the old drawers before the new ones are written"
-
 
 def _paragraphs(prefix: str, count: int) -> str:
     return "\n\n".join(f"{prefix} paragraph {i}. " + "verbatim words " * 40 for i in range(count))
@@ -162,7 +160,6 @@ def test_project_remine_replaces_every_drawer_for_the_path(tmp_path):
     assert all("new paragraph" in doc for doc in docs)
 
 
-@pytest.mark.xfail(reason=_W1_12, strict=True)
 def test_project_failed_write_keeps_the_previous_drawers(tmp_path, monkeypatch):
     project = _Project(tmp_path)
     project.write(_paragraphs("old", 3))
@@ -251,7 +248,6 @@ def test_convo_remine_leaves_the_other_extract_mode_alone(tmp_path):
     assert sorted(doc for doc, _ in convo.rows("general")) == general
 
 
-@pytest.mark.xfail(reason=_W1_12, strict=True)
 def test_convo_failed_write_keeps_the_previous_drawers(tmp_path, monkeypatch):
     convo = _Convo(tmp_path)
     convo.write(range(3))

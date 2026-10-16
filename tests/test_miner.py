@@ -1409,11 +1409,14 @@ def test_process_file_uses_bounded_upsert_batches(tmp_path, monkeypatch):
         def upsert(self, documents, ids, metadatas):
             self.batch_sizes.append(len(documents))
 
+        def update(self, ids, metadatas):
+            pass
+
     source = tmp_path / "src.py"
     source.write_text("print('hello')\n" * 20, encoding="utf-8")
     chunks = [{"content": f"chunk {i} " * 20, "chunk_index": i} for i in range(5)]
     col = FakeCol()
-    monkeypatch.setattr(miner, "DRAWER_UPSERT_BATCH_SIZE", 2)
+    monkeypatch.setattr("mempalace.palace.DRAWER_UPSERT_BATCH_SIZE", 2)
     monkeypatch.setattr(miner, "chunk_text", lambda content, source_file, **kwargs: chunks)
     monkeypatch.setattr(miner, "detect_hall", lambda content: "code")
     monkeypatch.setattr(miner, "_extract_entities_for_metadata", lambda content: "")
@@ -1437,12 +1440,15 @@ def test_process_file_uses_bounded_upsert_batches(tmp_path, monkeypatch):
 def test_process_file_stamps_chunk_total_for_completion_check(tmp_path, monkeypatch):
     """Every chunk across every batch of one mining pass must carry the
     same ``chunk_total`` so ``file_already_mined`` can tell a complete
-    multi-batch mine from one that crashed partway through (#21)."""
+    multi-batch mine from one that crashed partway through (#21). It is
+    written one too high and set to the real count once the stale drawers
+    are gone."""
     from mempalace import miner
 
     class FakeCol:
         def __init__(self):
             self.metadatas: list = []
+            self.updated: list = []
 
         def get(self, *args, **kwargs):
             return {"ids": []}
@@ -1453,11 +1459,14 @@ def test_process_file_stamps_chunk_total_for_completion_check(tmp_path, monkeypa
         def upsert(self, documents, ids, metadatas):
             self.metadatas.extend(metadatas)
 
+        def update(self, ids, metadatas):
+            self.updated.extend(metadatas)
+
     source = tmp_path / "src.py"
     source.write_text("print('hello')\n" * 20, encoding="utf-8")
     chunks = [{"content": f"chunk {i} " * 20, "chunk_index": i} for i in range(5)]
     col = FakeCol()
-    monkeypatch.setattr(miner, "DRAWER_UPSERT_BATCH_SIZE", 2)
+    monkeypatch.setattr("mempalace.palace.DRAWER_UPSERT_BATCH_SIZE", 2)
     monkeypatch.setattr(miner, "chunk_text", lambda content, source_file, **kwargs: chunks)
     monkeypatch.setattr(miner, "detect_hall", lambda content: "code")
     monkeypatch.setattr(miner, "_extract_entities_for_metadata", lambda content: "")
@@ -1473,10 +1482,11 @@ def test_process_file_stamps_chunk_total_for_completion_check(tmp_path, monkeypa
     )
 
     assert len(col.metadatas) == 5
-    assert all(m["chunk_total"] == 5 for m in col.metadatas), (
-        "not every chunk carries the pass's chunk_total — "
+    assert all(m["chunk_total"] == 6 for m in col.metadatas), (
+        "not every chunk was written marked unfinished — "
         "file_already_mined can't verify completeness without it on every row"
     )
+    assert [m["chunk_total"] for m in col.updated] == [5] * 5
 
 
 def test_process_file_stamps_metadata_with_read_time_mtime_not_a_later_restat(
@@ -1503,6 +1513,9 @@ def test_process_file_stamps_metadata_with_read_time_mtime_not_a_later_restat(
 
         def upsert(self, documents, ids, metadatas):
             self.metadatas.extend(metadatas)
+
+        def update(self, ids, metadatas):
+            pass
 
     source = tmp_path / "src.py"
     source.write_text("print('hello')\n" * 20, encoding="utf-8")
@@ -1539,27 +1552,31 @@ def test_process_file_stamps_metadata_with_read_time_mtime_not_a_later_restat(
     )
 
 
-def test_process_file_aborts_when_stale_drawer_purge_fails(tmp_path, monkeypatch):
-    """A failed stale-drawer purge must abort this file's mine attempt,
-    not silently proceed to upsert on top of it (#23). Proceeding either
-    orphans old tail entries beyond the new chunk count, or overwrites
-    only the overlapping chunk_index positions — not a real re-mine —
-    with zero operator-visible signal unless DEBUG logging happens to be
-    enabled."""
+def test_process_file_reports_a_failed_stale_drawer_purge(tmp_path, monkeypatch):
+    """A failed stale-drawer purge is an error, not a finished re-mine (#23).
+    The new drawers are already written but stay marked unfinished, so the
+    old ones are not orphaned: the next mine sees the file as not mined and
+    finishes the job."""
     from mempalace import miner
 
     class FailingPurgeCol:
         def __init__(self):
             self.upsert_called = False
+            self.update_called = False
 
-        def get(self, *args, **kwargs):
-            return {"ids": []}
+        def get(self, where=None, offset=0, **kwargs):
+            if where and not offset:
+                return {"ids": ["old"], "metadatas": [{"source_file": where["source_file"]}]}
+            return {"ids": [], "metadatas": []}
 
         def delete(self, *args, **kwargs):
             raise RuntimeError("simulated transient backend error")
 
         def upsert(self, documents, ids, metadatas):
             self.upsert_called = True
+
+        def update(self, ids, metadatas):
+            self.update_called = True
 
     source = tmp_path / "src.py"
     source.write_text("print('hello')\n" * 20, encoding="utf-8")
@@ -1579,10 +1596,8 @@ def test_process_file_aborts_when_stale_drawer_purge_fails(tmp_path, monkeypatch
         False,
     )
 
-    assert col.upsert_called is False, (
-        "process_file inserted new chunks even though the stale-drawer "
-        "purge raised — old and new rows can now coexist as duplicates/orphans"
-    )
+    assert col.upsert_called is True
+    assert col.update_called is False, "the new drawers were marked finished"
     assert drawers == 0
     # Tagged so the mine counts an error, not an "already filed" skip.
     assert skip_reason == "purge_failed"
@@ -1605,6 +1620,9 @@ def test_process_file_purges_closets_even_when_all_chunks_filtered_out(tmp_path,
 
         def upsert(self, documents, ids, metadatas):
             raise AssertionError("no chunks should be upserted in this scenario")
+
+        def update(self, *args, **kwargs):
+            pass
 
     purged: list = []
 
@@ -1708,8 +1726,10 @@ def test_file_already_mined_detects_incomplete_multi_batch_remine():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_process_file_cleans_partial_drawers_after_a_batch_upsert_failure(tmp_path, monkeypatch):
-    """A failed later batch must not leave mtime-stamped drawers that skip retry (#2122)."""
+def test_process_file_leaves_a_failed_write_marked_unfinished(tmp_path, monkeypatch):
+    """A failed later batch leaves what it wrote marked unfinished, so the next
+    mine retries instead of skipping an incomplete file (#2122), and deletes
+    nothing: the drawers the file had before stay readable."""
     from mempalace import miner
 
     class FailingCollection:
@@ -1750,6 +1770,9 @@ def test_process_file_cleans_partial_drawers_after_a_batch_upsert_failure(tmp_pa
                 for drawer_id, metadata in zip(ids, metadatas)
             )
 
+        def update(self, *args, **kwargs):
+            pass
+
     class FakeClosets:
         def __init__(self):
             self.deleted_sources = []
@@ -1762,9 +1785,9 @@ def test_process_file_cleans_partial_drawers_after_a_batch_upsert_failure(tmp_pa
     chunks = [{"content": f"chunk {index} " * 20, "chunk_index": index} for index in range(3)]
     collection = FailingCollection()
     closets = FakeClosets()
-    monkeypatch.setattr(miner, "DRAWER_UPSERT_BATCH_SIZE", 2)
+    monkeypatch.setattr("mempalace.palace.DRAWER_UPSERT_BATCH_SIZE", 2)
     monkeypatch.setattr(miner, "chunk_text", lambda content, source_file, **kwargs: chunks)
-    monkeypatch.setattr(miner, "assert_no_collisions", lambda *args, **kwargs: None)
+    monkeypatch.setattr("mempalace.palace.assert_no_collisions", lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="second-batch failure"):
         miner.process_file(
@@ -1778,9 +1801,9 @@ def test_process_file_cleans_partial_drawers_after_a_batch_upsert_failure(tmp_pa
             closets_col=closets,
         )
 
-    assert collection.deleted_sources == [str(source), str(source)]
-    assert collection.records == []
-    assert closets.deleted_sources == [str(source)]
+    assert collection.deleted_sources == []
+    assert [r["metadata"]["chunk_total"] for r in collection.records] == [4, 4]
+    assert closets.deleted_sources == []
     assert file_already_mined(collection, str(source), check_mtime=True) is False
 
 
@@ -3207,6 +3230,9 @@ def test_process_file_records_the_directory_it_mined_from(tmp_path, monkeypatch)
         def upsert(self, documents, ids, metadatas):
             self.metadatas.extend(metadatas)
 
+        def update(self, *args, **kwargs):
+            pass
+
     project = tmp_path / "proj"
     (project / "sub").mkdir(parents=True)
     source = project / "sub" / "src.py"
@@ -3270,6 +3296,9 @@ def test_recording_the_directory_writes_nothing_into_the_project(tmp_path):
         def upsert(self, ids=None, documents=None, metadatas=None, **kwargs):
             self.metadatas.extend(metadatas or [])
 
+        def update(self, *args, **kwargs):
+            pass
+
     def run(dry_run):
         col = FakeCol()
         miner.process_file(
@@ -3310,6 +3339,9 @@ def test_a_directory_that_cannot_be_statted_still_mines(tmp_path, monkeypatch):
 
         def upsert(self, documents, ids, metadatas):
             self.metadatas.extend(metadatas)
+
+        def update(self, *args, **kwargs):
+            pass
 
     project = tmp_path / "proj"
     project.mkdir()
