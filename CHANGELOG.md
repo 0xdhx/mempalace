@@ -56,13 +56,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   failing the whole export.
 - **Conversation drawers now say when their text is not the source as
   written.** Mining a chat transcript truncates long tool output, leaves out
-  Read/Edit/Write results, reduces tool calls to one line, strips UI chrome and
-  drops thinking and image blocks, and none of that was recorded. Every drawer
-  from a file whose parse did any of these now carries a `transforms` field
-  listing the RFC 002 names, sorted and comma-joined (for example
-  `strip_tool_chrome,tool_result_truncate`). The text itself is unchanged.
-  Drawers filed before this release carry no stamp until their file is mined
-  again.
+  some tool results, cuts tool calls down to one line, strips UI chrome, drops
+  thinking, image and system content, and adds its own markers, and none of
+  that was recorded. Every drawer from a file whose parse did any of these now
+  carries a `transforms` field listing the RFC 002 names, sorted and
+  comma-joined (for example `strip_tool_chrome,tool_result_truncate`). The
+  stamp covers the whole file, so in a bundle export it also lands on
+  conversations the step did not touch. The text itself is unchanged. Drawers
+  filed before this release carry no stamp until their file is mined again.
 
 ---
 

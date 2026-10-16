@@ -158,14 +158,16 @@ def speaker_role_assignment(text: str) -> str:
 
 
 def conversations_tool_input_summarize(text: str) -> str:
-    """Tool calls filed as one-liners: only the command, path or pattern of a
-    tool's input is kept (``normalize._format_tool_use``)."""
+    """Tool calls filed as one-liners that leave out part of the input: only
+    the command, path or pattern is kept, and long input is cut
+    (``normalize._format_tool_use``)."""
     return text
 
 
 def conversations_content_block_drop(text: str) -> str:
-    """Message blocks other than text, tool calls and tool results (thinking,
-    images, documents) are not filed (``normalize._extract_content``)."""
+    """Content that is not conversation text is not filed: thinking, image and
+    document blocks, non-text message parts, system messages, and tool calls
+    that a format records only outside its conversation turns."""
     return text
 
 
