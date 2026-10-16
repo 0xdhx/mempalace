@@ -868,6 +868,7 @@ class _PgVectorClient:
         table: str,
         *,
         where: Optional[dict] = None,
+        ids: Optional[list] = None,
         with_embedding: bool = False,
         with_document: bool = True,
         limit: Optional[int] = None,
@@ -876,7 +877,12 @@ class _PgVectorClient:
     ) -> list[dict]:
         qi = _quote_identifier(table)
         params: list = []
+        if ids is not None and not ids:
+            return []
         where_sql = _where_to_sql(where, params) if where else "TRUE"
+        if ids is not None:
+            where_sql = f"({where_sql}) AND id = ANY(%s)"
+            params.append([str(item) for item in ids])
         # Project NULL into the document slot when the caller only needs
         # metadata (e.g. mempalace_status's wing/room tally). Keeps the
         # positional _row parser unchanged — document remains record[1] —
@@ -1098,6 +1104,7 @@ class PgVectorCollection(BaseCollection):
         self,
         *,
         where=None,
+        ids=None,
         with_embedding=False,
         with_document=True,
         limit=None,
@@ -1112,6 +1119,7 @@ class PgVectorCollection(BaseCollection):
         return self._client.scroll_rows(
             self._table,
             where=where,
+            ids=ids,
             with_embedding=with_embedding,
             with_document=with_document,
             limit=limit,
@@ -1157,14 +1165,15 @@ class PgVectorCollection(BaseCollection):
     ) -> list[dict]:
         _validate_where(where)
         _validate_where(where_document)
+        # ``id`` is the primary key. Push it as ``id = ANY(%s)`` so add/update
+        # do not read the rest of the table. A where that SQL cannot express
+        # stays a local filter on that already-narrow result.
         pushdown = None if _requires_local_filter(where, where_document) else where
-        rows = self._scroll(where=pushdown, with_embedding=with_embedding)
-        id_set = set(ids) if ids is not None else None
+        rows = self._scroll(where=pushdown, ids=ids, with_embedding=with_embedding)
         return [
             row
             for row in rows
-            if (id_set is None or row["id"] in id_set)
-            and _matches_where(row["metadata"], where)
+            if _matches_where(row["metadata"], where)
             and _matches_where_document(row["document"], where_document)
         ]
 
