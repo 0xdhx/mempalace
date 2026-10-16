@@ -31,7 +31,7 @@ from .ids import (
 from .normalize import (
     UnparsedCodexTranscriptError,
     normalize_conversations_with_mtime,
-    spellchecking_user_turns,
+    recording_transforms,
 )
 from .source_identity import identity_metadata, source_directory_identity
 from .entities import entities_metadata
@@ -699,7 +699,7 @@ def _file_chunks_locked(
     content_hash=None,
     source_dir_ino=None,
     source_mtime: Optional[float] = None,
-    spellchecked: bool = False,
+    transforms: str = "",
 ):
     """Lock the source file, purge stale drawers, and upsert fresh chunks.
 
@@ -807,10 +807,10 @@ def _file_chunks_locked(
                         meta[key] = version
                     if source_mtime is not None:
                         meta["source_mtime"] = source_mtime
-                    if spellchecked:
-                        # Every drawer of a file whose text the speller
-                        # changed: RFC 002 ``spellcheck_user``.
-                        meta["transforms"] = "spellcheck_user"
+                    if transforms:
+                        # Every drawer of a file whose parse changed its text:
+                        # the RFC 002 transformations it applied.
+                        meta["transforms"] = transforms
                     if source_dir_ino:
                         # Which directory this transcript was read from, so
                         # ``sync`` can tell a neighbour in the same directory
@@ -1228,7 +1228,7 @@ def _mine_convos_impl(
                 files_skipped += 1
                 continue
 
-            with spellchecking_user_turns(spellcheck) as spellcheck_run:
+            with recording_transforms(spellcheck=spellcheck) as normalize_run:
                 normalized = _normalize_convo_conversations(
                     filepath,
                     source_file,
@@ -1254,7 +1254,7 @@ def _mine_convos_impl(
                 wing,
                 source_file,
                 mined_content_hashes,
-                verbatim=spellcheck_run.verbatim,
+                verbatim=normalize_run.verbatim,
             )
             if not new_items:
                 if not dry_run:
@@ -1343,7 +1343,7 @@ def _mine_convos_impl(
                 content_hash=content_hash,
                 source_dir_ino=source_directory_identity(filepath),
                 source_mtime=source_mtime,
-                spellchecked=spellcheck_run.changed,
+                transforms=normalize_run.transforms,
             )
             if skipped == PURGE_FAILED:
                 files_failed.append(source_file)

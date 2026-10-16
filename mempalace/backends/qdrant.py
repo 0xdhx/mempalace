@@ -24,6 +24,7 @@ from urllib import request as urlrequest
 
 import numpy as np
 
+from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
 from ..version import __version__
 from ._remote_common import (
     RemoteMarkerMixin,
@@ -260,9 +261,10 @@ def _payload_row(point: dict) -> dict:
     vector = point.get("vector")
     if isinstance(vector, dict):
         vector = vector.get("") or vector.get("default") or next(iter(vector.values()), None)
+    document, meta = decode_record(str(payload.get(_PAYLOAD_DOCUMENT) or ""), meta)
     return {
         "id": str(payload.get(_PAYLOAD_ID) or point.get("id") or ""),
-        "document": str(payload.get(_PAYLOAD_DOCUMENT) or ""),
+        "document": document,
         "metadata": meta,
         "embedding": vector if isinstance(vector, list) else None,
         "score": point.get("score"),
@@ -553,7 +555,7 @@ class _QdrantRESTClient:
         hits = result.get("hits") or []
 
         return {
-            str(hit["value"]): int(hit.get("count") or 0)
+            str(decode_value(hit["value"])): int(hit.get("count") or 0)
             for hit in hits
             if hit.get("value") is not None
         }
@@ -631,7 +633,7 @@ def _qdrant_filter(where: Optional[dict]) -> Optional[dict]:
             return None
         if key.startswith("$"):
             return None
-        condition, not_conditions = _condition(key, expected)
+        condition, not_conditions = _condition(key, encode_filter(expected))
         if condition is None:
             return None
         must.append(condition)
@@ -833,7 +835,9 @@ class QdrantCollection(BaseCollection):
             raise ValueError("qdrant requires explicit embeddings")
         vectors, dimension = normalize_vectors(embeddings, "qdrant")
         self._ensure_remote_collection(dimension)
-        metadatas = metadatas or [{} for _ in ids]
+        documents, ids, metadatas = prepare_stored_write(
+            documents, ids, metadatas or [{} for _ in ids]
+        )
         points = []
         for doc_id, doc, meta, vector in zip(ids, documents, metadatas, vectors):
             points.append(

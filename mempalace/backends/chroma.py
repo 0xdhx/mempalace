@@ -24,6 +24,15 @@ import chromadb
 from chromadb.config import Settings as _ChromaSettings
 from chromadb.errors import NotFoundError as _ChromaNotFoundError
 
+from ..stored_text import (
+    FLAG,
+    decode_record,
+    decode_value,
+    encode_filter,
+    encode_where,
+    prepare_stored_write,
+    restore_rows,
+)
 from ._inproc_sqlite import open_reader as open_palace_reader
 from ._inproc_sqlite import open_writer as open_palace_writer
 from ._inproc_sqlite import palace_db_lock
@@ -2059,7 +2068,7 @@ def _sqlite_wing_room_counts(
     total = 0
     wing_rooms: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for wing, room, n in rows:
-        wing_rooms[wing][room] += int(n)
+        wing_rooms[decode_value(wing)][decode_value(room)] += int(n)
         total += int(n)
     return total, wing_rooms
 
@@ -2086,7 +2095,7 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
                 is None
             ):
                 return None
-            return conn.execute(
+            rows = conn.execute(
                 """
                 SELECT
                     COALESCE(rm.string_value, CAST(rm.int_value AS TEXT),
@@ -2113,6 +2122,10 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
             conn.close()
     except sqlite3.Error:
         return None
+    return [
+        (decode_value(room), decode_value(wing), decode_value(hall), n, decode_value(last))
+        for room, wing, hall, n, last in rows
+    ]
 
 
 def _sqlite_iter_metadata(
@@ -2149,7 +2162,7 @@ def _sqlite_iter_metadata(
     for key, value in (equals or {}).items():
         scope += """ AND e.id IN (SELECT r.id FROM embedding_metadata r
                      WHERE r.key = ? AND r.string_value = ?)"""
-        params.extend((key, value))
+        params.extend((key, encode_filter(value)))
     # Older chromadb schemas lack bool_value; select NULL for any value
     # column the table does not have so the row shape stays fixed.
     present = set(_metadata_value_columns(conn))
@@ -2158,7 +2171,8 @@ def _sqlite_iter_metadata(
         for col in ("string_value", "int_value", "float_value", "bool_value")
     )
     if keys is not None:
-        keys = list(keys)
+        # The escape flag rides along so the caller can decode these keys.
+        keys = list(dict.fromkeys([*keys, FLAG]))
         sql = f"""
             SELECT m.id, {columns} FROM embedding_metadata m
             WHERE m.key IN ({",".join("?" * len(keys))}) AND m.id IN ({scope})
@@ -2208,7 +2222,7 @@ def sqlite_wing_source_counts(palace_path: str, collection_name: str) -> Optiona
                 is None
             ):
                 return None
-            return conn.execute(
+            rows = conn.execute(
                 """
                 SELECT
                     COALESCE(wm.string_value, '') AS wing,
@@ -2230,6 +2244,7 @@ def sqlite_wing_source_counts(palace_path: str, collection_name: str) -> Optiona
             conn.close()
     except sqlite3.Error:
         return None
+    return [(decode_value(wing), decode_value(source), n) for wing, source, n in rows]
 
 
 def _metadata_value_columns(conn) -> list[str]:
@@ -2349,7 +2364,7 @@ def sqlite_list_id_metadata(
                     f"JOIN embedding_metadata {alias} ON {alias}.id = e.id "
                     f"AND {alias}.key = ? AND {alias}.string_value = ?"
                 )
-                params.extend([key, val])
+                params.extend([key, encode_filter(val)])
             params.append(collection_name)
             rows = conn.execute(
                 f"""
@@ -2401,7 +2416,7 @@ def sqlite_list_id_metadata(
     ids: list[str] = []
     metas: list[dict] = []
     for doc_id in order:
-        meta = by_id[doc_id]
+        meta = decode_record(None, by_id[doc_id])[1]
         if any(meta.get(key) != val for key, val in filters.items()):
             continue
         ids.append(doc_id)
@@ -2474,14 +2489,21 @@ def sqlite_documents_for_ids(
                 public_by_internal = {int(row[0]): str(row[1]) for row in rows}
                 internal = list(public_by_internal)
                 internal_placeholders = ",".join("?" for _ in internal)
-                for internal_id, value in conn.execute(
+                flagged = set()
+                for internal_id, key, value, flag in conn.execute(
                     f"""
-                    SELECT id, string_value FROM embedding_metadata
-                    WHERE key = 'chroma:document' AND id IN ({internal_placeholders})
+                    SELECT id, key, string_value, int_value FROM embedding_metadata
+                    WHERE key IN ('chroma:document', ?) AND id IN ({internal_placeholders})
                     """,
-                    internal,
+                    [FLAG, *internal],
                 ):
-                    docs[public_by_internal[int(internal_id)]] = str(value or "")
+                    if key == FLAG:
+                        if flag:
+                            flagged.add(public_by_internal[int(internal_id)])
+                    else:
+                        docs[public_by_internal[int(internal_id)]] = str(value or "")
+                for drawer_id in flagged & docs.keys():
+                    docs[drawer_id] = decode_record(docs[drawer_id], {FLAG: 1})[0]
     except sqlite3.Error:
         return None
     return docs
@@ -2570,7 +2592,10 @@ def _sqlite_hydrate_rows(conn, selected, value_columns):
                 # Collection.get keeps internal fields (notably chroma:uri)
                 # out of user metadata, even when URIs were stored with rows.
                 records[row_id][2][key] = value
-    return [tuple(records[row_id]) for row_id, _ in selected]
+    return [
+        (records[row_id][0], *decode_record(records[row_id][1], records[row_id][2]))
+        for row_id, _ in selected
+    ]
 
 
 def sqlite_diary_rows(
@@ -2595,9 +2620,9 @@ def sqlite_diary_rows(
     if not os.path.isfile(db_path) or not isinstance(limit, int):
         return None
     limit = max(1, min(limit, 100))
-    equalities = [("room", "diary"), ("agent", agent_name)]
+    equalities = [("room", "diary"), ("agent", encode_filter(agent_name))]
     if wing:
-        equalities.append(("wing", wing))
+        equalities.append(("wing", encode_filter(wing)))
     try:
         conn = open_palace_reader(db_path)
         try:
@@ -3293,52 +3318,13 @@ class ChromaCollection(BaseCollection):
             for m in metadatas
         ]
 
-    @staticmethod
-    def _sanitize_documents_for_chromadb(documents):
-        """Strip lone UTF-16 surrogates and embedded NUL characters from every
-        document before it reaches the chromadb client.
-
-        A single lone surrogate (U+D800–U+DFFF) raises ``UnicodeEncodeError``
-        inside chromadb's encode path and aborts the *entire* add/upsert batch
-        with a ``-32000`` Internal Error, silently dropping every other row in
-        the same batch (#1235).
-
-        #1235 fixed this for the MCP write tools via ``sanitize_content``, but
-        the bulk ingest paths (miner, convo_miner, sweeper, diary_ingest) build
-        documents without routing through that helper and reach this backend
-        directly. Sanitising here makes the chokepoint catch-all complete: the
-        sibling :meth:`_sanitize_metadatas_for_chromadb` already guarantees this
-        for metadata one method over; documents get the same guarantee.
-
-        A document containing an embedded NUL (U+0000) — routine in mined
-        Bash tool output — is well-formed UTF-8, unlike a lone surrogate, but
-        can corrupt the FTS5 inverted index for the whole collection rather
-        than just failing to store that one row (a ChromaDB-side bug; tracked
-        upstream). Stripping it here is the same defense-in-depth already
-        applied to surrogates: sanitize input we don't control before it
-        reaches a datastore we don't control.
-        """
-        if documents is None:
-            return None
-        from ..config import strip_lone_surrogates, strip_nul_bytes
-
-        def _sanitize(d):
-            return strip_nul_bytes(strip_lone_surrogates(d))
-
-        # chromadb accepts OneOrMany[Document]: a bare str is a single document,
-        # not an iterable of characters. Handle it explicitly so we don't split
-        # it into per-character documents — that would be exactly the kind of
-        # silent corruption this method exists to prevent.
-        if isinstance(documents, str):
-            return _sanitize(documents)
-        return [_sanitize(d) if isinstance(d, str) else d for d in documents]
-
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
         if getattr(self, "_require_embeddings", False) and embeddings is None:
             raise ValueError("caller-vector collection requires explicit embeddings")
 
+        documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {
-            "documents": self._sanitize_documents_for_chromadb(documents),
+            "documents": documents,
             "ids": ids,
         }
         sanitized = self._sanitize_metadatas_for_chromadb(metadatas)
@@ -3370,8 +3356,9 @@ class ChromaCollection(BaseCollection):
         if getattr(self, "_require_embeddings", False) and embeddings is None:
             raise ValueError("caller-vector collection requires explicit embeddings")
 
+        documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {
-            "documents": self._sanitize_documents_for_chromadb(documents),
+            "documents": documents,
             "ids": ids,
         }
         sanitized = self._sanitize_metadatas_for_chromadb(metadatas)
@@ -3420,9 +3407,10 @@ class ChromaCollection(BaseCollection):
 
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
+        documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {"ids": ids}
         if documents is not None:
-            kwargs["documents"] = self._sanitize_documents_for_chromadb(documents)
+            kwargs["documents"] = documents
         if metadatas is not None:
             kwargs["metadatas"] = metadatas
         if embeddings is not None:
@@ -3466,7 +3454,7 @@ class ChromaCollection(BaseCollection):
         chroma_include: list[str] = []
         if spec.documents:
             chroma_include.append("documents")
-        if spec.metadatas:
+        if spec.metadatas or spec.documents:
             chroma_include.append("metadatas")
         if spec.distances:
             chroma_include.append("distances")
@@ -3482,7 +3470,7 @@ class ChromaCollection(BaseCollection):
         if query_embeddings is not None:
             kwargs["query_embeddings"] = query_embeddings
         if where is not None:
-            kwargs["where"] = where
+            kwargs["where"] = encode_where(where)
         if where_document is not None:
             kwargs["where_document"] = where_document
 
@@ -3509,10 +3497,13 @@ class ChromaCollection(BaseCollection):
         def _none_list_to_empty(outer):
             return [(inner or []) for inner in outer]
 
+        documents, metadatas = restore_rows(
+            _none_list_to_empty(documents), _none_list_to_empty(metadatas)
+        )
         return QueryResult(
             ids=_none_list_to_empty(ids),
-            documents=_none_list_to_empty(documents),
-            metadatas=_none_list_to_empty(metadatas),
+            documents=documents,
+            metadatas=metadatas if spec.metadatas else [[] for _ in ids],
             distances=_none_list_to_empty(distances),
             embeddings=(
                 [list(inner) for inner in embeddings_raw]
@@ -3538,7 +3529,7 @@ class ChromaCollection(BaseCollection):
         chroma_include: list[str] = []
         if spec.documents:
             chroma_include.append("documents")
-        if spec.metadatas:
+        if spec.metadatas or spec.documents:
             chroma_include.append("metadatas")
         if spec.embeddings:
             chroma_include.append("embeddings")
@@ -3547,7 +3538,7 @@ class ChromaCollection(BaseCollection):
         if ids is not None:
             kwargs["ids"] = ids
         if where is not None:
-            kwargs["where"] = where
+            kwargs["where"] = encode_where(where)
         if where_document is not None:
             kwargs["where_document"] = where_document
         if limit is not None:
@@ -3557,8 +3548,11 @@ class ChromaCollection(BaseCollection):
 
         raw = self._collection.get(**kwargs)
         out_ids = list(raw.get("ids") or [])
-        out_docs = list(raw.get("documents") or []) if spec.documents else []
-        out_metas = list(raw.get("metadatas") or []) if spec.metadatas else []
+        out_docs, out_metas = restore_rows(
+            list(raw.get("documents") or []), list(raw.get("metadatas") or [])
+        )
+        if not spec.metadatas:
+            out_metas = []
         out_embeds = raw.get("embeddings") if spec.embeddings else None
 
         # Pad doc/meta lists to match ids so downstream zipping is safe.
@@ -3580,7 +3574,7 @@ class ChromaCollection(BaseCollection):
         if ids is not None:
             kwargs["ids"] = ids
         if where is not None:
-            kwargs["where"] = where
+            kwargs["where"] = encode_where(where)
         with self._write_lock():
             self._collection.delete(**kwargs)
 
@@ -3616,7 +3610,11 @@ class ChromaCollection(BaseCollection):
                     raise MetadataRecoveryPending(
                         "metadata recovery pending; use collection reader"
                     )
-                yield from _sqlite_iter_metadata(conn, name, keys, require_key, equals)
+                for meta in _sqlite_iter_metadata(conn, name, keys, require_key, equals):
+                    meta = decode_record(None, meta)[1]
+                    if keys is not None and not meta:
+                        continue
+                    yield meta
             finally:
                 conn.close()
 
@@ -3679,17 +3677,20 @@ class ChromaCollection(BaseCollection):
                 self._palace_path,
                 self._collection.name,
                 limit=limit,
-                equalities=equalities,
+                equalities=[(key, encode_filter(value)) for key, value in equalities],
                 order_field=order_field,
             )
         if records is None:
             return super().get_recent(
                 limit=limit, where=where, order_field=order_field, include=include
             )
+        documents, metadatas = restore_rows(
+            [document for _, document, _ in records], [metadata for _, _, metadata in records]
+        )
         return GetResult(
             ids=[record_id for record_id, _, _ in records],
-            documents=[document for _, document, _ in records] if spec.documents else [],
-            metadatas=[metadata for _, _, metadata in records] if spec.metadatas else [],
+            documents=documents if spec.documents else [],
+            metadatas=metadatas if spec.metadatas else [],
             embeddings=None,
         )
 
@@ -3907,14 +3908,14 @@ class ChromaCollection(BaseCollection):
                 drawer["metadata"][key] = value
 
         ordered = []
+        stored_where = encode_where(where)
         for emb_id in candidate_ids:
             drawer = drawers.get(emb_id)
             if drawer is None:
                 continue
-            meta = drawer["metadata"]
-            if not _matches_where(meta, where):
+            if not _matches_where(drawer["metadata"], stored_where):
                 continue
-            ordered.append((emb_id, drawer["document"], meta))
+            ordered.append((emb_id, *decode_record(drawer["document"], drawer["metadata"])))
 
         docs = [doc for _, doc, _ in ordered]
         scores = _bm25_scores(query, docs)
