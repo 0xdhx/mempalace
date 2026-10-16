@@ -29,8 +29,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   When the optional `autocorrect` package was installed, chat imports rewrote
   user turns before filing them. Turns are now stored as written. To keep the
   old behaviour, set `"convo": {"spellcheck": true}` in `config.json` or
-  `MEMPALACE_CONVO_SPELLCHECK=1`; drawers whose text it changed carry
-  `transforms: "spellcheck"` in their metadata. Drawers filed before this
+  `MEMPALACE_CONVO_SPELLCHECK=1`; it corrects user messages only, and each
+  drawer whose text it changed carries `transforms: "spellcheck_user"` in its
+  metadata. Drawers filed before this
   release keep their corrected text until the source file is mined again.
 
 ### Fixed

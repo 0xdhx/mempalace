@@ -24,6 +24,8 @@ import json
 import os
 import re
 import stat
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -37,6 +39,10 @@ class UnparsedCodexTranscriptError(ValueError):
 _SLACK_PROVENANCE_FOOTER = (
     "\n[source: slack-export | multi-party chat — speaker roles are positional, not verified]"
 )
+
+# Lines spell correction changed while ``spellchecking_user_turns`` is on;
+# None (the default) keeps user turns as written.
+_USER_TURN_SPELLCHECK = ContextVar("_USER_TURN_SPELLCHECK", default=None)
 
 
 # ─── Noise stripping ─────────────────────────────────────────────────────
@@ -688,47 +694,64 @@ def _try_chatgpt_json(data) -> Optional[str]:
     if not isinstance(data, dict) or not isinstance(data.get("mapping"), dict):
         return None
     mapping = data["mapping"]
-    # Node ids index a dict and a visited set, so anything unhashable (a
-    # nested object rather than an id) ends a walk.
+    # The branch the conversation ended on, so drafts and regenerations the
+    # user moved away from are not filed. Without a usable current_node, the
+    # first-child walk from the root.
+    messages = _chatgpt_messages(_chatgpt_active_path(mapping, data.get("current_node")))
+    if len(messages) < 2:
+        messages = _chatgpt_messages(_chatgpt_root_path(mapping))
+    if len(messages) >= 2:
+        return _messages_to_transcript(messages)
+    return None
+
+
+# Node ids index a dict and a visited set, so anything unhashable (a nested
+# object rather than an id) ends a ChatGPT tree walk.
+
+
+def _chatgpt_active_path(mapping: dict, current_id) -> list:
     path = []
     visited = set()
-    current_id = data.get("current_node")
-    if isinstance(current_id, str) and isinstance(mapping.get(current_id), dict):
-        # Walk back from the turn the conversation ended on, so drafts and
-        # regenerations the user moved away from are not filed.
-        while isinstance(current_id, str) and current_id not in visited:
-            visited.add(current_id)
-            node = mapping.get(current_id)
-            if not isinstance(node, dict):
-                break
-            path.append(node)
-            current_id = node.get("parent")
-        path.reverse()
-    else:
-        # No current_node: follow the first child down from the root,
-        # preferring a root with parent=None AND no message (synthetic root).
-        root_id = None
-        fallback_root = None
-        for node_id, node in mapping.items():
-            if not isinstance(node, dict):
-                continue
-            if node.get("parent") is None:
-                if node.get("message") is None:
-                    root_id = node_id
-                    break
-                elif fallback_root is None:
-                    fallback_root = node_id
-        current_id = root_id or fallback_root
-        while current_id and current_id not in visited:
-            visited.add(current_id)
-            node = mapping.get(current_id)
-            if not isinstance(node, dict):
-                break
-            path.append(node)
-            children = node.get("children")
-            next_id = children[0] if isinstance(children, list) and children else None
-            current_id = next_id if isinstance(next_id, str) else None
+    while isinstance(current_id, str) and current_id not in visited:
+        visited.add(current_id)
+        node = mapping.get(current_id)
+        if not isinstance(node, dict):
+            break
+        path.append(node)
+        current_id = node.get("parent")
+    path.reverse()
+    return path
 
+
+def _chatgpt_root_path(mapping: dict) -> list:
+    # Prefer a root with parent=None AND no message (synthetic root).
+    root_id = None
+    fallback_root = None
+    for node_id, node in mapping.items():
+        if not isinstance(node, dict):
+            continue
+        if node.get("parent") is None:
+            if node.get("message") is None:
+                root_id = node_id
+                break
+            elif fallback_root is None:
+                fallback_root = node_id
+    path = []
+    visited = set()
+    current_id = root_id or fallback_root
+    while current_id and current_id not in visited:
+        visited.add(current_id)
+        node = mapping.get(current_id)
+        if not isinstance(node, dict):
+            break
+        path.append(node)
+        children = node.get("children")
+        next_id = children[0] if isinstance(children, list) and children else None
+        current_id = next_id if isinstance(next_id, str) else None
+    return path
+
+
+def _chatgpt_messages(path: list) -> list:
     messages = []
     for node in path:
         msg = node.get("message")
@@ -743,9 +766,7 @@ def _try_chatgpt_json(data) -> Optional[str]:
         text = " ".join(str(p) for p in parts if isinstance(p, str) and p).strip()
         if role in ("user", "assistant") and text:
             messages.append((role, text))
-    if len(messages) >= 2:
-        return _messages_to_transcript(messages)
-    return None
+    return messages
 
 
 def _try_chatgpt_export_json_split(data) -> Optional[list]:
@@ -1027,17 +1048,46 @@ def _format_tool_result(content, tool_name: str) -> str:
     return "→ " + text
 
 
+@contextmanager
+def spellchecking_user_turns(enabled: bool):
+    """Spell-correct user messages parsed inside this block when ``enabled``.
+
+    Yields the list of corrected lines it changed, so the caller can stamp
+    the drawers that hold them. Turns are kept as written otherwise.
+    """
+    changed: list = []
+    token = _USER_TURN_SPELLCHECK.set(changed if enabled else None)
+    try:
+        yield changed
+    finally:
+        _USER_TURN_SPELLCHECK.reset(token)
+
+
+def _spellcheck_user_turn(text: str, changed: list) -> str:
+    from mempalace.spellcheck import spellcheck_user_text
+
+    corrected = spellcheck_user_text(text)
+    if corrected != text:
+        # The speller rewrites words in place and keeps every newline.
+        old_lines = text.split("\n")
+        changed.extend(line for old, line in zip(old_lines, corrected.split("\n")) if line != old)
+    return corrected
+
+
 def _messages_to_transcript(messages: list) -> str:
     """Convert [(role, text), ...] to transcript format with > markers.
 
-    Turns are kept as written. Spell correction is an opt-in step of the
-    conversation miner, which stamps the drawers it changes.
+    Turns are kept as written unless the caller opted in to spell correction
+    with ``spellchecking_user_turns``, which only touches user messages.
     """
+    changed = _USER_TURN_SPELLCHECK.get()
     lines = []
     i = 0
     while i < len(messages):
         role, text = messages[i]
         if role == "user":
+            if changed is not None:
+                text = _spellcheck_user_turn(text, changed)
             lines.append(f"> {text}")
             if i + 1 < len(messages) and messages[i + 1][0] == "assistant":
                 lines.append(messages[i + 1][1])

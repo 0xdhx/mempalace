@@ -995,12 +995,13 @@ class MempalaceConfig:
         """Whether the conversation miner spell-corrects user turns. Off by default.
 
         Opt in with ``convo.spellcheck`` or ``MEMPALACE_CONVO_SPELLCHECK``.
-        Drawers whose text it changed carry ``transforms: "spellcheck"``.
+        Drawers whose text it changed carry ``transforms: "spellcheck_user"``.
         """
         env_val = os.environ.get("MEMPALACE_CONVO_SPELLCHECK")
         if env_val is not None:
             return env_val.lower() in ("true", "1", "yes", "on")
-        value = self._file_config.get("convo", {}).get("spellcheck", False)
+        convo = self._file_config.get("convo")
+        value = convo.get("spellcheck", False) if isinstance(convo, dict) else False
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return value is True

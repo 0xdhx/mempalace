@@ -2,6 +2,8 @@ import json
 import stat
 from unittest.mock import patch
 
+import pytest
+
 from mempalace.normalize import (
     _SLACK_PROVENANCE_FOOTER,
     _extract_content,
@@ -2225,6 +2227,23 @@ def test_chatgpt_without_current_node_still_walks_from_the_root():
         ]
     )
     result = _try_chatgpt_json({"mapping": nodes})
+    assert "> hello" in result
+    assert "hi there" in result
+
+
+@pytest.mark.parametrize("current_node", ["root", "missing", "u1"])
+def test_chatgpt_falls_back_to_the_root_walk_when_current_node_is_too_short(current_node):
+    """A current_node that is the root, unknown, or too early to hold an
+    exchange must not lose the conversation: the root walk still files it."""
+    nodes = dict(
+        [
+            _chatgpt_node("root", None, ["u1"]),
+            _chatgpt_node("u1", "root", ["a1"], "user", "hello"),
+            _chatgpt_node("a1", "u1", [], "assistant", "hi there"),
+        ]
+    )
+    result = _try_chatgpt_json({"mapping": nodes, "current_node": current_node})
+    assert result is not None
     assert "> hello" in result
     assert "hi there" in result
 

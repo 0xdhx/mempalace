@@ -28,7 +28,11 @@ from .ids import (
     make_convo_sentinel_id,
     make_exchange_drawer_id,
 )
-from .normalize import UnparsedCodexTranscriptError, normalize_conversations_with_mtime
+from .normalize import (
+    UnparsedCodexTranscriptError,
+    normalize_conversations_with_mtime,
+    spellchecking_user_turns,
+)
 from .source_identity import identity_metadata, source_directory_identity
 from .entities import entities_metadata
 from .palace import (
@@ -701,7 +705,6 @@ def _file_chunks_locked(
     content_hash=None,
     source_dir_ino=None,
     source_mtime: Optional[float] = None,
-    transforms: Optional[str] = None,
 ):
     """Lock the source file, purge stale drawers, and upsert fresh chunks.
 
@@ -809,8 +812,8 @@ def _file_chunks_locked(
                         meta[key] = version
                     if source_mtime is not None:
                         meta["source_mtime"] = source_mtime
-                    if transforms:
-                        meta["transforms"] = transforms
+                    if chunk.get("transforms"):
+                        meta["transforms"] = chunk["transforms"]
                     if source_dir_ino:
                         # Which directory this transcript was read from, so
                         # ``sync`` can tell a neighbour in the same directory
@@ -1075,18 +1078,13 @@ def _normalize_convo_conversations(
     return conversations, source_mtime
 
 
-def _spellcheck_user_turns(content: str, enabled: bool):
-    """Return ``(content, transforms)``, spell-correcting user turns only
-    when the palace opted in. ``transforms`` names the step when it changed
-    the text, so the drawers say they are not verbatim."""
-    if not enabled:
-        return content, None
-    from .spellcheck import spellcheck_transcript
-
-    checked = spellcheck_transcript(content)
-    if checked == content:
-        return content, None
-    return checked, "spellcheck"
+def _stamp_spellchecked_chunks(chunks: list, changed_lines: list) -> None:
+    """Mark the chunks holding a line spell correction changed, so those
+    drawers say their text is not verbatim (RFC 002 ``spellcheck_user``)."""
+    needles = [line.strip() for line in changed_lines if line.strip()]
+    for chunk in chunks:
+        if any(needle in chunk["content"] for needle in needles):
+            chunk["transforms"] = "spellcheck_user"
 
 
 def _print_room_counts(room_counts) -> None:
@@ -1234,15 +1232,16 @@ def _mine_convos_impl(
                 files_skipped += 1
                 continue
 
-            normalized = _normalize_convo_conversations(
-                filepath,
-                source_file,
-                collection,
-                wing,
-                agent,
-                extract_mode,
-                dry_run,
-            )
+            with spellchecking_user_turns(spellcheck) as corrected_lines:
+                normalized = _normalize_convo_conversations(
+                    filepath,
+                    source_file,
+                    collection,
+                    wing,
+                    agent,
+                    extract_mode,
+                    dry_run,
+                )
             if normalized is None:
                 continue
             conversations, source_mtime = normalized
@@ -1277,7 +1276,6 @@ def _mine_convos_impl(
 
             content = "\n\n".join(text for _, text in new_items)
             content_hash = ",".join(h for h, _ in new_items)
-            content, transforms = _spellcheck_user_turns(content, spellcheck)
 
             # Chunk — either exchange pairs or general extraction
             if extract_mode == "general":
@@ -1291,6 +1289,7 @@ def _mine_convos_impl(
                     chunk_size=cfg_chunk_size,
                     min_chunk_size=cfg_min_chunk_size,
                 )
+            _stamp_spellchecked_chunks(chunks, corrected_lines)
 
             if not chunks:
                 if not dry_run:
@@ -1345,7 +1344,6 @@ def _mine_convos_impl(
                 content_hash=content_hash,
                 source_dir_ino=source_directory_identity(filepath),
                 source_mtime=source_mtime,
-                transforms=transforms,
             )
             if skipped == PURGE_FAILED:
                 files_failed.append(source_file)
