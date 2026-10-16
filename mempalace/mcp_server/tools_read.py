@@ -691,9 +691,8 @@ def tool_search(
 
     # Backwards compat: convert old similarity scale (higher=stricter) to
     # distance scale (lower=stricter). Similarity 0.8 → distance 0.2.
+    # No cutoff unless the caller asks for one.
     dist = (1.0 - min_similarity) if min_similarity is not None else max_distance
-    if dist is None:
-        dist = 1.5
 
     # Ensure the vector-disabled probe has been run via the safe
     # sqlite/pickle path before we touch chromadb. Calling _get_client()

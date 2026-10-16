@@ -74,6 +74,22 @@ def _distance_to_similarity(distance, metric: str = "cosine") -> float:
     return max(0.0, 1.0 - distance)
 
 
+def _cosine_scale_distance(distance: float, metric: str = "cosine") -> float:
+    """Express a backend ``distance`` on the cosine scale (0 = identical, 2 = opposite).
+
+    ``max_distance`` is documented on the cosine scale, so a cutoff means the
+    same thing whatever metric the collection declares. The mapping assumes
+    unit-length embeddings, which every in-tree embedder produces:
+    ``l2`` is ``sqrt(2 * cos_dist)`` and ``ip`` (``-dot``) is ``cos_dist - 1``.
+    """
+    m = (metric or "cosine").lower()
+    if m == "l2":
+        return distance * distance / 2.0
+    if m == "ip":
+        return 1.0 + distance
+    return distance
+
+
 def _metric_for_collection(col) -> str:
     """Resolve a collection's declared distance metric, defaulting to cosine.
 

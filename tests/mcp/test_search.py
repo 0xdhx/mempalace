@@ -158,7 +158,7 @@ class TestSearchTool:
         assert "error" not in result
         assert seen["candidate_strategy"] == "union"
 
-    def test_search_preserves_default_max_distance(self, monkeypatch, config, kg):
+    def test_search_applies_no_default_max_distance(self, monkeypatch, config, kg):
         _patch_mcp_server(monkeypatch, config, kg)
         from mempalace import mcp_server
 
@@ -173,7 +173,7 @@ class TestSearchTool:
         result = mcp_server.tool_search(query="needle")
 
         assert "error" not in result
-        assert seen["max_distance"] == 1.5
+        assert seen["max_distance"] is None
 
     def test_search_cli_compatible_reuses_hub_collection(self, monkeypatch, config, kg):
         _patch_mcp_server(monkeypatch, config, kg)

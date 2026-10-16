@@ -392,6 +392,7 @@ def _merge_bm25_union_candidates(
     stop_words: frozenset = frozenset(),
     since_dt=None,
     before_dt=None,
+    stats: dict = None,
 ) -> None:
     """Append top-K backend lexical candidates into ``hits`` in place.
 
@@ -406,12 +407,14 @@ def _merge_bm25_union_candidates(
     contributing chunk M of the same file. Falls back to ``source_file``
     only when full-path/chunk metadata is absent.
 
-    BM25-only additions carry ``distance=None`` unless a strict
-    ``max_distance`` threshold is set. Under a threshold, union mode loads
-    stored embeddings for lexical hits and computes their vector distance
-    before admitting them, preserving the same distance guarantee as the
-    vector-only path.
+    BM25-only additions carry ``distance=None`` unless a ``max_distance``
+    cutoff is set. Under a cutoff, union mode loads stored embeddings for
+    lexical hits and computes their vector distance; a hit past the cutoff is
+    dropped and counted in ``stats["filtered_by_max_distance"]``. A hit whose
+    distance cannot be computed is kept with ``distance=None`` and
+    ``fallback_reason="distance_unavailable"`` rather than lost.
     """
+    stats = {} if stats is None else stats
     where = build_where_filter(wing, room, source_file)
     try:
         lexical = drawers_col.lexical_search(
@@ -422,13 +425,14 @@ def _merge_bm25_union_candidates(
     except UnsupportedCapabilityError:
         raise
     except Exception:
-        logger.debug("candidate_strategy=union: lexical fetch failed", exc_info=True)
+        logger.warning("candidate_strategy=union: lexical fetch failed", exc_info=True)
+        stats["candidate_strategy_fallback"] = "lexical_search_failed"
         return
 
     metric = _metric_for_collection(drawers_col)
     lexical_distances = (
         _lexical_hit_vector_distances(drawers_col, query, lexical.hits, metric)
-        if max_distance > 0.0
+        if max_distance
         else {}
     )
 
@@ -444,33 +448,34 @@ def _merge_bm25_union_candidates(
             continue
         full_source = meta.get("source_file", "") or ""
         distance = lexical_distances.get(hit.id)
-        if max_distance > 0.0:
-            if distance is None or distance > max_distance:
+        if distance is not None:
+            if _beyond_max_distance(distance, max_distance, metric):
+                stats["filtered_by_max_distance"] = stats.get("filtered_by_max_distance", 0) + 1
                 continue
             distance = round(distance, 4)
-        bm25_extra.append(
-            {
-                "drawer_id": _result_drawer_id(meta, hit.id),
-                "text": hit.document or "",
-                "wing": meta.get("wing", "unknown"),
-                "room": meta.get("room", "unknown"),
-                "source_file": Path(full_source).name if full_source else "?",
-                "source_path": full_source,
-                **_result_date_fields(meta),
-                "similarity": (
-                    None
-                    if distance is None
-                    else round(_distance_to_similarity(distance, metric), 3)
-                ),
-                "distance": distance,
-                "effective_distance": distance,
-                "closet_boost": 0.0,
-                "matched_via": "bm25_backend",
-                "bm25_score": round(float(hit.score), 3),
-                "_source_file_full": full_source,
-                "_chunk_index": meta.get("chunk_index"),
-            }
-        )
+        entry = {
+            "drawer_id": _result_drawer_id(meta, hit.id),
+            "text": hit.document or "",
+            "wing": meta.get("wing", "unknown"),
+            "room": meta.get("room", "unknown"),
+            "source_file": Path(full_source).name if full_source else "?",
+            "source_path": full_source,
+            **_result_date_fields(meta),
+            "similarity": (
+                None if distance is None else round(_distance_to_similarity(distance, metric), 3)
+            ),
+            "distance": distance,
+            "effective_distance": distance,
+            "closet_boost": 0.0,
+            "matched_via": "bm25_backend",
+            "bm25_score": round(float(hit.score), 3),
+            "_source_file_full": full_source,
+            "_chunk_index": meta.get("chunk_index"),
+        }
+        if distance is None and max_distance:
+            # The cutoff could not be checked; keep the hit and say why.
+            entry["fallback_reason"] = "distance_unavailable"
+        bm25_extra.append(entry)
 
     def _dedup_key(entry: dict):
         full = entry.get("_source_file_full")
