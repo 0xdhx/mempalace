@@ -682,7 +682,20 @@ def test_stop_hook_checkpoint_visible_to_diary_read(monkeypatch, config, palace_
     argv = " ".join(spawned["cmd"])
     assert "run_detached_diary_checkpoint" in argv
     assert "CHECKPOINT" not in argv
-    hooks_cli_mod.run_detached_diary_checkpoint(spawned["cmd"][-1])
+
+    # The child starts the transcript mine only after the diary entry is filed.
+    filed_before_ingest = []
+
+    def _ingest(path):
+        filed_before_ingest.append(tool_diary_read(agent_name="claude").get("total", 0) >= 1)
+
+    with (
+        patch("mempalace.hooks_cli._ingest_transcript", side_effect=_ingest) as ingest,
+        patch("mempalace.hooks_cli._maybe_auto_ingest"),
+    ):
+        hooks_cli_mod.run_detached_diary_checkpoint(spawned["cmd"][-1])
+    ingest.assert_called_once_with(str(transcript))
+    assert filed_before_ingest == [True]
 
     visible = tool_diary_read(agent_name="claude")
     assert visible.get("total", 0) >= 1
@@ -724,10 +737,63 @@ def test_stop_foreground_does_not_import_mcp_server(tmp_path):
         )
         elapsed = time.perf_counter() - started
         assert "mempalace.mcp_server" not in sys.modules
-        assert result == {}
+        assert "checkpoint queued" in result["systemMessage"]
         assert elapsed < 0.5, f"foreground stop took {elapsed:.3f}s"
     finally:
         sys.modules.update(removed)
+
+
+def test_stop_leaves_the_mines_to_a_queued_checkpoint(tmp_path):
+    transcript = tmp_path / "t.jsonl"
+    _write_transcript(
+        transcript,
+        [{"message": {"role": "user", "content": f"msg {i}"}} for i in range(SAVE_INTERVAL)],
+    )
+    queued = {"drawers_filed": 0, "messages_folded": 3, "checkpoint_queued": True}
+    with (
+        patch("mempalace.hooks_cli._save_diary_direct", return_value=queued),
+        patch("mempalace.hooks_cli._ingest_transcript") as ingest,
+        patch("mempalace.hooks_cli._maybe_auto_ingest") as auto_ingest,
+    ):
+        _capture_hook_output(
+            hook_stop,
+            {"session_id": "q", "stop_hook_active": False, "transcript_path": str(transcript)},
+            state_dir=tmp_path,
+        )
+    ingest.assert_not_called()
+    auto_ingest.assert_not_called()
+    # The child advances the marker once it has filed, not the foreground.
+    assert not (tmp_path / "q_last_save").exists()
+
+
+def test_queue_reports_nothing_when_no_child_started(tmp_path):
+    with (
+        patch.object(hooks_cli_mod, "STATE_DIR", tmp_path),
+        patch.object(hooks_cli_mod, "_MINE_PID_DIR", tmp_path / "mine_pids"),
+        patch("mempalace.hooks_cli._claim_mine_slot", return_value=None),
+        patch("mempalace.hooks_cli.subprocess.Popen") as popen,
+    ):
+        assert hooks_cli_mod._queue_diary_checkpoint({"session_id": "s", "entry": "x"}) is False
+    popen.assert_not_called()
+
+
+def test_checkpoint_child_waits_out_a_held_palace_lock(tmp_path):
+    from mempalace.daemon import LOCK_REFUSAL_ERROR_CLASS
+
+    refused = {"success": False, "error": "busy", "error_class": LOCK_REFUSAL_ERROR_CLASS}
+    filed = {"success": True, "entry_id": "e1"}
+    with (
+        patch.object(hooks_cli_mod, "STATE_DIR", tmp_path),
+        patch("mempalace.mcp_server.tool_diary_write", side_effect=[refused, refused, filed]) as w,
+        patch("mempalace.hooks_cli.time.sleep") as sleep,
+    ):
+        ok = hooks_cli_mod._apply_diary_checkpoint(
+            {"entry": "CHECKPOINT:x", "session_id": "s", "exchange_count": 15}
+        )
+    assert ok is True
+    assert w.call_count == 3
+    assert sleep.call_count == 2
+    assert (tmp_path / "s_last_save").read_text(encoding="utf-8") == "15"
 
 
 def test_daemon_available_probe_stays_under_hook_budget(tmp_path, monkeypatch):
@@ -2658,7 +2724,14 @@ def test_session_end_checkpoint_visible_to_diary_read(
         cmd for cmd in spawned.get("cmds", []) if "run_detached_diary_checkpoint" in " ".join(cmd)
     ]
     assert diary_cmds
-    hooks_cli_mod.run_detached_diary_checkpoint(diary_cmds[0][-1])
+    # The foreground left the mines to the child.
+    assert len(spawned["cmds"]) == 1
+    with (
+        patch("mempalace.hooks_cli._ingest_transcript") as ingest,
+        patch("mempalace.hooks_cli._maybe_auto_ingest"),
+    ):
+        hooks_cli_mod.run_detached_diary_checkpoint(diary_cmds[0][-1])
+    ingest.assert_called_once_with(str(transcript))
 
     visible = tool_diary_read(agent_name="claude")
     assert visible.get("total", 0) >= 1
