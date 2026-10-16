@@ -688,47 +688,61 @@ def _try_chatgpt_json(data) -> Optional[str]:
     if not isinstance(data, dict) or not isinstance(data.get("mapping"), dict):
         return None
     mapping = data["mapping"]
-    messages = []
-    # Find root: prefer node with parent=None AND no message (synthetic root)
-    root_id = None
-    fallback_root = None
-    for node_id, node in mapping.items():
-        if not isinstance(node, dict):
-            continue
-        if node.get("parent") is None:
-            if node.get("message") is None:
-                root_id = node_id
+    # Node ids index a dict and a visited set, so anything unhashable (a
+    # nested object rather than an id) ends a walk.
+    path = []
+    visited = set()
+    current_id = data.get("current_node")
+    if isinstance(current_id, str) and isinstance(mapping.get(current_id), dict):
+        # Walk back from the turn the conversation ended on, so drafts and
+        # regenerations the user moved away from are not filed.
+        while isinstance(current_id, str) and current_id not in visited:
+            visited.add(current_id)
+            node = mapping.get(current_id)
+            if not isinstance(node, dict):
                 break
-            elif fallback_root is None:
-                fallback_root = node_id
-    if not root_id:
-        root_id = fallback_root
-    if root_id:
-        current_id = root_id
-        visited = set()
+            path.append(node)
+            current_id = node.get("parent")
+        path.reverse()
+    else:
+        # No current_node: follow the first child down from the root,
+        # preferring a root with parent=None AND no message (synthetic root).
+        root_id = None
+        fallback_root = None
+        for node_id, node in mapping.items():
+            if not isinstance(node, dict):
+                continue
+            if node.get("parent") is None:
+                if node.get("message") is None:
+                    root_id = node_id
+                    break
+                elif fallback_root is None:
+                    fallback_root = node_id
+        current_id = root_id or fallback_root
         while current_id and current_id not in visited:
             visited.add(current_id)
             node = mapping.get(current_id)
             if not isinstance(node, dict):
                 break
-            msg = node.get("message")
-            if isinstance(msg, dict):
-                author = msg.get("author")
-                role = author.get("role", "") if isinstance(author, dict) else ""
-                content = msg.get("content", {})
-                parts = content.get("parts") if isinstance(content, dict) else None
-                if not isinstance(parts, list):
-                    parts = []
-                text = " ".join(str(p) for p in parts if isinstance(p, str) and p).strip()
-                if role == "user" and text:
-                    messages.append(("user", text))
-                elif role == "assistant" and text:
-                    messages.append(("assistant", text))
+            path.append(node)
             children = node.get("children")
             next_id = children[0] if isinstance(children, list) and children else None
-            # Node ids index a dict and a visited set, so anything unhashable
-            # (a nested child object rather than an id) ends the walk.
             current_id = next_id if isinstance(next_id, str) else None
+
+    messages = []
+    for node in path:
+        msg = node.get("message")
+        if not isinstance(msg, dict):
+            continue
+        author = msg.get("author")
+        role = author.get("role", "") if isinstance(author, dict) else ""
+        content = msg.get("content", {})
+        parts = content.get("parts") if isinstance(content, dict) else None
+        if not isinstance(parts, list):
+            parts = []
+        text = " ".join(str(p) for p in parts if isinstance(p, str) and p).strip()
+        if role in ("user", "assistant") and text:
+            messages.append((role, text))
     if len(messages) >= 2:
         return _messages_to_transcript(messages)
     return None
@@ -786,12 +800,15 @@ def _try_slack_json(data) -> Optional[str]:
     for item in data:
         if not isinstance(item, dict) or item.get("type") != "message":
             continue
-        raw_user_id = item.get("user", item.get("username", ""))
+        # Exports carry "user": null for bots and deleted accounts; file
+        # those turns under "unknown" rather than dropping or crashing on them.
+        raw_user_id = str(item.get("user") or item.get("username") or "")
         # Sanitize speaker ID: strip brackets, newlines, and control chars
         # to prevent chunk-boundary injection via crafted exports
-        user_id = re.sub(r"[\[\]\n\r\x00-\x1f]", "_", raw_user_id).strip()
-        text = item.get("text", "").strip()
-        if not text or not user_id:
+        user_id = re.sub(r"[\[\]\n\r\x00-\x1f]", "_", raw_user_id).strip() or "unknown"
+        text = item.get("text")
+        text = text.strip() if isinstance(text, str) else ""
+        if not text:
             continue
         if user_id not in seen_users:
             # Alternate roles so exchange chunking works with any number of speakers
@@ -1010,25 +1027,17 @@ def _format_tool_result(content, tool_name: str) -> str:
     return "→ " + text
 
 
-def _messages_to_transcript(messages: list, spellcheck: bool = True) -> str:
-    """Convert [(role, text), ...] to transcript format with > markers."""
-    if spellcheck:
-        try:
-            from mempalace.spellcheck import spellcheck_user_text
+def _messages_to_transcript(messages: list) -> str:
+    """Convert [(role, text), ...] to transcript format with > markers.
 
-            _fix = spellcheck_user_text
-        except ImportError:
-            _fix = None
-    else:
-        _fix = None
-
+    Turns are kept as written. Spell correction is an opt-in step of the
+    conversation miner, which stamps the drawers it changes.
+    """
     lines = []
     i = 0
     while i < len(messages):
         role, text = messages[i]
         if role == "user":
-            if _fix is not None:
-                text = _fix(text)
             lines.append(f"> {text}")
             if i + 1 < len(messages) and messages[i + 1][0] == "assistant":
                 lines.append(messages[i + 1][1])

@@ -701,6 +701,7 @@ def _file_chunks_locked(
     content_hash=None,
     source_dir_ino=None,
     source_mtime: Optional[float] = None,
+    transforms: Optional[str] = None,
 ):
     """Lock the source file, purge stale drawers, and upsert fresh chunks.
 
@@ -808,6 +809,8 @@ def _file_chunks_locked(
                         meta[key] = version
                     if source_mtime is not None:
                         meta["source_mtime"] = source_mtime
+                    if transforms:
+                        meta["transforms"] = transforms
                     if source_dir_ino:
                         # Which directory this transcript was read from, so
                         # ``sync`` can tell a neighbour in the same directory
@@ -1072,6 +1075,20 @@ def _normalize_convo_conversations(
     return conversations, source_mtime
 
 
+def _spellcheck_user_turns(content: str, enabled: bool):
+    """Return ``(content, transforms)``, spell-correcting user turns only
+    when the palace opted in. ``transforms`` names the step when it changed
+    the text, so the drawers say they are not verbatim."""
+    if not enabled:
+        return content, None
+    from .spellcheck import spellcheck_transcript
+
+    checked = spellcheck_transcript(content)
+    if checked == content:
+        return content, None
+    return checked, "spellcheck"
+
+
 def _print_room_counts(room_counts) -> None:
     if room_counts:
         print("\n  By room:")
@@ -1127,6 +1144,7 @@ def _mine_convos_impl(
     writes_at_start = palace_write_serial()
     palace_config = MempalaceConfig(palace_path=palace_path)
     cfg_chunk_size = palace_config.chunk_size
+    spellcheck = palace_config.convo_spellcheck
     # Only override convo_miner's MIN_CHUNK_SIZE when the user has set
     # min_chunk_size explicitly. min_chunk_size_explicit returns the
     # validated value or None — None keeps convo's lower 30-char floor
@@ -1259,6 +1277,7 @@ def _mine_convos_impl(
 
             content = "\n\n".join(text for _, text in new_items)
             content_hash = ",".join(h for h, _ in new_items)
+            content, transforms = _spellcheck_user_turns(content, spellcheck)
 
             # Chunk — either exchange pairs or general extraction
             if extract_mode == "general":
@@ -1326,6 +1345,7 @@ def _mine_convos_impl(
                 content_hash=content_hash,
                 source_dir_ino=source_directory_identity(filepath),
                 source_mtime=source_mtime,
+                transforms=transforms,
             )
             if skipped == PURGE_FAILED:
                 files_failed.append(source_file)

@@ -127,4 +127,4 @@ Interactive setup wizard for `mempalace init`. Generates AAAK bootstrap and wing
 
 ### `spellcheck.py` — Spell Checking
 
-Optional spell checking utility (requires `autocorrect` package).
+Optional spell checking utility (requires `autocorrect` package). The conversation miner uses it only when `convo.spellcheck` (or `MEMPALACE_CONVO_SPELLCHECK`) is on, and stamps `transforms: "spellcheck"` on the drawers it changed.

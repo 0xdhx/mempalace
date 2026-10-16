@@ -19,6 +19,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the same consent `init`, `rooms propose` and `kg normalize` ask for, and every
   LLM provider now refuses a non-local endpoint until that consent is given.
 
+- **Conversation mining no longer spell-corrects your messages by default.**
+  When the optional `autocorrect` package was installed, chat imports rewrote
+  user turns before filing them. Turns are now stored as written. To keep the
+  old behaviour, set `"convo": {"spellcheck": true}` in `config.json` or
+  `MEMPALACE_CONVO_SPELLCHECK=1`; drawers whose text it changed carry
+  `transforms: "spellcheck"` in their metadata. Drawers filed before this
+  release keep their corrected text until the source file is mined again.
+
+### Fixed
+
+- ChatGPT imports file the branch the conversation ended on (`current_node`),
+  not the first draft of every regenerated or edited turn.
+- A Slack message with `"user": null` is filed under `unknown` instead of
+  failing the whole export.
+
 ---
 
 ## [3.11.0] — 2026-10-12
