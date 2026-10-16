@@ -3,8 +3,8 @@ name: Tests
 on:
   push:
     branches: [main, develop]
+  # Every PR, so a PR stacked on another feature branch is tested too.
   pull_request:
-    branches: [main, develop]
 
 jobs:
   test-linux:
