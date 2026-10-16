@@ -18,7 +18,7 @@ import json
 import os
 import stat
 import sys
-import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional, Union
@@ -29,6 +29,16 @@ PathLike = Union[str, os.PathLike]
 TEMP_NAME_ATTEMPTS = 8
 
 _IN_PLACE_ERRNOS = (errno.EACCES, errno.EPERM, errno.EROFS)
+
+# A filesystem without fsync answers with one of these; the write still lands.
+_NO_FSYNC_ERRNOS = tuple(
+    code for code in (errno.EINVAL, getattr(errno, "ENOTSUP", None), errno.EOPNOTSUPP) if code
+)
+
+# Windows refuses to replace a file another process holds open (access denied,
+# sharing violation). Readers let go quickly, so the rename is retried.
+_SHARING_WINERRORS = (5, 32)
+_REPLACE_BACKOFF = (0.01, 0.05, 0.1, 0.25, 0.5)
 
 
 def unlink_quietly(path: PathLike) -> None:
@@ -58,6 +68,14 @@ def fsync_directory(directory: PathLike) -> None:
         os.close(fd)
 
 
+def _fsync_file(fd: int) -> None:
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        if exc.errno not in _NO_FSYNC_ERRNOS:
+            raise
+
+
 def write_target(path: PathLike) -> Path:
     """The file a write should replace, following a symlink to it.
 
@@ -83,10 +101,9 @@ def open_new_temp_file(directory: PathLike, prefix: str, suffix: str = ""):
     fall back. Exhausting the attempts raises ``FileExistsError``.
     """
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
-    names = tempfile._get_candidate_names()
     directory = str(directory)
     for _ in range(TEMP_NAME_ATTEMPTS):
-        candidate = os.path.join(directory, f"{prefix}{next(names)}{suffix}")
+        candidate = os.path.join(directory, f"{prefix}{os.urandom(6).hex()}{suffix}")
         try:
             return os.open(candidate, flags, 0o600), candidate
         except FileExistsError:
@@ -104,25 +121,16 @@ def _chmod_quiet(path: PathLike, mode: int) -> None:
         pass
 
 
-def write_json_in_place(path: PathLike, payload: Any) -> None:
-    """Write JSON without a rename, for a directory that refuses a new name.
+def write_in_place(path: PathLike, write_body: Callable[[Any], None]) -> None:
+    """Write without a rename, for a directory that refuses a new name.
 
-    This truncates ``path`` before the new bytes are durable. Callers use it
-    only when the atomic publish cannot create a temporary file at all.
+    This truncates ``path`` before the new bytes are durable. The publish
+    uses it only when the directory will not take a temporary file.
     """
     with open(path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
+        write_body(handle)
         handle.flush()
-        os.fsync(handle.fileno())
-    _chmod_quiet(path, 0o600)
-
-
-def write_text_in_place(path: PathLike, text: str) -> None:
-    """Write text without a rename. See ``write_json_in_place``."""
-    with open(path, "w", encoding="utf-8") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
+        _fsync_file(handle.fileno())
     _chmod_quiet(path, 0o600)
 
 
@@ -139,7 +147,7 @@ def _fill_temp(fd: int, tmp: str, write_body: Callable[[Any], None]) -> None:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             write_body(handle)
             handle.flush()
-            os.fsync(handle.fileno())
+            _fsync_file(handle.fileno())
     except BaseException:
         unlink_quietly(tmp)
         raise
@@ -158,16 +166,29 @@ def _open_publish_temp(path: Path):
     flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
     try:
         fd = os.open(tmp, flags, 0o600)
-        if os.fstat(fd).st_nlink > 1:
+        try:
+            linked = os.fstat(fd).st_nlink > 1
+        except BaseException:
+            os.close(fd)
+            raise
+        if linked:
             os.close(fd)
             raise OSError(errno.EMLINK, "temporary name has another link", tmp)
     except OSError:
-        fd, tmp = open_new_temp_file(
-            path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-        )
+        fd, tmp = open_new_temp_file(path.parent, prefix=f".{path.name}.", suffix=".tmp")
     return fd, tmp
+
+
+def _replace(tmp: str, path: Path) -> None:
+    for delay in _REPLACE_BACKOFF:
+        try:
+            os.replace(tmp, str(path))
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _SHARING_WINERRORS:
+                raise
+        time.sleep(delay)
+    os.replace(tmp, str(path))
 
 
 def _warn_in_place(path: Path, *, why: str) -> None:
@@ -179,20 +200,27 @@ def _warn_in_place(path: Path, *, why: str) -> None:
 
 
 def _finish_failed_replace(
-    exc: BaseException, tmp: str, path: Path, in_place: Callable[[Path], None]
+    exc: BaseException, tmp: str, path: Path, write_body: Callable[[Any], None]
 ) -> None:
     """Publish in place when the directory itself refused the rename.
 
-    A non-``OSError`` (a signal between the write and the rename) has not
-    published anything, so the temporary file is removed. The same is true
-    of an errno the fallback is not for. The temporary file holds a finished,
-    fsynced copy: it is removed only after the in-place write returns.
+    That happens on POSIX when an orphan at the pid name was reused, so the
+    directory first answers at the rename. A Windows error is a file another
+    process still holds after the retries; writing through it would let that
+    reader see a torn file, so it is raised. So is anything not an
+    ``OSError`` (a signal between the write and the rename) and any errno the
+    fallback is not for. The temporary file holds a finished, fsynced copy:
+    it is removed only after the in-place write returns.
     """
-    if not isinstance(exc, OSError) or exc.errno not in _IN_PLACE_ERRNOS:
+    if (
+        not isinstance(exc, OSError)
+        or exc.errno not in _IN_PLACE_ERRNOS
+        or getattr(exc, "winerror", None) is not None
+    ):
         unlink_quietly(tmp)
         raise exc
     try:
-        in_place(path)
+        write_in_place(path, write_body)
     except BaseException:
         print(
             f"  ! {path.name} was not written and may have been truncated; "
@@ -210,126 +238,51 @@ def _finish_failed_replace(
     _warn_in_place(path, why="the rename")
 
 
-def atomic_publish(
-    path: PathLike,
-    write_body: Callable[[Any], None],
-    in_place: Callable[[Path], None],
-    *,
-    resolve_target: Optional[Callable[[PathLike], PathLike]] = None,
-    sync_directory: Optional[Callable[[Path], None]] = None,
-) -> None:
+def atomic_publish(path: PathLike, write_body: Callable[[Any], None]) -> None:
     """Replace ``path`` with what ``write_body`` writes, or leave it untouched.
 
-    ``in_place`` runs only when the directory refuses a new name
-    (``EACCES``, ``EPERM``, ``EROFS``) while the destination itself may
-    still be writable. Every other failure propagates and does not truncate
-    ``path``. ``sync_directory`` defaults to ``fsync_directory``; callers
-    pass their own when tests or a wrapper own that step.
+    The write falls back to ``write_in_place`` only when the directory
+    refuses a new name (``EACCES``, ``EPERM``, ``EROFS``) while the
+    destination itself may still be writable. Every other failure propagates
+    and does not truncate ``path``.
     """
-    if resolve_target is not None:
-        path = resolve_target(path)
-    else:
-        path = write_target(path)
-    path = Path(path)
-
+    path = write_target(path)
     try:
         fd, tmp = _open_publish_temp(path)
     except OSError as exc:
         if exc.errno not in _IN_PLACE_ERRNOS:
             raise
-        in_place(path)
+        write_in_place(path, write_body)
         _warn_in_place(path, why="a temporary file")
         return
 
     _fill_temp(fd, tmp, write_body)
     try:
-        os.replace(tmp, str(path))
+        _replace(tmp, path)
     except BaseException as exc:
-        _finish_failed_replace(exc, tmp, path, in_place)
+        _finish_failed_replace(exc, tmp, path, write_body)
         return
-    if sync_directory is not None:
-        sync_directory(path.parent)
-    else:
-        fsync_directory(path.parent)
+    fsync_directory(path.parent)
 
 
-def atomic_write_json(
-    path: PathLike,
-    payload: Any,
-    *,
-    resolve_target: Optional[Callable[[PathLike], PathLike]] = None,
-    write_in_place: Optional[Callable[[PathLike, Any], None]] = None,
-    sync_directory: Optional[Callable[[Path], None]] = None,
-) -> None:
-    """Serialize ``payload`` into ``path`` through a temporary file.
-
-    JSON is indented, UTF-8, with non-ASCII kept as characters. The rename
-    is what publishes it, so a crash while serializing leaves the previous
-    file exactly as it was.
-    """
-    writer = write_in_place or write_json_in_place
-
-    def _body(handle: Any) -> None:
-        json.dump(payload, handle, indent=2, ensure_ascii=False)
-
-    def _in_place(dest: Path) -> None:
-        writer(dest, payload)
-
-    atomic_publish(
-        path,
-        _body,
-        _in_place,
-        resolve_target=resolve_target,
-        sync_directory=sync_directory,
-    )
+def atomic_write_json(path: PathLike, payload: Any) -> None:
+    """Serialize ``payload`` (indented, UTF-8, non-ASCII kept) into ``path``."""
+    atomic_publish(path, lambda handle: json.dump(payload, handle, indent=2, ensure_ascii=False))
 
 
-def atomic_write_text(
-    path: PathLike,
-    text: str,
-    *,
-    resolve_target: Optional[Callable[[PathLike], PathLike]] = None,
-    write_in_place: Optional[Callable[[PathLike, str], None]] = None,
-    sync_directory: Optional[Callable[[Path], None]] = None,
-) -> None:
-    """Replace ``path`` with ``text`` through a temporary file.
-
-    Same crash rules as ``atomic_write_json``.
-    """
-    writer = write_in_place or write_text_in_place
-
-    def _body(handle: Any) -> None:
-        handle.write(text)
-
-    def _in_place(dest: Path) -> None:
-        writer(dest, text)
-
-    atomic_publish(
-        path,
-        _body,
-        _in_place,
-        resolve_target=resolve_target,
-        sync_directory=sync_directory,
-    )
+def atomic_write_text(path: PathLike, text: str) -> None:
+    """Replace ``path`` with ``text``. Same crash rules as ``atomic_write_json``."""
+    atomic_publish(path, lambda handle: handle.write(text))
 
 
-def move_aside(
-    path: PathLike,
-    *,
-    label: str,
-    resolve_target: Optional[Callable[[PathLike], PathLike]] = None,
-) -> Optional[str]:
+def move_aside(path: PathLike, *, label: str) -> Optional[str]:
     """Rename ``path`` to ``<name>.<label>-<stamp>-<random>``, keeping its bytes.
 
     Returns the new path, or ``None`` when nothing was there. A failure
     other than the file already being gone leaves it where it was and
     raises: a file that could not be moved is not one to write over.
     """
-    if resolve_target is not None:
-        path = resolve_target(path)
-    else:
-        path = write_target(path)
-    path = Path(path)
+    path = write_target(path)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     fd, target = open_new_temp_file(path.parent, prefix=f"{path.name}.{label}-{stamp}-")
     os.close(fd)
