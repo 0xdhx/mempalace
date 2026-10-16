@@ -584,17 +584,47 @@ def run_diary_write(payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+_MCP_USAGE_ERROR_CODES = frozenset({-32600, -32601, -32602, -32700})
+
+
+def _daemon_result_from_mcp_refusal(error: dict[str, Any]) -> dict[str, Any]:
+    """Turn a refused or failed tools/call into a failed daemon job result.
+
+    A peer writer holding the palace is the same deferral as the write lock
+    held by another process, so it carries that ``error_class`` and the worker
+    retries it later instead of dead-lettering the write.
+    """
+    code = error.get("code")
+    data = error.get("data") if isinstance(error.get("data"), dict) else {}
+    out: dict[str, Any] = {
+        "success": False,
+        "error": str(data.get("message") or error.get("message") or "MCP tool call failed"),
+        "exit_code": 2 if code in _MCP_USAGE_ERROR_CODES else 1,
+        "jsonrpc_code": code,
+    }
+    for key in ("tool", "error_class"):
+        if data.get(key):
+            out[key] = data[key]
+    if data.get("failure_kind") == "peer_contention":
+        from .daemon import LOCK_REFUSAL_ERROR_CLASS
+
+        out["error_class"] = LOCK_REFUSAL_ERROR_CLASS
+    return out
+
+
 @_restores_palace_env
 def run_mcp_tool(payload: dict[str, Any]) -> dict[str, Any]:
     """Execute an MCP tool by name over the daemon queue.
 
     The daemon is a durable, retried write surface — not a general MCP transport.
     Restrict ``mcp_tool`` to write-classified tools only: read tools would
-    exfiltrate verbatim palace content into the queue DB and the job result
-    (stored world-readable-by-default without the perms fix, and returned over
-    /jobs), and maintenance tools already have their own dedicated kinds
-    (mine/sync). No internal caller currently uses ``mcp_tool``; this allowlist
-    bounds the blast radius of the generic escape hatch.
+    exfiltrate verbatim palace content into the queue DB and the job result,
+    and maintenance tools already have their own dedicated kinds (mine/sync).
+
+    Dispatch goes through ``mcp_server.call_tool``, the tools/call path of
+    ``handle_request``, so the read-only, sqlite-integrity, stale-library,
+    diverged-index, and peer-writer gates run, and argument filtering and type
+    coercion match a real tools/call.
     """
     name = payload.get("name")
     arguments = payload.get("arguments") or {}
@@ -618,7 +648,11 @@ def run_mcp_tool(payload: dict[str, Any]) -> dict[str, Any]:
 
     if name not in mcp_server.TOOLS:
         return {"success": False, "error": f"unknown MCP tool: {name}", "exit_code": 2}
-    result = mcp_server.TOOLS[name]["handler"](**arguments)
+    refusal, result = mcp_server.call_tool(
+        "daemon-mcp-tool", {"name": name, "arguments": arguments}
+    )
+    if refusal is not None:
+        return _daemon_result_from_mcp_refusal(refusal["error"])
     if isinstance(result, dict):
         # Several write tools signal failure with a bare {"error": ...} and no
         # explicit success flag (e.g. tool_create_tunnel / tool_delete_tunnel
