@@ -466,48 +466,6 @@ DEFAULT_HALL_KEYWORDS = {
 }
 
 
-def _write_target(path: Path) -> Path:
-    """The file a write should replace, following a symlink to it.
-
-    A config kept in a dotfiles checkout is reached through a link, and the
-    setters wrote through it. Replacing the link itself would leave the real
-    file holding what it held and send this setting, and every later one,
-    somewhere the user is not looking, so the temporary file, the rename and
-    the quarantine all happen at the target instead. ``realpath`` follows the
-    whole chain rather than one link, which is the file the reader would have
-    got.
-
-    A link this call cannot ``lstat`` is not reported as "not a link": that
-    reading would send the write through ``os.replace`` and put a regular file
-    where the link was. The error is raised instead, since the caller has to
-    write somewhere and there is no safe guess about where.
-    """
-    return fsio.write_target(path)
-
-
-def _fsync_directory(directory: Path) -> None:
-    """Make the rename itself durable. See ``fsio.fsync_directory``."""
-    fsio.fsync_directory(directory)
-
-
-def _keep_unreadable_file(path: Path):
-    """Move a file whose contents did not parse aside, keeping its bytes.
-
-    Renaming needs write permission on the directory rather than on the file,
-    and the caller is left with a free name to write. ``FileNotFoundError``
-    from the rename is the one outcome that establishes there was nothing to
-    keep; every other failure leaves the file where it is and is raised,
-    because a file that could not be moved is not one to write over.
-
-    A file this process could not read at all never reaches here: that state
-    declines the write outright rather than renaming anything.
-
-    Returns the path the old file now lives at, or ``None`` when there was
-    nothing there.
-    """
-    return fsio.move_aside(path, label="unreadable", resolve_target=_write_target)
-
-
 def _make_config_dir(directory: Path) -> None:
     """Create the config directory, restricted to the owner when this call makes it.
 
@@ -531,33 +489,6 @@ def _make_config_dir(directory: Path) -> None:
             directory.chmod(0o700)
         except (OSError, NotImplementedError):
             pass  # Windows has no Unix permission bits; init() tolerates this too.
-
-
-def _write_json_in_place(path: Path, payload) -> None:
-    """Write without the rename, for a directory that refuses a new name.
-
-    This is what the setters did before this module wrote atomically. It is
-    kept for the one case where the atomic write cannot run at all, since a
-    setting that is lost outright is worse than one written without
-    crash-safety.
-    """
-    fsio.write_json_in_place(path, payload)
-
-
-def _atomic_write_json(path: Path, payload) -> None:
-    """Serialize ``payload`` into ``path`` through ``fsio.atomic_write_json``.
-
-    The local names are what a caller (and the regression tests) patch: the
-    directory fsync and the in-place fallback. The publish itself no longer
-    calls ``tempfile.mkstemp``.
-    """
-    fsio.atomic_write_json(
-        path,
-        payload,
-        resolve_target=_write_target,
-        write_in_place=_write_json_in_place,
-        sync_directory=_fsync_directory,
-    )
 
 
 def _json_type_name(value) -> str:
@@ -807,7 +738,7 @@ class MempalaceConfig:
             return
         if self._file_config_state == "unparsed":
             try:
-                kept = _keep_unreadable_file(self._config_file)
+                kept = fsio.move_aside(self._config_file, label="unreadable")
             except OSError as exc:
                 print(
                     f"  ! Not writing {self._config_file}: it {self._file_config_problem} "
@@ -823,7 +754,7 @@ class MempalaceConfig:
                     file=sys.stderr,
                 )
         try:
-            _atomic_write_json(self._config_file, self._file_config)
+            fsio.atomic_write_json(self._config_file, self._file_config)
         except OSError as exc:
             print(f"  ! Could not write {self._config_file}: {exc}", file=sys.stderr)
 
@@ -1853,5 +1784,5 @@ class MempalaceConfig:
             people_map: Dict mapping name variants to canonical names.
         """
         _make_config_dir(self._config_dir)
-        _atomic_write_json(self._people_map_file, people_map)
+        fsio.atomic_write_json(self._people_map_file, people_map)
         return self._people_map_file
