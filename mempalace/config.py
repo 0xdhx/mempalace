@@ -618,9 +618,10 @@ class MempalaceConfig:
         back to the direct path instead of querying stale Hub state.
 
         Hash only resolved settings that affect the currently selected search
-        backend, as listed in ``hub_client.SEARCH_SETTINGS``.  This detects relevant file edits and Hub-start environment
-        overrides without treating hook/UI settings or inactive-backend values
-        as stale search state.  The digest keeps secrets out of the registry.
+        backend, as listed in ``hub_client.SEARCH_SETTINGS``.  This detects
+        relevant file edits and Hub-start environment overrides without
+        treating hook/UI settings or inactive-backend values as stale search
+        state.  The digest keeps secrets out of the registry.
         """
         try:
             # Match the backend selection used by palace.get_collection(),

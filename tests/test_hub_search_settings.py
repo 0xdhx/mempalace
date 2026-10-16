@@ -3,9 +3,12 @@ settings the hub's search fingerprint hashes (``hub_client.SEARCH_SETTINGS``).""
 
 import argparse
 import json
+import re
+from pathlib import Path
 
 import pytest
 
+import mempalace
 from mempalace import cli
 from mempalace.config import MempalaceConfig
 from mempalace.hub_client import (
@@ -42,6 +45,57 @@ def _fingerprint(tmp_path, payload):
 def _clean_env(monkeypatch):
     for name in SEARCH_OVERRIDE_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+
+
+# Env vars these modules read that provably don't change what a search returns.
+_NOT_SEARCH_SETTINGS = {
+    # Where writes and hook work go.
+    "MEMPALACE_CLI_WRITE_ROUTING",
+    "MEMPALACE_HOOK_WRITE_ROUTING",
+    "MEMPALACE_WRITE_ROUTING",
+    "MEMPALACE_HOOKS_AUTO_SAVE",
+    "MEMPALACE_HOOKS_DAEMON",
+    # Pick the palace or the config file; the hub is looked up per palace and
+    # the fingerprint hashes the values that file resolves to.
+    "MEMPALACE_CONFIG_DIR",
+    "MEMPALACE_PALACE",
+    "MEMPALACE_PALACE_PATH",
+    "MEMPAL_PALACE_PATH",
+    # Mining, graph building and backups only.
+    "MEMPALACE_CONVO_SPELLCHECK",
+    "MEMPALACE_ENTITY_LANGUAGES",
+    "MEMPAL_ENTITY_LANGUAGES",
+    "MEMPALACE_KG_HALLWAY_MIN_COUNT",
+    "MEMPALACE_TOPIC_TUNNEL_MIN_COUNT",
+    "MEMPALACE_MAX_BACKUPS",
+    # Embedding batch size changes throughput, not the vectors.
+    "MEMPALACE_EMBEDDINGGEMMA_BATCH_SIZE",
+    "MEMPALACE_EMBEDDINGGEMMA2_BATCH_SIZE",
+}
+
+_SETTING_SOURCES = (
+    "config.py",
+    "embedding.py",
+    "backends/chroma.py",
+    "backends/milvus.py",
+    "backends/pgvector.py",
+    "backends/qdrant.py",
+    "backends/sqlite_exact.py",
+)
+
+
+def test_every_env_setting_is_in_the_table_or_known_not_to_affect_search():
+    root = Path(mempalace.__file__).parent
+    read = set()
+    for name in _SETTING_SOURCES:
+        text = (root / name).read_text(encoding="utf-8")
+        read.update(re.findall(r"[\"'](MEMPAL[A-Z0-9_]*)[\"']", text))
+    missing = read - set(SEARCH_OVERRIDE_ENV_VARS) - _NOT_SEARCH_SETTINGS
+    assert not missing, (
+        f"{sorted(missing)}: add a row to hub_client.SEARCH_SETTINGS, or to "
+        "_NOT_SEARCH_SETTINGS here if it cannot change search results"
+    )
+    assert _NOT_SEARCH_SETTINGS <= read, "stale _NOT_SEARCH_SETTINGS entries"
 
 
 @pytest.mark.parametrize("attr", [row[0] for row in SEARCH_SETTINGS])
