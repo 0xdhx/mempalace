@@ -14,7 +14,6 @@ import stat
 import pytest
 
 from mempalace import fsio
-from mempalace.config import _atomic_write_json, _keep_unreadable_file
 
 
 def _forbid_mkstemp(*args, **kwargs):
@@ -80,7 +79,7 @@ def test_windows_mkstemp_would_sweep_but_config_publish_does_not(tmp_path, monke
     monkeypatch.setattr(os, "open", not_permitted)
     monkeypatch.setattr("tempfile.mkstemp", _forbid_mkstemp)
 
-    _atomic_write_json(dest, {"backend": "chroma"})
+    fsio.atomic_write_json(dest, {"backend": "chroma"})
 
     assert len(attempts) <= fsio.TEMP_NAME_ATTEMPTS + 1
     assert json.loads(dest.read_text()) == {"backend": "chroma"}
@@ -107,7 +106,7 @@ def test_quarantine_does_not_sweep_or_call_mkstemp(tmp_path, monkeypatch):
     monkeypatch.setattr("tempfile.mkstemp", _forbid_mkstemp)
 
     with pytest.raises(PermissionError):
-        _keep_unreadable_file(dest)
+        fsio.move_aside(dest, label="unreadable")
 
     assert attempts == attempts[:1]
     assert len(attempts) == 1
@@ -171,7 +170,7 @@ def test_config_publish_does_not_call_mkstemp(tmp_path, monkeypatch):
     dest.write_text("{}", encoding="utf-8")
     monkeypatch.setattr("tempfile.mkstemp", _forbid_mkstemp)
 
-    _atomic_write_json(dest, {"backend": "sqlite_exact"})
+    fsio.atomic_write_json(dest, {"backend": "sqlite_exact"})
 
     assert json.loads(dest.read_text(encoding="utf-8")) == {"backend": "sqlite_exact"}
 
@@ -187,6 +186,86 @@ def test_failed_replace_leaves_the_previous_bytes(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "replace", boom)
 
     with pytest.raises(OSError):
+        fsio.atomic_write_json(dest, {"new": True})
+
+    assert dest.read_bytes() == original
+    assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
+
+
+class _SharingViolation(PermissionError):
+    winerror = 32
+
+
+def test_a_rename_blocked_by_a_reader_is_retried(tmp_path, monkeypatch, capsys):
+    """Windows refuses to replace a file another process has open. The reader
+    lets go, so the rename is retried rather than written in place."""
+    dest = tmp_path / "config.json"
+    dest.write_text('{"old": 1}', encoding="utf-8")
+    real_replace = os.replace
+    refusals = []
+
+    def held_twice(src, dst):
+        if len(refusals) < 2:
+            refusals.append(dst)
+            raise _SharingViolation(errno.EACCES, "being used by another process")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", held_twice)
+    monkeypatch.setattr(fsio.time, "sleep", lambda s: None)
+
+    fsio.atomic_write_json(dest, {"new": 2})
+
+    assert len(refusals) == 2
+    assert json.loads(dest.read_text(encoding="utf-8")) == {"new": 2}
+    assert "written in place" not in capsys.readouterr().err
+    assert [p.name for p in tmp_path.iterdir()] == ["config.json"]
+
+
+def test_a_file_held_open_is_not_written_in_place(tmp_path, monkeypatch, capsys):
+    """Writing through a file another process is reading lets it see a torn
+    file, so a rename that stays refused is raised and nothing is truncated."""
+    dest = tmp_path / "config.json"
+    original = b'{"keep": true}'
+    dest.write_bytes(original)
+
+    def held(src, dst):
+        raise _SharingViolation(errno.EACCES, "being used by another process")
+
+    monkeypatch.setattr(os, "replace", held)
+    monkeypatch.setattr(fsio.time, "sleep", lambda s: None)
+
+    with pytest.raises(PermissionError):
+        fsio.atomic_write_json(dest, {"new": True})
+
+    assert dest.read_bytes() == original
+    assert "written in place" not in capsys.readouterr().err
+    assert [p.name for p in tmp_path.iterdir()] == ["config.json"]
+
+
+def test_a_filesystem_without_fsync_still_publishes(tmp_path, monkeypatch):
+    dest = tmp_path / "state.json"
+
+    def unsupported(fd):
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    monkeypatch.setattr(os, "fsync", unsupported)
+
+    fsio.atomic_write_json(dest, {"new": True})
+
+    assert json.loads(dest.read_text(encoding="utf-8")) == {"new": True}
+
+
+def test_an_fsync_io_error_is_not_swallowed(tmp_path, monkeypatch):
+    dest = tmp_path / "state.json"
+    original = b'{"keep": true}'
+    dest.write_bytes(original)
+
+    def broken(fd):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "fsync", broken)
+
+    with pytest.raises(OSError, match="Input/output"):
         fsio.atomic_write_json(dest, {"new": True})
 
     assert dest.read_bytes() == original
