@@ -42,9 +42,7 @@ logger = logging.getLogger("mempalace_llm")
 # machine/network. Single source of truth so all three providers share
 # identical "local vs external" semantics.
 
-# ``host.docker.internal`` is Docker's name for the machine running the
-# container, which is where a containerised user's Ollama listens.
-_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
+_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 # Tailscale and other CGNAT overlays hand out 100.64.0.0/10, which Python's
@@ -90,8 +88,8 @@ def endpoint_is_local(url: Optional[str]) -> bool:
       - IP literals that are loopback, RFC 1918 (10/8, 172.16/12,
         192.168/16), link-local, IPv6 unique-local (fc00::/7), or CGNAT
         100.64.0.0/10 (Tailscale and similar overlays)
-      - a single-label or ``.local`` hostname whose every resolved address
-        is one of the above
+      - a single-label, ``.local`` or ``host.docker.internal`` hostname
+        whose every resolved address is one of the above
 
     None / empty / unparseable URLs are treated as local (defensive default —
     no endpoint means no external request can happen yet).
@@ -102,7 +100,7 @@ def endpoint_is_local(url: Optional[str]) -> bool:
         return True
     try:
         parsed = urlparse(url)
-        host = (parsed.hostname or "").lower().rstrip(".")
+        host = (parsed.hostname or "").lower()
     except (ValueError, AttributeError):
         return False
     # ``http://evil.com\@localhost`` parses to host ``localhost`` here, while
@@ -111,7 +109,11 @@ def endpoint_is_local(url: Optional[str]) -> bool:
         return False
     if not host:
         return True
-    if host in _LOCALHOST_HOSTS:
+    # The trailing dot is dropped only to judge the name's shape. Anything
+    # resolved below resolves ``host`` exactly as urllib will connect to it,
+    # since ``gpu-box.`` and ``gpu-box`` differ under a resolver search domain.
+    name = host.rstrip(".")
+    if name in _LOCALHOST_HOSTS:
         return True
     # An IP literal is judged by its address, never by how the text starts:
     # ``10.example.com`` or ``fd.example.com`` are public names that merely
@@ -127,7 +129,9 @@ def endpoint_is_local(url: Optional[str]) -> bool:
     # the name shape proves nothing: resolve it and require every address to
     # be private, loopback, link-local or CGNAT. Unresolvable or public means
     # external, and the user can still opt in with the explicit consent flag.
-    if "." not in host or host.endswith(".local"):
+    # ``host.docker.internal`` is Docker's name for the machine running the
+    # container; outside Docker it is an ordinary DNS name, so it resolves too.
+    if "." not in name or name.endswith(".local") or name == "host.docker.internal":
         return _resolves_private(host)
     # Any other domain name is external: DNS can point it anywhere.
     return False

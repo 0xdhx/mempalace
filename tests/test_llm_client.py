@@ -734,10 +734,43 @@ def test_consent_env_var_accepts_without_a_prompt(monkeypatch, flag):
     assert provider.external_use_accepted
 
 
-def test_docker_host_and_trailing_dot_are_local_and_backslash_netloc_is_not():
-    assert endpoint_is_local("http://host.docker.internal:11434")
+def test_trailing_dot_localhost_is_local_and_backslash_netloc_is_not():
     assert endpoint_is_local("http://localhost.:11434/v1")
     assert not endpoint_is_local("http://evil.com\\@localhost:11434/v1")
+
+
+def test_docker_host_is_resolved_not_trusted(monkeypatch):
+    import socket
+
+    answers = {"host.docker.internal": "192.168.65.254"}
+
+    def fake_getaddrinfo(host, *a, **k):
+        if host not in answers:
+            raise socket.gaierror("no such host")
+        return [(None, None, None, None, (answers[host], 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    assert endpoint_is_local("http://host.docker.internal:11434")
+    # Outside Docker the same name can resolve anywhere.
+    answers["host.docker.internal"] = "8.8.8.8"
+    assert not endpoint_is_local("http://host.docker.internal:11434")
+
+
+def test_resolution_uses_the_hostname_with_its_trailing_dot(monkeypatch):
+    import socket
+
+    looked_up = []
+
+    def fake_getaddrinfo(host, *a, **k):
+        looked_up.append(host)
+        # A search domain could make the bare name resolve privately while
+        # the absolute name urllib connects to is public.
+        address = "192.168.1.20" if host == "gpu-box" else "8.8.8.8"
+        return [(None, None, None, None, (address, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
+    assert not endpoint_is_local("http://gpu-box.:11434")
+    assert looked_up == ["gpu-box."]
 
 
 def test_classify_sends_env_key_to_local_endpoint(monkeypatch):
