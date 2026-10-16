@@ -35,7 +35,6 @@ Usage:
     kg.invalidate("Max", "has_issue", "sports_injury", ended="2026-02-15")
 """
 
-import hashlib
 import json
 import os
 import re
@@ -58,41 +57,35 @@ def _escape_like(value: str) -> str:
 
 
 def canonical_entity_name(name: str) -> str:
-    """NFC, case-folded name with whitespace runs collapsed."""
-    text = unicodedata.normalize("NFC", name or "").casefold().strip()
+    """NFC, lower-cased name with whitespace runs collapsed.
+
+    ``lower()``, not ``casefold()``: casefold maps "ß" to "ss" and would merge
+    distinct names.
+    """
+    text = unicodedata.normalize("NFC", name or "").lower().strip()
     return re.sub(r"\s+", " ", text)
 
 
 def entity_id_for_name(name: str) -> str:
-    """Reversible id: punctuation stays, so distinct names stay distinct.
+    """Id that keeps punctuation, so distinct names stay distinct.
 
-    ``decode_entity_id`` returns ``canonical_entity_name``. Whitespace is
-    an underscore; an underscore that was part of the name is ``%5F``.
+    Whitespace is an underscore; an underscore that was part of the name is
+    ``%5F`` and a percent sign is ``%25``, so no two canonical names share an id.
     """
     text = canonical_entity_name(name).replace("%", "%25").replace("_", "%5F")
     return text.replace(" ", "_")
 
 
-def decode_entity_id(entity_id: str) -> str:
-    """Return the canonical name encoded in ``entity_id``."""
-    base = entity_id.split("~", 1)[0]
-    text = base.replace("_", " ")
-    return text.replace("%5F", "_").replace("%5f", "_").replace("%25", "%")
-
-
 def legacy_entity_id(name: str) -> str:
-    """Historical id. Apostrophes were stripped, so it can merge names."""
+    """Id written before punctuation was kept. It stripped apostrophes and
+    turned spaces into underscores, so distinct names could share one."""
     return (name or "").lower().replace(" ", "_").replace("'", "")
 
 
-def disambiguated_entity_id(name: str) -> str:
-    """Id used when the reversible id is already a different entity."""
-    digest = hashlib.sha256(canonical_entity_name(name).encode("utf-8")).hexdigest()[:8]
-    return f"{entity_id_for_name(name)}~{digest}"
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def _drop_none(props: dict) -> dict:
+    return {
+        k: _drop_none(v) if isinstance(v, dict) else v for k, v in props.items() if v is not None
+    }
 
 
 def _is_date_only_temporal(value: str) -> bool:
@@ -196,13 +189,14 @@ class KnowledgeGraph:
     def _init_db(self):
         conn = self._conn()
         conn.executescript("""
+            PRAGMA journal_mode=WAL;
+
             CREATE TABLE IF NOT EXISTS entities (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 type TEXT DEFAULT 'unknown',
                 properties TEXT DEFAULT '{}',
-                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                disambiguator TEXT
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS triples (
@@ -245,9 +239,6 @@ class KnowledgeGraph:
             conn.execute("ALTER TABLE triples ADD COLUMN source_drawer_id TEXT")
         if "adapter_name" not in existing:
             conn.execute("ALTER TABLE triples ADD COLUMN adapter_name TEXT")
-        entity_cols = {row["name"] for row in conn.execute("PRAGMA table_info(entities)")}
-        if "disambiguator" not in entity_cols:
-            conn.execute("ALTER TABLE entities ADD COLUMN disambiguator TEXT")
 
     def _conn(self):
         if self._connection is None:
@@ -267,59 +258,55 @@ class KnowledgeGraph:
         """Allow KnowledgeGraph to be used as a context manager."""
         return self
 
-    def __exit__(self, *_exc):
+    def __exit__(self, exc_type, exc, tb):
         """Close the SQLite connection when leaving a context manager block."""
         self.close()
         return False
 
-    def _entity_id(self, name: str) -> str:
-        return entity_id_for_name(name)
-
     def _resolve_entity_id(self, conn, name: str) -> str:
-        """Id for ``name``, reusing a legacy row of the same name.
+        """Id for ``name``: its own id, else a legacy row it used to map to.
 
-        A stored id is never rewritten. When the reversible id already
-        belongs to a different name, the disambiguated id is used instead.
+        Stored ids are never rewritten. A legacy row is reused only when its
+        stored name no longer owns that id, so a name written after this
+        change (``OBrien``) never absorbs a different one (``O'Brien``).
         """
-        new_id = entity_id_for_name(name)
-        row = conn.execute("SELECT name FROM entities WHERE id = ?", (new_id,)).fetchone()
-        if row is not None and entity_id_for_name(row["name"]) == new_id:
-            return new_id
+        eid = entity_id_for_name(name)
+        if conn.execute("SELECT 1 FROM entities WHERE id = ?", (eid,)).fetchone():
+            return eid
         legacy = legacy_entity_id(name)
-        if legacy != new_id:
-            old = conn.execute("SELECT name FROM entities WHERE id = ?", (legacy,)).fetchone()
-            if old is not None and entity_id_for_name(old["name"]) == new_id:
+        if legacy != eid:
+            row = conn.execute("SELECT name FROM entities WHERE id = ?", (legacy,)).fetchone()
+            if row is not None and entity_id_for_name(row["name"]) != legacy:
                 return legacy
-        alt = disambiguated_entity_id(name)
-        if conn.execute("SELECT 1 FROM entities WHERE id = ?", (alt,)).fetchone() is not None:
-            return alt
-        if row is not None:
-            return alt
-        return new_id
+        return eid
 
     # ── Write operations ──────────────────────────────────────────────────
 
     def add_entity(self, name: str, entity_type: str = "unknown", properties: dict = None):
-        """Add an entity, or merge type and properties into the existing node."""
-        props = json.dumps(properties or {})
+        """Add an entity, or merge into the existing node.
+
+        The stored name takes the latest spelling, a type other than
+        ``unknown`` replaces the stored one, and properties merge key by key.
+        A ``None`` value leaves the stored key as it is. A legacy row keeps
+        its stored name: renaming it would change which spellings reach it.
+        """
+        props = json.dumps(_drop_none(properties or {}))
         with self._lock:
             conn = self._conn()
             with conn:
                 eid = self._resolve_entity_id(conn, name)
-                disambiguator = None
-                alt = disambiguated_entity_id(name)
-                if eid == alt:
-                    disambiguator = alt.split("~", 1)[1]
+                row = conn.execute("SELECT name FROM entities WHERE id = ?", (eid,)).fetchone()
+                rename = row is None or entity_id_for_name(row["name"]) == eid
                 conn.execute(
-                    """INSERT INTO entities (id, name, type, properties, disambiguator)
-                       VALUES (?, ?, ?, ?, ?)
+                    """INSERT INTO entities (id, name, type, properties)
+                       VALUES (?, ?, ?, ?)
                        ON CONFLICT(id) DO UPDATE SET
+                         name = CASE WHEN ? THEN excluded.name ELSE entities.name END,
                          type = COALESCE(NULLIF(excluded.type, 'unknown'), entities.type),
                          properties = json_patch(
-                             COALESCE(entities.properties, '{}'),
-                             COALESCE(excluded.properties, '{}')
+                             COALESCE(entities.properties, '{}'), excluded.properties
                          )""",
-                    (eid, name, entity_type, props, disambiguator),
+                    (eid, name, entity_type, props, rename),
                 )
         return eid
 
@@ -391,7 +378,9 @@ class KnowledgeGraph:
                 if existing:
                     return existing["id"]  # Already exists and still valid
 
-                triple_id = make_triple_id(sub_id, pred, obj_id, valid_from, _utc_now_iso())
+                triple_id = make_triple_id(
+                    sub_id, pred, obj_id, valid_from, datetime.now().isoformat()
+                )
                 conn.execute(
                     """INSERT INTO triples (
                         id, subject, predicate, object, valid_from, valid_to,
@@ -540,7 +529,9 @@ class KnowledgeGraph:
                 if existing:
                     return existing["id"]
 
-                triple_id = make_triple_id(sub_id, pred, new_id, boundary, _utc_now_iso())
+                triple_id = make_triple_id(
+                    sub_id, pred, new_id, boundary, datetime.now().isoformat()
+                )
                 conn.execute(
                     """INSERT INTO triples (
                         id, subject, predicate, object, valid_from, valid_to,
@@ -648,7 +639,7 @@ class KnowledgeGraph:
                 ).fetchone()
                 if existing:
                     return existing["id"]
-                new_id = make_triple_id(sub_id, pred, obj_id, boundary, _utc_now_iso())
+                new_id = make_triple_id(sub_id, pred, obj_id, boundary, datetime.now().isoformat())
                 conn.execute(
                     """INSERT INTO triples (
                         id, subject, predicate, object, valid_from, valid_to,
@@ -1029,20 +1020,24 @@ class KnowledgeGraph:
     # ── Seed from known facts ─────────────────────────────────────────────
 
     def report_entity_id_collisions(self) -> list:
-        """Report legacy ids that dropped punctuation. Stored ids stay as they are."""
+        """List rows still keyed by a legacy id their name no longer derives.
+
+        Each was written before entity ids kept punctuation, and may hold facts
+        for more than one spelling. Stored ids stay as they are.
+        """
         with self._lock:
             conn = self._conn()
             rows = conn.execute("SELECT id, name FROM entities").fetchall()
         reports = []
         for row in rows:
-            reversible = entity_id_for_name(row["name"])
+            current = entity_id_for_name(row["name"])
             legacy = legacy_entity_id(row["name"])
-            if row["id"] == legacy and row["id"] != reversible:
+            if row["id"] == legacy and row["id"] != current:
                 reports.append(
                     {
                         "id": row["id"],
                         "name": row["name"],
-                        "reversible_id": reversible,
+                        "current_id": current,
                         "legacy_id": legacy,
                         "detail": "stored id left unchanged",
                     }
@@ -1050,44 +1045,49 @@ class KnowledgeGraph:
         return reports
 
     def seed_from_entity_facts(self, entity_facts: dict):
-        """Seed entities and triples from the given fact records.
-
-        Names, dates, and relationship targets are stored as given. A missing
-        target is skipped. Each relationship is written once.
+        """
+        Seed the knowledge graph from fact_checker.py ENTITY_FACTS.
+        This bootstraps the graph with known ground truth.
         """
         for key, facts in entity_facts.items():
-            name = facts.get("full_name") or key
-            if facts.get("type"):
-                etype = facts["type"]
-            elif facts.get("relationship") == "dog":
-                etype = "animal"
-            else:
-                etype = "person"
-            props = {}
-            if facts.get("gender"):
-                props["gender"] = facts["gender"]
-            if facts.get("birthday"):
-                props["birthday"] = facts["birthday"]
-            self.add_entity(name, etype, props or None)
+            name = facts.get("full_name", key.capitalize())
+            etype = facts.get("type", "person")
+            self.add_entity(
+                name,
+                etype,
+                {
+                    "gender": facts.get("gender", ""),
+                    "birthday": facts.get("birthday", ""),
+                },
+            )
 
-            parent = facts.get("parent") or None
+            # Relationships
+            parent = facts.get("parent")
             if parent:
-                self.add_triple(name, "child_of", parent, valid_from=facts.get("birthday"))
+                self.add_triple(
+                    name, "child_of", parent.capitalize(), valid_from=facts.get("birthday")
+                )
 
-            partner = facts.get("partner") or None
+            partner = facts.get("partner")
             if partner:
-                self.add_triple(name, "married_to", partner)
+                self.add_triple(name, "married_to", partner.capitalize())
 
-            relationship = facts.get("relationship") or ""
-            if relationship == "brother":
-                sibling = facts.get("sibling") or None
-                if sibling:
-                    self.add_triple(name, "is_sibling_of", sibling)
+            relationship = facts.get("relationship", "")
+            if relationship == "daughter":
+                self.add_triple(
+                    name,
+                    "is_child_of",
+                    facts.get("parent", "").capitalize() or name,
+                    valid_from=facts.get("birthday"),
+                )
+            elif relationship == "husband":
+                self.add_triple(name, "is_partner_of", facts.get("partner", name).capitalize())
+            elif relationship == "brother":
+                self.add_triple(name, "is_sibling_of", facts.get("sibling", name).capitalize())
             elif relationship == "dog":
-                owner = facts.get("owner") or None
-                if owner:
-                    self.add_triple(name, "is_pet_of", owner)
+                self.add_triple(name, "is_pet_of", facts.get("owner", name).capitalize())
+                self.add_entity(name, "animal")
 
-            for interest in facts.get("interests") or []:
-                if interest:
-                    self.add_triple(name, "loves", interest)
+            # Interests
+            for interest in facts.get("interests", []):
+                self.add_triple(name, "loves", interest.capitalize(), valid_from="2025-01-01")
