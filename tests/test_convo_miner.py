@@ -17,6 +17,7 @@ from mempalace.convo_miner import (
 from mempalace import palace
 from mempalace.palace import (
     CONVO_CHUNKER_VERSION,
+    GENERAL_EXTRACTOR_VERSION,
     NORMALIZE_VERSION,
     MineAlreadyRunning,
     file_already_mined,
@@ -123,6 +124,9 @@ def test_mine_convos_allows_general_after_exchange(capsys):
         modes = {meta.get("extract_mode") for meta in rows["metadatas"]}
         assert {"exchange", "general"} <= modes
         assert any(drawer_id.startswith("drawer_test_decision_") for drawer_id in rows["ids"])
+        for meta in rows["metadatas"]:
+            if meta.get("extract_mode") == "general":
+                assert meta["general_extractor_version"] == GENERAL_EXTRACTOR_VERSION
         del col, client
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
