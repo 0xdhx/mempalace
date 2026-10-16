@@ -690,7 +690,9 @@ class TestHandleRequest:
         """
         from mempalace.mcp_server import TOOLS, _READ_ONLY_REFUSED_TOOLS, handle_request
 
-        expected = {name for name, spec in TOOLS.items() if spec.get("capability") == "read"}
+        from mempalace.service import classify_tool
+
+        expected = {name for name in TOOLS if classify_tool(name) == "read"}
         resp = handle_request({"method": "tools/list", "id": 2, "params": {}})
         tools = resp["result"]["tools"]
         hinted = {t["name"] for t in tools if t.get("annotations", {}).get("readOnlyHint") is True}

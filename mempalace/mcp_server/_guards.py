@@ -171,8 +171,7 @@ _sqlite_integrity_generation = 0
 # twice concurrently.
 _sqlite_integrity_refresh_lock = threading.Lock()
 _SQLITE_INTEGRITY_ERROR_CODE = -32002
-# Installed from each tool's integrity_allowed flag. Empty until schemas loads.
-_SQLITE_INTEGRITY_ALLOWED_TOOLS = frozenset()
+_SQLITE_INTEGRITY_ALLOWED_TOOLS = _tool_capabilities.SQLITE_INTEGRITY_ALLOWED_TOOLS
 
 # The startup probe above runs PRAGMA quick_check, which reads every page of
 # chroma.sqlite3 and is therefore O(database size). On multi-GB palaces it can
@@ -202,16 +201,12 @@ _MCP_WRITER_LOCK_ERROR = ""
 _MCP_WRITER_ATEXIT_REGISTERED = False
 _MCP_ALLOW_PEER_WRITER_ENV = "MEMPALACE_MCP_ALLOW_PEER_WRITER"
 
-# Installed from TOOLS capability flags in schemas._install_tool_capabilities.
-# mutating: peer-writer lease. peer_exempt: mutating, but not Chroma.
-# vector_write: mutating path that can block in a diverged HNSW segment.
-# Read-only refuses every non-read tool except mempalace_reconnect.
-# hook_settings and memories_filed_away are writes the lease does not arbitrate.
-_MUTATING_TOOLS = frozenset()
-_PEER_WRITER_EXEMPT_TOOLS = frozenset()
-_VECTOR_WRITE_TOOLS = frozenset()
+# Gate sets, derived in mempalace.tool_capabilities (see the flags there).
+_MUTATING_TOOLS = _tool_capabilities.MUTATING_TOOLS
+_PEER_WRITER_EXEMPT_TOOLS = _tool_capabilities.PEER_WRITER_EXEMPT_TOOLS
+_VECTOR_WRITE_TOOLS = _tool_capabilities.VECTOR_WRITE_TOOLS
 _DIVERGED_INDEX_ERROR_CODE = -32004
-_READ_ONLY_REFUSED_TOOLS = frozenset()
+_READ_ONLY_REFUSED_TOOLS = _tool_capabilities.READ_ONLY_REFUSED_TOOLS
 
 
 # Stale-library write gate (#899).

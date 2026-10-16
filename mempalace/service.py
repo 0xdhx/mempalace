@@ -16,6 +16,12 @@ import sys
 from typing import Any
 
 from .config import MempalaceConfig
+from .tool_capabilities import (  # noqa: F401  (re-exported for callers and tests)
+    MAINTENANCE_TOOLS,
+    READ_TOOLS,
+    WRITE_TOOLS,
+    classify_tool,
+)
 
 _EXPLICIT_BACKEND_ENV = "MEMPALACE_BACKEND_EXPLICIT"
 _PALACE_PATH_ENV = "MEMPALACE_PALACE_PATH"
@@ -55,37 +61,6 @@ _BACKEND_ENV = "MEMPALACE_BACKEND"
 # (e.g. qdrant) cannot poison every later job in the same daemon process —
 # including mcp_tool jobs, which read MempalaceConfig (and thus the leaked env).
 _PER_JOB_ENV = (_PALACE_PATH_ENV, _BACKEND_ENV, _EXPLICIT_BACKEND_ENV)
-
-
-def _capability_buckets() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    """Read, write, and maintenance names from the tool capability registry."""
-    from .mcp_server import TOOLS
-
-    buckets: dict[str, set[str]] = {"read": set(), "write": set(), "maintenance": set()}
-    for name, spec in TOOLS.items():
-        capability = spec.get("capability")
-        if capability not in buckets:
-            raise RuntimeError(f"{name} has no capability in the tool registry")
-        buckets[capability].add(name)
-    return (
-        frozenset(buckets["read"]),
-        frozenset(buckets["write"]),
-        frozenset(buckets["maintenance"]),
-    )
-
-
-READ_TOOLS, WRITE_TOOLS, MAINTENANCE_TOOLS = _capability_buckets()
-
-
-def classify_tool(name: str) -> str:
-    """Return ``read``, ``write``, ``maintenance``, or ``unknown`` for an MCP tool."""
-    if name in READ_TOOLS:
-        return "read"
-    if name in WRITE_TOOLS:
-        return "write"
-    if name in MAINTENANCE_TOOLS:
-        return "maintenance"
-    return "unknown"
 
 
 def _apply_backend(backend: str | None) -> None:

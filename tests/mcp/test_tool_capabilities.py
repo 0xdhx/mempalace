@@ -1,105 +1,80 @@
-"""The tool capability registry is the only read/write list."""
+"""mempalace.tool_capabilities is the only read/write list.
 
-from mempalace import mcp_server, service
+The two security-relevant sets are pinned as literals: a tool moved to the
+wrong class in the registry fails here instead of silently changing what a
+read-only server or the peer-writer lease lets through.
+"""
 
-# Refused in read-only mode but missing from the old hand-kept WRITE_TOOLS.
-_DRIFT_FROM_WRITE_TOOLS = (
+import subprocess
+import sys
+
+from mempalace import mcp_server, service, tool_capabilities
+
+READ_ONLY_REFUSED = {
+    "mempalace_add_drawer",
     "mempalace_artifact_put",
+    "mempalace_checkpoint",
+    "mempalace_create_tunnel",
+    "mempalace_delete_by_source",
+    "mempalace_delete_drawer",
+    "mempalace_delete_drawers",
+    "mempalace_delete_hallway",
+    "mempalace_delete_tunnel",
+    "mempalace_diary_write",
     "mempalace_event_ack",
     "mempalace_event_append",
+    "mempalace_hook_settings",
+    "mempalace_kg_add",
+    "mempalace_kg_invalidate",
     "mempalace_kg_supersede",
+    "mempalace_memories_filed_away",
     "mempalace_mine",
     "mempalace_patch_submit",
     "mempalace_sync",
     "mempalace_task_create",
-)
+    "mempalace_update_drawer",
+}
 
-# readOnlyHint used to omit these reads.
-_OMITTED_READ_ONLY_HINTS = (
-    "mempalace_traverse",
-    "mempalace_find_tunnels",
-    "mempalace_graph_stats",
-    "mempalace_list_tunnels",
-    "mempalace_list_hallways",
-    "mempalace_event_list",
-    "mempalace_artifact_get",
-    "mempalace_mesh_peers",
-)
-
-# classify_tool used to return "unknown" for these.
-_FORMERLY_UNKNOWN = (
-    "mempalace_event_wait",
-    "mempalace_kg_supersede",
-    "mempalace_mesh_peers",
-    "mempalace_artifact_get",
-)
+MUTATING = READ_ONLY_REFUSED - {"mempalace_hook_settings", "mempalace_memories_filed_away"}
 
 
-def test_every_tool_has_one_capability_and_classify_matches_it():
-    missing = [name for name, spec in mcp_server.TOOLS.items() if "capability" not in spec]
-    assert missing == []
-    assert set(mcp_server._TOOL_CAPABILITIES) == set(mcp_server.TOOLS)
-    for name, spec in mcp_server.TOOLS.items():
-        capability = spec["capability"]
-        assert capability in {"read", "write", "maintenance"}
-        assert service.classify_tool(name) == capability
-        assert service.classify_tool(name) != "unknown"
-        if capability == "read":
-            assert spec.get("read_only") is True
-            assert name not in mcp_server._READ_ONLY_REFUSED_TOOLS
-        elif name != "mempalace_reconnect":
-            assert name in mcp_server._READ_ONLY_REFUSED_TOOLS
+def test_read_only_refusals_are_pinned():
+    assert mcp_server._READ_ONLY_REFUSED_TOOLS == READ_ONLY_REFUSED
 
 
-def test_read_only_refusals_match_write_and_maintenance_classification():
-    """Tools refused in read-only mode are writes, or maintenance that is not reconnect."""
-    for name in _DRIFT_FROM_WRITE_TOOLS:
-        assert name in mcp_server._READ_ONLY_REFUSED_TOOLS
-        kind = service.classify_tool(name)
-        assert kind in {"write", "maintenance"}
-        if name in {"mempalace_mine", "mempalace_sync"}:
-            assert kind == "maintenance"
-            assert name not in service.WRITE_TOOLS
-        else:
-            assert kind == "write"
-            assert name in service.WRITE_TOOLS
-    assert "mempalace_reconnect" not in mcp_server._READ_ONLY_REFUSED_TOOLS
+def test_mutating_tools_are_pinned():
+    assert mcp_server._MUTATING_TOOLS == MUTATING
+
+
+def test_every_tool_has_a_capability():
+    assert set(tool_capabilities.TOOL_CAPABILITIES) == set(mcp_server.TOOLS)
+    for name in mcp_server.TOOLS:
+        assert service.classify_tool(name) in {"read", "write", "maintenance"}
+    assert service.classify_tool("not_a_tool") == "unknown"
+
+
+def test_reads_advertise_read_only_hint_and_nothing_else_does():
+    reads = {n for n in mcp_server.TOOLS if service.classify_tool(n) == "read"}
+    hinted = {
+        n
+        for n, tool in mcp_server.TOOLS.items()
+        if mcp_server._tool_catalog_entry(n, tool).get("annotations", {}).get("readOnlyHint")
+    }
+    assert hinted == reads
+    assert hinted.isdisjoint(READ_ONLY_REFUSED)
+
+
+def test_reconnect_stays_available_in_read_only_mode():
     assert service.classify_tool("mempalace_reconnect") == "maintenance"
-    assert service.WRITE_TOOLS <= mcp_server._READ_ONLY_REFUSED_TOOLS
-    assert mcp_server._MUTATING_TOOLS < mcp_server._READ_ONLY_REFUSED_TOOLS
-    assert "mempalace_hook_settings" not in mcp_server._MUTATING_TOOLS
-    assert "mempalace_memories_filed_away" not in mcp_server._MUTATING_TOOLS
+    assert "mempalace_reconnect" not in READ_ONLY_REFUSED
 
 
-def test_formerly_unknown_tools_and_omitted_hints_are_classified():
-    for name in _FORMERLY_UNKNOWN:
-        assert service.classify_tool(name) != "unknown"
-    for name in _OMITTED_READ_ONLY_HINTS:
-        assert mcp_server.TOOLS[name]["capability"] == "read"
-        assert mcp_server.TOOLS[name]["read_only"] is True
-        entry = mcp_server._tool_catalog_entry(name, mcp_server.TOOLS[name])
-        assert entry["annotations"]["readOnlyHint"] is True
-
-
-def test_derived_gate_sets_match_the_capability_flags():
-    tools = mcp_server.TOOLS
-    assert mcp_server._MUTATING_TOOLS == {n for n, s in tools.items() if s.get("mutating")}
-    assert mcp_server._VECTOR_WRITE_TOOLS == {n for n, s in tools.items() if s.get("vector_write")}
-    assert mcp_server._PEER_WRITER_EXEMPT_TOOLS == {
-        n for n, s in tools.items() if s.get("peer_exempt")
-    }
-    assert mcp_server._SQLITE_INTEGRITY_ALLOWED_TOOLS == {
-        n for n, s in tools.items() if s.get("integrity_allowed")
-    }
-    assert mcp_server._HTTP_LOCK_FREE_TOOLS == {n for n, s in tools.items() if s.get("lock_free")}
-    assert mcp_server._HTTP_EMBEDDING_RELEASE_TOOLS == {
-        n for n, s in tools.items() if s.get("embedding_release")
-    }
-    assert mcp_server._VECTOR_WRITE_TOOLS <= mcp_server._MUTATING_TOOLS
-    assert mcp_server._PEER_WRITER_EXEMPT_TOOLS <= mcp_server._MUTATING_TOOLS
-    reads = {n for n, s in tools.items() if s["capability"] == "read"}
-    assert service.READ_TOOLS == reads
-    assert service.WRITE_TOOLS == {n for n, s in tools.items() if s["capability"] == "write"}
-    assert service.MAINTENANCE_TOOLS == {
-        n for n, s in tools.items() if s["capability"] == "maintenance"
-    }
+def test_daemon_classification_does_not_import_the_mcp_server():
+    code = (
+        "import sys, mempalace.service; "
+        "print('mempalace.mcp_server' in sys.modules, 'chromadb' in sys.modules)"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=True
+    ).stdout
+    assert out.strip() == "False False"

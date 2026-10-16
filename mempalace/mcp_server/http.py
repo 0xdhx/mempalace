@@ -142,14 +142,11 @@ _HTTP_MINE_LOCK = threading.Lock()
 # and holding an MCP request open that long would time the client out with
 # no explanation.
 _HTTP_RECONNECT_MINE_WAIT_S = 10.0
-# Tools that hold the request lock exclusively for a long run but reach
-# mine_yield_point() between files, where waiting requests may run.
-_HTTP_YIELDING_TOOLS = frozenset({"mempalace_mine"})
-# Tools whose handler makes one request-local embedding call before an
-# otherwise independent backend operation. Holding ``_HTTP_REQUEST_LOCK``
-# through that inference stalls unrelated requests for the whole model call.
-# Compound read-modify-write tools stay fully serialized.
-# The set itself is the embedding_release capability flag.
+# Lock-free, yielding, and embedding-release tools: see the flags in
+# mempalace.tool_capabilities.
+_HTTP_LOCK_FREE_TOOLS = _tool_capabilities.HTTP_LOCK_FREE_TOOLS
+_HTTP_YIELDING_TOOLS = _tool_capabilities.HTTP_YIELDING_TOOLS
+_HTTP_EMBEDDING_RELEASE_TOOLS = _tool_capabilities.HTTP_EMBEDDING_RELEASE_TOOLS
 # Reserved before a request releases the request lock mid-embedding so
 # ``mempalace_reconnect`` cannot close backend handles during that window.
 # Reconnect acquires this before the request lock; embedding reacquires the
@@ -161,10 +158,6 @@ _HTTP_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _HTTP_ACTIVE_CLIENT_WINDOW_S = 120.0
 
 _HTTP_PROTOCOL_METHODS = frozenset({"initialize", "ping", "tools/list"})
-
-# Lock-free tools are the lock_free capability flag: logstream, the knowledge
-# graph, mesh peers, and the AAAK spec. A five-minute event_wait must not hold
-# _HTTP_REQUEST_LOCK.
 
 # SSE stream limits (GET /logstream/stream). Each connected client holds one
 # handler thread, so the cap is a thread-exhaustion guard, not a rate limit.
@@ -566,11 +559,7 @@ def _http_dispatch(request):
         return handle_request(request)
     if tool_name in _HTTP_LOCK_FREE_TOOLS:
         return handle_request(request)
-    # service.classify_tool is the authoritative read/write registry. The
-    # lock-free set above is a storage-boundary override for independent DBs.
-    from ..service import classify_tool
-
-    if classify_tool(tool_name) == "read":
+    if _tool_capabilities.classify_tool(tool_name) == "read":
         release_mode = _embedding_release_mode(tool_name, request, "read")
         if release_mode:
             with _http_embedding_release_installed(release_mode), _HTTP_REQUEST_LOCK.read_lock():

@@ -731,7 +731,7 @@ def _tool_catalog_entry(name: str, tool: dict) -> dict:
         "description": tool["description"],
         "inputSchema": tool["input_schema"],
     }
-    if tool.get("read_only"):
+    if _tool_capabilities.classify_tool(name) == "read":
         entry["annotations"] = {"readOnlyHint": True}
     return entry
 
