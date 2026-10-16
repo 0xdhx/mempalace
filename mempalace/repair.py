@@ -52,6 +52,7 @@ from .backends.chroma import ChromaBackend, _clear_chroma_system_cache, hnsw_cap
 # backends._inproc_sqlite, which opens them with connect_sqlite_read under the
 # palace's in-process lock.
 from .config import connect_sqlite_read, sqlite_read_uri  # noqa: F401
+from .stored_text import decode_record
 from .backends._inproc_sqlite import open_reader as open_palace_reader
 from .backends._inproc_sqlite import open_writer as open_palace_writer
 from .backends._inproc_sqlite import release as release_palace_anchor
@@ -2219,7 +2220,9 @@ def extract_via_sqlite(palace_path: str, collection_name: str) -> Iterator[tuple
         for emb_id in order:
             kv = per_id[emb_id]
             doc = kv.pop("chroma:document", "")
-            yield emb_id, doc, kv
+            # Yield what a caller wrote, not the stored escape, so a re-add
+            # embeds and encodes the real text.
+            yield (emb_id, *decode_record(doc, kv))
     finally:
         conn.close()
 
