@@ -18,6 +18,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   endpoint also needs `--accept-external-llm` or `MEMPALACE_ACCEPT_EXTERNAL_LLM=1`,
   the same consent `init`, `rooms propose` and `kg normalize` ask for, and every
   LLM provider now refuses a non-local endpoint until that consent is given.
+- **The legacy shell hooks under `hooks/` no longer read `MEMPAL_VERBOSE`.**
+  `mempal_save_hook.sh` and `mempal_precompact_hook.sh` now hand off to
+  `mempalace hook run` like the plugin hooks, through a shared
+  `mempal_hook_run.sh` that must stay next to them. To have the Stop hook block
+  and ask the AI to save instead of saving silently, set `hooks.silent_save` to
+  `false` in `~/.mempalace/config.json`. When no interpreter can import
+  mempalace, the hooks print `{}` and exit 0 as before.
 
 ---
 
