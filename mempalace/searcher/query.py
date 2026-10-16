@@ -395,10 +395,8 @@ def search_memories(
                 matched_via = "drawer+closet"
                 closet_preview = c_preview
 
-        # The boost and the [0, 2] clamp are on the cosine scale, so l2 and ip
-        # palaces rank the same way. Without the clamp a boost larger than the
-        # distance goes negative and sorts the best hybrid matches last.
-        effective_dist = max(0.0, min(2.0, _cosine_scale_distance(dist, metric) - boost))
+        # On the cosine scale, so l2 and ip palaces rank the same way.
+        effective_dist = _boosted_cosine_distance(dist, boost, metric)
         entry = {
             "drawer_id": _result_drawer_id(meta, stored_drawer_id),
             "text": doc,

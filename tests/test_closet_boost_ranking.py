@@ -19,6 +19,37 @@ def test_hybrid_rank_keeps_the_closet_boost():
     assert ranked[0] is boosted
 
 
+@pytest.mark.parametrize(
+    "metric, plain_distance, weak_distance",
+    [
+        # Squared l2 0.30 is cosine 0.15; 1.60 is cosine 0.80, boosted to 0.40.
+        ("l2", 0.30, 1.60),
+        # ip is 1 - dot: 0.90 boosted by 0.40 is 0.50, still behind 0.10.
+        ("ip", 0.10, 0.90),
+    ],
+)
+def test_a_weak_boosted_hit_stays_behind_a_strong_plain_one(metric, plain_distance, weak_distance):
+    """The hybrid re-rank keeps the order the vector pass gave by the boosted
+    distance; it doesn't add a cosine-scale boost to a similarity on another
+    metric's scale."""
+    plain = {"text": "alpha", "distance": plain_distance, "closet_boost": 0.0}
+    weak = {"text": "beta", "distance": weak_distance, "closet_boost": 0.4}
+
+    ranked = _hybrid_rank([weak, plain], "unrelated", metric=metric)
+
+    assert ranked[0] is plain
+
+
+def test_a_boost_clamped_at_zero_lifts_no_further_than_an_exact_match():
+    clamped = {"text": "alpha", "distance": 0.10, "closet_boost": 0.4, "authored_at": "2026-01-01"}
+    exact = {"text": "beta", "distance": 0.0, "closet_boost": 0.0, "authored_at": "2026-02-01"}
+
+    ranked = _hybrid_rank([clamped, exact], "unrelated", metric="cosine")
+
+    # Equal vector scores, so the newer drawer wins the tie.
+    assert ranked[0] is exact
+
+
 def test_a_closet_boosted_drawer_stays_first_after_the_hybrid_rank():
     drawers_col = MagicMock()
     drawers_col.query.return_value = {

@@ -476,7 +476,9 @@ def _merge_bm25_union_candidates(
                 None if distance is None else round(_distance_to_similarity(distance, metric), 3)
             ),
             "distance": distance,
-            "effective_distance": distance,
+            "effective_distance": (
+                None if distance is None else round(_cosine_scale_distance(distance, metric), 4)
+            ),
             "closet_boost": 0.0,
             "matched_via": "bm25_backend",
             "bm25_score": round(float(hit.score), 3),

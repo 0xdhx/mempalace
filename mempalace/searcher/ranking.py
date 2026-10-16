@@ -265,9 +265,9 @@ def _hybrid_rank(
       themselves. Since the absolute scale is unbounded, BM25 is min-max
       normalized within the candidate set so weights are commensurable.
 
-    * A ``closet_boost`` on a candidate is added to its vector similarity,
-      the same lift its ``effective_distance`` had in the vector pass, so
-      re-scoring from the raw ``distance`` doesn't drop it.
+    * A candidate with a ``closet_boost`` is scored from its boosted
+      distance (cosine scale, taken back to ``metric``'s scale), the distance
+      the vector pass ranked it by, so re-scoring doesn't drop the boost.
 
     Candidates with ``distance=None`` are treated as vector-unknown
     (no vector signal available) and scored on BM25 contribution alone.
@@ -287,8 +287,12 @@ def _hybrid_rank(
 
     scored = []
     for r, raw, norm in zip(results, bm25_raw, bm25_norm):
-        vec_sim = _distance_to_similarity(r.get("distance"), metric)
-        vec_sim += r.get("closet_boost") or 0.0
+        distance = r.get("distance")
+        boost = r.get("closet_boost") or 0.0
+        if boost and distance is not None:
+            boosted = _boosted_cosine_distance(distance, boost, metric)
+            distance = _metric_scale_distance(boosted, metric)
+        vec_sim = _distance_to_similarity(distance, metric)
         r["bm25_score"] = round(raw, 3)
         scored.append((vector_weight * vec_sim + bm25_weight * norm, r))
 
