@@ -82,7 +82,7 @@ def _pick_fts_candidates(
     is read directly (``row_filter`` refers to ``e.id``) instead of ranking
     the palace-wide match set (``fts_filter``).
     """
-    equalities = [(key, value) for key, value in scope.items() if value]
+    equalities = [(key, encode_filter(value)) for key, value in scope.items() if value]
     candidate_ids = _filtered_candidate_rows(
         conn,
         collection_name,
@@ -169,7 +169,7 @@ def _bm25_only_via_sqlite(
                 )
                 """
             )
-            params.extend([key, value])
+            params.extend([key, encode_filter(value)])
         for op, sql_bound in _window_sql_prefilters(since_dt, before_dt):
             clauses.append(
                 f"""
@@ -318,7 +318,7 @@ def _bm25_only_via_sqlite(
     # entries from other wings).
     candidates = []
     for d in drawers.values():
-        meta = d["metadata"]
+        text, meta = decode_record(d["text"], d["metadata"])
         if wing and meta.get("wing") != wing:
             continue
         if room and meta.get("room") != room:
@@ -331,7 +331,7 @@ def _bm25_only_via_sqlite(
         candidates.append(
             {
                 "drawer_id": _result_drawer_id(meta, d["_stored_drawer_id"]),
-                "text": d["text"],
+                "text": text,
                 "wing": meta.get("wing", "unknown"),
                 "room": meta.get("room", "unknown"),
                 "source_file": Path(full_source).name if full_source else "?",

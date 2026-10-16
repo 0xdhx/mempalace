@@ -52,6 +52,7 @@ from ..search_util import (
     _metric_scale_distance,
     build_where_filter,
 )
+from ..stored_text import decode_record, encode_filter
 
 # Closet pointer line format: "topic|entities|→drawer_id_a,drawer_id_b"
 # Multiple lines may join with newlines inside one closet document.
