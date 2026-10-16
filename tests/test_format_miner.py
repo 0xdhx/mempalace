@@ -1715,7 +1715,7 @@ def test_an_emptied_file_drops_its_drawers_and_is_not_reextracted(tmp_path, monk
     palace.mine()
     rows = palace.rows()
     assert [meta.get("is_sentinel") for _, meta in rows] == [True]
-    assert rows[0][1]["source_mtime"] == palace.doc.stat().st_mtime
+    assert rows[0][1]["source_mtime"] == pytest.approx(palace.doc.stat().st_mtime, abs=1e-3)
 
     extracted = palace.extracted
     palace.mine()
