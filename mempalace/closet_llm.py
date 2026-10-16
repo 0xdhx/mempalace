@@ -49,7 +49,7 @@ import urllib.error
 from datetime import datetime
 from typing import Optional
 
-from .llm_client import endpoint_is_local
+from .llm_client import endpoint_is_local, external_use_accepted_by_env
 from .palace import (
     NORMALIZE_VERSION,
     get_closets_collection,
@@ -109,8 +109,7 @@ class LLMConfig:
         self.key = key or os.environ.get("MEMPALACE_LLM_KEY", "")
         self.model = model or os.environ.get("MEMPALACE_LLM_MODEL", "")
         if accept_external is None:
-            flag = os.environ.get("MEMPALACE_ACCEPT_EXTERNAL_LLM", "")
-            accept_external = flag.strip().lower() in {"1", "true", "yes", "y"}
+            accept_external = external_use_accepted_by_env()
         self.accept_external = bool(accept_external)
         if self.endpoint:
             # Privacy-by-architecture: reject file:// and other non-HTTP schemes
@@ -244,6 +243,14 @@ def regenerate_closets(
     missing = cfg.missing()
     if missing:
         print("Error: missing configuration: " + ", ".join(missing))
+        legacy = [name for name in ("LLM_ENDPOINT", "LLM_MODEL", "LLM_KEY") if os.environ.get(name)]
+        if legacy:
+            # Generic names are often set for other tools; reading them is how
+            # drawer content could reach an endpoint nobody chose for MemPalace.
+            print(
+                "Found " + ", ".join(legacy) + ", which closet_llm no longer reads. "
+                "Rename them to " + ", ".join("MEMPALACE_" + name for name in legacy) + "."
+            )
         print("Set env vars MEMPALACE_LLM_ENDPOINT / MEMPALACE_LLM_MODEL")
         print("(and optionally MEMPALACE_LLM_KEY),")
         print("or pass --endpoint / --model / --key on the CLI.")

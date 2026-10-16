@@ -42,7 +42,9 @@ logger = logging.getLogger("mempalace_llm")
 # machine/network. Single source of truth so all three providers share
 # identical "local vs external" semantics.
 
-_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+# ``host.docker.internal`` is Docker's name for the machine running the
+# container, which is where a containerised user's Ollama listens.
+_LOCALHOST_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "host.docker.internal"})
 
 
 # Tailscale and other CGNAT overlays hand out 100.64.0.0/10, which Python's
@@ -79,7 +81,7 @@ def _resolves_private(host: str) -> bool:
     return True
 
 
-def _endpoint_is_local(url: Optional[str]) -> bool:
+def endpoint_is_local(url: Optional[str]) -> bool:
     """Return True if ``url``'s hostname is on the user's machine or
     private network.
 
@@ -99,8 +101,13 @@ def _endpoint_is_local(url: Optional[str]) -> bool:
     if not url:
         return True
     try:
-        host = (urlparse(url).hostname or "").lower()
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().rstrip(".")
     except (ValueError, AttributeError):
+        return False
+    # ``http://evil.com\@localhost`` parses to host ``localhost`` here, while
+    # urllib connects to the text before the backslash.
+    if "\\" in parsed.netloc:
         return False
     if not host:
         return True
@@ -124,11 +131,6 @@ def _endpoint_is_local(url: Optional[str]) -> bool:
         return _resolves_private(host)
     # Any other domain name is external: DNS can point it anywhere.
     return False
-
-
-def endpoint_is_local(url: Optional[str]) -> bool:
-    """Public name for :func:`_endpoint_is_local`."""
-    return _endpoint_is_local(url)
 
 
 def resolve_openai_url(endpoint: str, leaf: str) -> str:
@@ -178,10 +180,9 @@ class LLMProvider:
         # uses this to gate the consent prompt — stray env-resolved keys
         # require explicit user confirmation.
         self.api_key_source = api_key_source
-        # Set by a caller whose consent gate has passed for an external
-        # endpoint (`rooms propose` / `kg normalize` with
-        # --accept-external-llm). Until then an env-resolved key is withheld
-        # from an external endpoint's model listing; see served_models().
+        # Set by require_external_consent. Until then classify() refuses an
+        # external endpoint and an env-resolved key is withheld from its
+        # model listing; see served_models().
         self.external_use_accepted = False
 
     def classify(
@@ -217,32 +218,20 @@ class LLMProvider:
         if needed; the default works for the three in-tree providers
         (Ollama / OpenAI-compat / Anthropic).
         """
-        return not _endpoint_is_local(self.endpoint)
+        return not endpoint_is_local(self.endpoint)
 
-    def sends_api_key(self) -> bool:
-        """Whether the stored key may be attached to a request.
+    def _refuse_unaccepted_external(self) -> None:
+        """Raise before any content leaves for an endpoint nobody accepted."""
+        if self.is_external_service and not self.external_use_accepted:
+            raise LLMError(
+                f"Refusing to send content to the non-local endpoint {self.endpoint}. "
+                "Pass --accept-external-llm or set MEMPALACE_ACCEPT_EXTERNAL_LLM=1."
+            )
 
-        An environment key is withheld from an external endpoint until the
-        caller has accepted that use. An explicit key is sent.
-        """
-        if not self.api_key:
-            return False
-        if self.api_key_source != "env":
-            return True
-        if not self.is_external_service:
-            return True
-        return bool(self.external_use_accepted)
 
-    def block_silent_external_key(self) -> Optional[str]:
-        """Error when classify would send an env key off-machine, else None."""
-        if self.sends_api_key() or self.api_key_source != "env":
-            return None
-        if not self.is_external_service or self.external_use_accepted:
-            return None
-        return (
-            "Refusing to contact a non-local endpoint with an environment API key. "
-            "Pass the key explicitly or accept external use."
-        )
+def external_use_accepted_by_env() -> bool:
+    flag = os.environ.get("MEMPALACE_ACCEPT_EXTERNAL_LLM", "")
+    return flag.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def require_external_consent(
@@ -254,13 +243,13 @@ def require_external_consent(
 ) -> bool:
     """Allow an external endpoint only with an explicit yes.
 
-    Local endpoints are allowed. ``accept`` records consent without a prompt.
-    ``interactive`` asks on stdin. A yes sets ``external_use_accepted`` so an
-    environment key may be sent.
+    Local endpoints are allowed. ``accept`` (``--accept-external-llm``) or
+    ``MEMPALACE_ACCEPT_EXTERNAL_LLM`` records consent without a prompt.
+    ``interactive`` asks on stdin. A yes sets ``external_use_accepted``.
     """
     if not provider.is_external_service:
         return True
-    if accept:
+    if accept or external_use_accepted_by_env():
         provider.external_use_accepted = True
         return True
     if interactive:
@@ -343,6 +332,7 @@ class OllamaProvider(LLMProvider):
         json_mode: bool = True,
         think: Optional[bool] = None,
     ) -> LLMResponse:
+        self._refuse_unaccepted_external()
         options: dict = {"temperature": 0.1}
         if self.num_ctx is not None:
             options["num_ctx"] = self.num_ctx
@@ -411,14 +401,19 @@ class OpenAICompatProvider(LLMProvider):
         return resolve_openai_url(self.endpoint, "chat/completions")
 
     def _models_url(self) -> str:
-        base = self.endpoint.rstrip("/")
-        base = base.removesuffix("/chat/completions").removesuffix("/v1")
-        return f"{base}/v1/models"
+        return resolve_openai_url(
+            self.endpoint.rstrip("/").removesuffix("/chat/completions"), "models"
+        )
 
     def served_models(self) -> list[str]:
         """Model ids the endpoint lists; ``[]`` when it cannot be read."""
         req = Request(self._models_url())
-        if self.sends_api_key():
+        # An environment key reaches an external endpoint only after consent.
+        if self.api_key and (
+            self.api_key_source != "env"
+            or not self.is_external_service
+            or self.external_use_accepted
+        ):
             req.add_header("Authorization", f"Bearer {self.api_key}")
         with urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
@@ -484,11 +479,9 @@ class OpenAICompatProvider(LLMProvider):
             body["response_format"] = {"type": "json_object"}
         if think is False:
             body["reasoning_effort"] = "none"
-        blocked = self.block_silent_external_key()
-        if blocked:
-            raise LLMError(blocked)
+        self._refuse_unaccepted_external()
         headers = {}
-        if self.sends_api_key():
+        if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         url = self._resolve_url()
         try:
@@ -562,9 +555,7 @@ class AnthropicProvider(LLMProvider):
     ) -> LLMResponse:
         if not self.api_key:
             raise LLMError("Anthropic provider requires ANTHROPIC_API_KEY env or --llm-api-key")
-        blocked = self.block_silent_external_key()
-        if blocked:
-            raise LLMError(blocked)
+        self._refuse_unaccepted_external()
         sys_prompt = system
         if json_mode:
             sys_prompt += "\n\nRespond with valid JSON only, no prose."
@@ -579,8 +570,6 @@ class AnthropicProvider(LLMProvider):
             "X-API-Key": self.api_key,
             "anthropic-version": self.API_VERSION,
         }
-        if not self.sends_api_key():
-            headers.pop("X-API-Key", None)
         data = _http_post_json(
             f"{self.endpoint}/v1/messages", body, headers=headers, timeout=self.timeout
         )

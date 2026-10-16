@@ -631,7 +631,22 @@ class TestNoSilentExternal:
         assert parsed is None and usage is None
         assert cfg.missing()
 
-    def test_non_local_endpoint_is_not_contacted_without_consent(self):
+    def test_generic_env_names_are_reported_as_renamed(self, monkeypatch, capsys):
+        monkeypatch.setenv("LLM_ENDPOINT", "http://localhost:11434/v1")
+        monkeypatch.setenv("LLM_MODEL", "llama3:8b")
+        monkeypatch.delenv("LLM_KEY", raising=False)
+        monkeypatch.delenv("MEMPALACE_LLM_ENDPOINT", raising=False)
+        monkeypatch.delenv("MEMPALACE_LLM_MODEL", raising=False)
+
+        result = regenerate_closets("/tmp/does-not-matter", cfg=LLMConfig())
+
+        assert result["error"] == "missing-config"
+        out = capsys.readouterr().out
+        assert "Found LLM_ENDPOINT, LLM_MODEL" in out
+        assert "MEMPALACE_LLM_ENDPOINT, MEMPALACE_LLM_MODEL" in out
+
+    def test_non_local_endpoint_is_not_contacted_without_consent(self, monkeypatch):
+        monkeypatch.delenv("MEMPALACE_ACCEPT_EXTERNAL_LLM", raising=False)
         cfg = LLMConfig(endpoint="https://api.openai.com/v1", model="gpt-4o-mini", key="sk-test")
 
         def boom(*_args, **_kwargs):
