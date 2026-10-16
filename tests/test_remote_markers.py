@@ -5,13 +5,11 @@ from datetime import date
 
 import pytest
 
-from mempalace.backends.base import PalaceRef
+from mempalace.backends._remote_common import jsonable_metadata
+from mempalace.backends.base import BackendMismatchError, PalaceRef
 from mempalace.backends.milvus import MilvusBackend, _MilvusConfig
-from mempalace.backends.milvus import _jsonable_metadata as milvus_meta
 from mempalace.backends.pgvector import PgVectorBackend, _PgVectorConfig
-from mempalace.backends.pgvector import _jsonable_metadata as pg_meta
 from mempalace.backends.qdrant import QdrantBackend, _QdrantConfig
-from mempalace.backends.qdrant import _jsonable_metadata as qdrant_meta
 
 _META = {
     "wing": "w",
@@ -22,13 +20,17 @@ _META = {
 
 
 def test_one_unserializable_value_does_not_wipe_metadata():
-    for coerce in (qdrant_meta, pg_meta, milvus_meta):
-        cleaned = coerce(dict(_META))
-        assert cleaned["wing"] == "w"
-        assert cleaned["room"] == "r"
-        assert cleaned["source_file"] == "a.md"
-        assert cleaned["when"] == "2026-01-01"
-        assert cleaned != {}
+    cleaned = jsonable_metadata(dict(_META))
+    assert cleaned == {"wing": "w", "room": "r", "source_file": "a.md", "when": "2026-01-01"}
+
+
+def test_nan_is_stored_as_text_not_a_token_jsonb_rejects():
+    assert jsonable_metadata({"score": float("nan")}) == {"score": "nan"}
+
+
+def test_reserved_metadata_keys_are_refused():
+    with pytest.raises(ValueError, match="reserved"):
+        jsonable_metadata({"id": "x"}, reserved=frozenset({"id"}))
 
 
 def test_marker_rewrite_keeps_created_at_and_skips_an_unchanged_target(tmp_path):
@@ -89,4 +91,25 @@ def test_milvus_marker_publish_is_atomic(tmp_path, monkeypatch):
         backend._write_marker(ref, _MilvusConfig(uri="http://127.0.0.1:19530", namespace="beta"))
 
     assert path.read_bytes() == original
+    assert backend._read_marker(ref)["milvus"]["namespace"] == "alpha"
+
+
+def test_validate_marker_names_the_mismatched_target_key(tmp_path):
+    backend = QdrantBackend()
+    ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    alpha = _QdrantConfig(url="http://127.0.0.1:6333", namespace="alpha")
+    backend._write_marker(ref, alpha)
+    backend._validate_marker_target(ref, alpha)
+    beta = _QdrantConfig(url="http://127.0.0.1:6333", namespace="beta")
+    with pytest.raises(BackendMismatchError, match=r"remote target .*namespace.*QDRANT_URL"):
+        backend._validate_marker_target(ref, beta)
+
+
+def test_unreadable_marker_is_a_mismatch_and_is_replaced_on_write(tmp_path):
+    backend = MilvusBackend()
+    ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    (tmp_path / "milvus_backend.json").write_text("{", encoding="utf-8")
+    with pytest.raises(BackendMismatchError, match="unreadable"):
+        backend._read_marker(ref)
+    backend._write_marker(ref, _MilvusConfig(uri="http://127.0.0.1:19530", namespace="alpha"))
     assert backend._read_marker(ref)["milvus"]["namespace"] == "alpha"

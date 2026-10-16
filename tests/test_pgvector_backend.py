@@ -18,6 +18,7 @@ from mempalace.backends import (
     available_backends,
 )
 from mempalace.backends import pgvector as pgvector_module
+from mempalace.backends._remote_common import as_vector_array
 from mempalace.backends.base import UnsupportedCapabilityError
 from mempalace.backends.base import recency_sort_key as _recency_sort_key
 from mempalace.backends.pgvector import (
@@ -26,7 +27,6 @@ from mempalace.backends.pgvector import (
     _PgVectorConfig,
     _matches_where,
     _vector_distance,
-    _as_vector_array,
     _shared_namespace_key,
     _shared_namespace_slug,
     _strip_nul,
@@ -82,7 +82,7 @@ class _FakePgVectorClient:
 
     def query_rows(self, table, *, vector, limit, where, with_embedding):
         self.query_calls.append(where)
-        q = _as_vector_array(vector)
+        q = as_vector_array(vector)
         scored = []
         for row in self._filtered(table, where):
             distance = _vector_distance(q, row.get("embedding"))
