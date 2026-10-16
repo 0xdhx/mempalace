@@ -114,7 +114,7 @@ def test_a_write_open_that_cannot_record_refuses(tmp_path, monkeypatch):
 
     from mempalace.backends import _sidecar
 
-    monkeypatch.setattr(_sidecar, "_write_atomically", _fail)
+    monkeypatch.setattr(_sidecar, "_atomic_write_json", _fail)
     P._enforce_embedder_identity(col, str(tmp_path), "mempalace_drawers", create=False)
     with pytest.raises(EmbedderIdentityRecordError, match="Read-only file system"):
         P._enforce_embedder_identity(col, str(tmp_path), "mempalace_drawers", create=True)

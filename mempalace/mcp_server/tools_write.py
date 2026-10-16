@@ -642,6 +642,30 @@ def tool_add_drawer(
         return outcome
 
 
+def _purge_revisions(drawer_ids=(), source_file=None):
+    """Drop the saved prior text of drawers that were just deleted.
+
+    Runs after the drawer delete commits, so a failed delete keeps them. The
+    drawers are already gone, so a failure here is logged and reported in the
+    result, not raised. Returns the fields to merge into the delete result.
+    """
+    from ..revisions import purge_drawer_revisions
+
+    if not drawer_ids and source_file is None:
+        return {"revisions_deleted": 0}
+    try:
+        removed = purge_drawer_revisions(
+            _config.palace_path, drawer_ids=drawer_ids, source_file=source_file
+        )
+    except Exception as exc:
+        logger.exception("Revision purge failed after a drawer delete")
+        return {
+            "revisions_deleted": None,
+            "revisions_error": f"revision purge failed: {type(exc).__name__}",
+        }
+    return {"revisions_deleted": removed}
+
+
 def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
     """Write-ahead, delete, and closet-purge one already resolved record.
 
@@ -675,13 +699,17 @@ def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
         " [bulk]" if bulk else "",
     )
 
-    return {
+    outcome = {
         "success": True,
         "drawer_id": drawer_id,
         "deleted_ids": record["ids"],
         "chunks_deleted": len(record["ids"]),
         "closets_deleted": closets_deleted,
     }
+    # A batch purges once for every id it deleted (tool_delete_drawers).
+    if not bulk:
+        outcome.update(_purge_revisions([drawer_id, *record["ids"]]))
+    return outcome
 
 
 def _delete_resolved_drawer(col, drawer_id: str, *, bulk: bool = False):
@@ -1172,6 +1200,7 @@ def tool_delete_by_source(source_file: str, dry_run: bool = True):
             "source_file": source_file,
             "deleted": match_count,
             "closets_deleted": closets_deleted,
+            **_purge_revisions(source_file=source_file),
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1456,6 +1485,29 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
                 new_meta["room"] = room
 
         new_meta["last_modified"] = datetime.now().isoformat()
+
+        chunk_size = max(1, int(getattr(_config, "chunk_size", 800) or 800))
+        should_chunk = bool(record.get("chunked")) or len(new_doc) > chunk_size
+        # The chunked path rewrites stored documents even for a metadata-only
+        # change. Keep the prior verbatim text before either overwrite. The WAL
+        # redacts content, so it is not this copy.
+        revision_id = None
+        if content is not None or should_chunk:
+            from ..revisions import append_drawer_revision
+
+            try:
+                revision_id = append_drawer_revision(
+                    _config.palace_path,
+                    drawer_id,
+                    old_doc if isinstance(old_doc, str) else "",
+                    old_meta,
+                )
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "error": f"could not record prior drawer text: {exc}",
+                }
+
         _wal_log(
             "update_drawer",
             {
@@ -1466,19 +1518,16 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
                 "new_room": new_meta.get("room", ""),
                 "content_changed": content is not None,
                 "content_preview": new_doc[:200] if content is not None else None,
+                "revision_id": revision_id,
             },
         )
 
-        # A closet quotes the source file, not the stored drawer, so it only
-        # goes stale on a content change; wing/room alone leaves it correct (#2325).
-        closets_deleted = 0
-        source_file = old_meta.get("source_file")
-        if content is not None and source_file:
-            closets_deleted = _purge_source_closets(source_file, commit=True)
-
-        chunk_size = max(1, int(getattr(_config, "chunk_size", 800) or 800))
-        should_chunk = bool(record.get("chunked")) or len(new_doc) > chunk_size
-
+        outcome = {
+            "success": True,
+            "drawer_id": drawer_id,
+            "wing": new_meta.get("wing", ""),
+            "room": new_meta.get("room", ""),
+        }
         if should_chunk:
             chunk_ids, chunk_docs, chunk_metas = _build_chunk_rows(
                 drawer_id,
@@ -1494,39 +1543,36 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
             if stale_ids:
                 col.delete(ids=stale_ids)
 
-            _invalidate_overview_caches()
-
+            outcome["chunks"] = len(chunk_ids)
+            outcome["chunk_ids"] = chunk_ids
             logger.info("Updated drawer: %s (%s rows)", drawer_id, len(chunk_ids))
+        else:
+            update_kwargs = {"ids": [record["ids"][0]]}
+            if content is not None:
+                update_kwargs["documents"] = [new_doc]
+            update_kwargs["metadatas"] = [new_meta]
 
-            return {
-                "success": True,
-                "drawer_id": drawer_id,
-                "wing": new_meta.get("wing", ""),
-                "room": new_meta.get("room", ""),
-                "chunks": len(chunk_ids),
-                "chunk_ids": chunk_ids,
-                "closets_deleted": closets_deleted,
-            }
+            col.update(**update_kwargs)
+            logger.info("Updated drawer: %s", drawer_id)
 
-        update_kwargs = {"ids": [record["ids"][0]]}
-        if content is not None:
-            update_kwargs["documents"] = [new_doc]
-        update_kwargs["metadatas"] = [new_meta]
-
-        col.update(**update_kwargs)
+        # A closet quotes the source file, not the stored drawer, so it only
+        # goes stale on a content change; wing/room alone leaves it correct (#2325).
+        # Purged only after the drawer write commits, so a failed write keeps them.
+        source_file = old_meta.get("source_file")
+        outcome["closets_deleted"] = (
+            _purge_source_closets(source_file, commit=True)
+            if content is not None and source_file
+            else 0
+        )
         _invalidate_overview_caches()
-
-        logger.info("Updated drawer: %s", drawer_id)
-
-        return {
-            "success": True,
-            "drawer_id": drawer_id,
-            "wing": new_meta.get("wing", ""),
-            "room": new_meta.get("room", ""),
-            "closets_deleted": closets_deleted,
-        }
+        if revision_id:
+            outcome["revision_id"] = revision_id
+        _wal_result("update_drawer", outcome)
+        return outcome
     except Exception as e:
-        return _embed_failure(e, success=False)
+        outcome = _embed_failure(e, success=False)
+        _wal_result("update_drawer", outcome)
+        return outcome
 
 
 def tool_delete_drawers(drawer_ids: list):
@@ -1538,7 +1584,9 @@ def tool_delete_drawers(drawer_ids: list):
     come back in input order. A missing id is an ``error`` slot counted in
     ``errors``; later ids are still deleted.
 
-    A list of 1 to 500 ids returns ``{"results", "count", "deleted", "errors"}``.
+    A list of 1 to 500 ids returns
+    ``{"results", "count", "deleted", "errors", "revisions_deleted"}`` (plus
+    ``revisions_error`` when the revision purge failed).
     A non-list, an empty list, or more than 500 ids returns ``{"error"}``
     and deletes nothing.
     """
@@ -1559,6 +1607,7 @@ def tool_delete_drawers(drawer_ids: list):
     results = []
     deleted = 0
     errors = 0
+    deleted_ids: list[str] = []
     for drawer_id in drawer_ids:
         try:
             if found is None:
@@ -1579,6 +1628,7 @@ def tool_delete_drawers(drawer_ids: list):
             results.append({"drawer_id": drawer_id, "error": outcome["error"]})
             continue
         deleted += 1
+        deleted_ids += [drawer_id, *outcome["deleted_ids"]]
         results.append(
             {
                 "drawer_id": drawer_id,
@@ -1593,4 +1643,5 @@ def tool_delete_drawers(drawer_ids: list):
         "count": len(results),
         "deleted": deleted,
         "errors": errors,
+        **_purge_revisions(deleted_ids),
     }
