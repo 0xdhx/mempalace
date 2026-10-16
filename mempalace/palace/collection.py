@@ -277,18 +277,6 @@ class CollectionNameMismatchError(ValueError):
         )
 
 
-def prepare_drawer_text(documents, ids, metadatas=None):
-    """Escape NUL and lone surrogates before a drawer is stored.
-
-    Every backend persists the same escaped form and decodes it on read,
-    so a round-trip returns the original characters. Ids that contain
-    either character are rejected instead of rewritten.
-    """
-    from ..stored_text import prepare_stored_write
-
-    return prepare_stored_write(documents, ids, metadatas)
-
-
 def get_collection(
     palace_path: str,
     collection_name: Optional[str] = None,

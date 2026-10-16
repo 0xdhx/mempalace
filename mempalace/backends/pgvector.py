@@ -48,6 +48,7 @@ from urllib import parse as urlparse
 
 import numpy as np
 
+from ..stored_text import decode_record, prepare_stored_write
 from ._remote_common import (
     RemoteMarkerMixin,
     as_vector_array,
@@ -123,25 +124,6 @@ def _utcnow() -> str:
 
 def _json_dumps(obj: Any) -> str:
     return json.dumps(obj or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def _strip_nul(value: Any) -> Any:
-    """Recursively remove NUL from strings and nested containers.
-
-    The write path does not call this. NUL and lone surrogates are escaped
-    by :func:`mempalace.stored_text.prepare_stored_write` and restored on
-    read, on every backend including Chroma. Ids that contain either are
-    rejected rather than rewritten.
-    """
-    if isinstance(value, str):
-        return value.replace("\x00", "")
-    if isinstance(value, dict):
-        return {_strip_nul(key): _strip_nul(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_strip_nul(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_strip_nul(item) for item in value)
-    return value
 
 
 def _tokenize(text: str) -> list[str]:
@@ -793,8 +775,6 @@ class _PgVectorClient:
             "document = EXCLUDED.document, metadata = EXCLUDED.metadata, "
             "embedding = EXCLUDED.embedding, updated_at = EXCLUDED.updated_at"
         )
-        from ..stored_text import prepare_stored_write
-
         documents, ids, metadatas = prepare_stored_write(
             [row["document"] for row in rows],
             [row["id"] for row in rows],
@@ -996,17 +976,16 @@ class _PgVectorClient:
     @staticmethod
     def _row(record, *, with_embedding: bool, with_distance: bool) -> dict:
         record = list(record)
-        from ..stored_text import decode_text, restore_metadatas
-
-        metadata = (
+        document, metadata = decode_record(
+            record[1] if record[1] is not None else "",
             record[2]
             if isinstance(record[2], dict)
-            else (json.loads(record[2]) if record[2] else {})
+            else (json.loads(record[2]) if record[2] else {}),
         )
         row = {
             "id": str(record[0]),
-            "document": decode_text(record[1] if record[1] is not None else ""),
-            "metadata": restore_metadatas([metadata])[0],
+            "document": document,
+            "metadata": metadata,
             "embedding": None,
             "distance": None,
         }

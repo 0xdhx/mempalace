@@ -318,7 +318,7 @@ def _bm25_only_via_sqlite(
     # entries from other wings).
     candidates = []
     for d in drawers.values():
-        meta = d["metadata"]
+        text, meta = decode_record(d["text"], d["metadata"])
         if wing and meta.get("wing") != wing:
             continue
         if room and meta.get("room") != room:
@@ -331,7 +331,7 @@ def _bm25_only_via_sqlite(
         candidates.append(
             {
                 "drawer_id": _result_drawer_id(meta, d["_stored_drawer_id"]),
-                "text": d["text"],
+                "text": text,
                 "wing": meta.get("wing", "unknown"),
                 "room": meta.get("room", "unknown"),
                 "source_file": Path(full_source).name if full_source else "?",

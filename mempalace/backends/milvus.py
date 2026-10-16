@@ -24,6 +24,7 @@ from ..config import (
     DEFAULT_MILVUS_CONSISTENCY_LEVEL,
     normalize_milvus_consistency_level,
 )
+from ..stored_text import decode_record, prepare_stored_write
 from ._remote_common import (
     RemoteMarkerMixin,
     as_vector_array,
@@ -206,8 +207,6 @@ def _combine_filter(*filters: str) -> str:
     if len(present) == 1:
         return present[0]
     return "(" + ") and (".join(present) + ")"
-
-
 
 
 def _utf8_len(value: str) -> int:
@@ -413,7 +412,7 @@ class MilvusCollection(BaseCollection):
             fields.append(FIELD_DOCUMENT)
         if spec.embeddings:
             fields.append(FIELD_VECTOR)
-        if spec.metadatas:
+        if spec.metadatas or spec.documents:
             fields.append(FIELD_METADATA)
         return list(dict.fromkeys(fields))
 
@@ -429,6 +428,9 @@ class MilvusCollection(BaseCollection):
             if isinstance(parsed, dict):
                 return parsed
         return {key: value for key, value in row.items() if key not in RESERVED_FIELDS}
+
+    def _record(self, row: dict) -> tuple:
+        return decode_record(row.get(FIELD_DOCUMENT, ""), self._extract_metadata(row))
 
     def _row_from_search_hit(self, hit: Any) -> dict:
         if isinstance(hit, dict):
@@ -465,21 +467,18 @@ class MilvusCollection(BaseCollection):
                 f"embeddings length {len(embeddings)} does not match ids length {len(ids)}"
             )
         vectors, dimension = normalize_vectors(embeddings, "milvus")
-        metadatas = metadatas or [{} for _ in ids]
+        for idx, doc_id in enumerate(ids):
+            if not isinstance(doc_id, str) or not doc_id:
+                raise ValueError(f"row {idx}: id must be a non-empty string")
+        documents, ids, metadatas = prepare_stored_write(
+            [str(doc) if doc is not None else "" for doc in documents],
+            ids,
+            metadatas or [{} for _ in ids],
+        )
         rows = []
         for idx, (doc_id, document, metadata, vector) in enumerate(
             zip(ids, documents, metadatas, vectors)
         ):
-            from ..stored_text import StoredTextError, prepare_stored_write
-
-            if not isinstance(doc_id, str) or not doc_id:
-                raise ValueError(f"row {idx}: id must be a non-empty string")
-            try:
-                document, _, encoded_metas = prepare_stored_write([document], [doc_id], [metadata])
-            except StoredTextError as exc:
-                raise ValueError(f"row {idx}: {exc}") from exc
-            document = document[0]
-            metadata = encoded_metas[0]
             doc_id_bytes = _utf8_len(doc_id)
             if doc_id_bytes > DRAWER_ID_MAX_LENGTH:
                 raise ValueError(
@@ -636,13 +635,10 @@ class MilvusCollection(BaseCollection):
             raw = self._client.search(**kwargs)
             hits = raw[0] if raw else []
             rows = [self._row_from_search_hit(hit) for hit in hits]
+            records = [self._record(row) for row in rows]
             outer_ids.append([row[FIELD_ID] for row in rows])
-            outer_docs.append(
-                [row.get(FIELD_DOCUMENT, "") for row in rows] if spec.documents else []
-            )
-            outer_metas.append(
-                [self._extract_metadata(row) for row in rows] if spec.metadatas else []
-            )
+            outer_docs.append([doc for doc, _ in records] if spec.documents else [])
+            outer_metas.append([meta for _, meta in records] if spec.metadatas else [])
             outer_dists.append(
                 [self._vector_score_to_distance(row.get("distance")) for row in rows]
                 if spec.distances
@@ -752,20 +748,11 @@ class MilvusCollection(BaseCollection):
                 limit=limit,
                 offset=offset or 0,
             )
-        from ..stored_text import restore_documents, restore_metadatas
-
+        records = [self._record(row) for row in rows]
         return GetResult(
             ids=[str(row.get(FIELD_ID, "")) for row in rows],
-            documents=(
-                restore_documents([row.get(FIELD_DOCUMENT, "") for row in rows])
-                if spec.documents
-                else []
-            ),
-            metadatas=(
-                restore_metadatas([self._extract_metadata(row) for row in rows])
-                if spec.metadatas
-                else []
-            ),
+            documents=[doc for doc, _ in records] if spec.documents else [],
+            metadatas=[meta for _, meta in records] if spec.metadatas else [],
             embeddings=[row.get(FIELD_VECTOR) or [] for row in rows] if spec.embeddings else None,
         )
 
@@ -774,7 +761,7 @@ class MilvusCollection(BaseCollection):
             filter_expr=translate_where(where),
             output_fields=[FIELD_ID, FIELD_METADATA],
         )
-        return [self._extract_metadata(row) for row in rows]
+        return [self._record(row)[1] for row in rows]
 
     def delete(self, *, ids=None, where=None):
         filter_expr = translate_where(where)
@@ -864,11 +851,11 @@ class MilvusCollection(BaseCollection):
             hits=[
                 LexicalHit(
                     id=str(row.get(FIELD_ID, "")),
-                    document=row.get(FIELD_DOCUMENT, ""),
-                    metadata=self._extract_metadata(row),
+                    document=document,
+                    metadata=metadata,
                     score=float(row.get("distance", row.get("score", 0.0)) or 0.0),
                 )
-                for row in rows
+                for row, (document, metadata) in zip(rows, map(self._record, rows))
             ]
         )
 

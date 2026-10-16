@@ -199,6 +199,16 @@ class _CapturingCollection:
         self.calls.append(("update", kwargs))
 
 
+def _stored_docs(kwargs):
+    """Documents as a reader gets them back from what reached chromadb."""
+    from mempalace.stored_text import restore_rows
+
+    docs = kwargs["documents"]
+    single = isinstance(docs, str)
+    docs, _ = restore_rows([docs] if single else docs, kwargs["metadatas"])
+    return docs[0] if single else docs
+
+
 class TestBackendChokepointStripsDocuments:
     """#1235 sanitised the MCP write tools, but the bulk ingest paths
     (miner, convo_miner, sweeper, diary_ingest) build documents without routing
@@ -218,32 +228,26 @@ class TestBackendChokepointStripsDocuments:
         fake, col = self._collection()
         col.add(documents=["clean\udc95doc"], ids=["1"])
         _, kwargs = fake.calls[0]
-        from mempalace.stored_text import decode_text
-
         stored = kwargs["documents"][0]
         stored.encode("utf-8")
         assert "\udc95" not in stored
-        assert decode_text(stored) == "clean\udc95doc"
+        assert _stored_docs(kwargs)[0] == "clean\udc95doc"
 
     def test_upsert_strips_lone_surrogate_in_document(self):
         fake, col = self._collection()
         col.upsert(documents=["a\ud800b"], ids=["1"], metadatas=[{"wing": "w"}])
         _, kwargs = fake.calls[0]
-        from mempalace.stored_text import decode_text
-
         stored = kwargs["documents"][0]
         stored.encode("utf-8")
-        assert decode_text(stored) == "a\ud800b"
+        assert _stored_docs(kwargs)[0] == "a\ud800b"
 
     def test_update_strips_lone_surrogate_in_document(self):
         fake, col = self._collection()
         col.update(ids=["1"], documents=["x\udcffy"])
         _, kwargs = fake.calls[0]
-        from mempalace.stored_text import decode_text
-
         stored = kwargs["documents"][0]
         stored.encode("utf-8")
-        assert decode_text(stored) == "x\udcffy"
+        assert _stored_docs(kwargs)[0] == "x\udcffy"
 
     def test_one_poison_message_does_not_drop_the_batch(self):
         """A single bad row used to abort the entire batch, silently dropping
@@ -254,9 +258,7 @@ class TestBackendChokepointStripsDocuments:
             ids=["1", "2", "3"],
         )
         _, kwargs = fake.calls[0]
-        from mempalace.stored_text import decode_text
-
-        assert [decode_text(doc) for doc in kwargs["documents"]] == [
+        assert _stored_docs(kwargs) == [
             "ok one",
             "poison\udc95row",
             "ok three",
@@ -278,8 +280,6 @@ class TestBackendChokepointStripsDocuments:
         fake, col = self._collection()
         col.upsert(documents="one\udc95document", ids=["1"])
         _, kwargs = fake.calls[0]
-        from mempalace.stored_text import decode_text
-
         assert isinstance(kwargs["documents"], str)
         kwargs["documents"].encode("utf-8")
-        assert decode_text(kwargs["documents"]) == "one\udc95document"
+        assert _stored_docs(kwargs) == "one\udc95document"

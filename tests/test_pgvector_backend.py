@@ -29,7 +29,6 @@ from mempalace.backends.pgvector import (
     _vector_distance,
     _shared_namespace_key,
     _shared_namespace_slug,
-    _strip_nul,
 )
 
 
@@ -1506,7 +1505,7 @@ def test_pgvector_upsert_escapes_nul_bytes(monkeypatch):
     The document and metadata values round-trip through the same escape
     every backend uses. Chroma does not keep the raw byte either.
     """
-    from mempalace.stored_text import FLAG, StoredTextError, decode_text, restore_metadatas
+    from mempalace.stored_text import FLAG, StoredTextError, decode_record
 
     client, captured = _fake_upsert_client(monkeypatch)
     with pytest.raises(StoredTextError):
@@ -1539,39 +1538,15 @@ def test_pgvector_upsert_escapes_nul_bytes(monkeypatch):
         assert "\x00" not in field
         field.encode("utf-8")
     assert row_id == "drawer"
-    assert decode_text(document) == "before\x00after"
-    meta = restore_metadatas([json.loads(metadata_json)])[0]
-    assert meta["good"] == "v\x00w"
-    assert meta["nested"] == ["a\x00b", 7]
-    assert meta[FLAG] == 1
-
-
-def test_strip_nul_helper():
-    """``_strip_nul`` removes NUL from strings, list/tuple items, and dict keys
-    and values; NUL-free input and non-string scalars are returned unchanged."""
-    assert _strip_nul("a\x00b") == "ab"
-    assert _strip_nul("clean") == "clean"
-    assert _strip_nul("") == ""
-    assert _strip_nul("\x00") == ""
-    # Keys, values, list items, and nested structures are all stripped.
-    assert _strip_nul({"k\x00": "v\x00", "n": [1, "x\x00y"]}) == {"k": "v", "n": [1, "xy"]}
-    assert _strip_nul([{"a\x00": "b\x00"}, "c\x00"]) == [{"a": "b"}, "c"]
-    # Tuples recurse too and stay tuples (defends direct callers that pass
-    # un-normalized metadata before the JSON round-trip).
-    assert _strip_nul(("a\x00b", 1, ["c\x00"])) == ("ab", 1, ["c"])
-    # Keys differing only by a NUL collapse, last wins (documented, harmless:
-    # real metadata keys are fixed field names, never NUL-only-distinguished).
-    assert _strip_nul({"a\x00": 1, "a": 2}) == {"a": 2}
-    # Non-string scalars pass through unchanged (bool stays bool, not int).
-    assert _strip_nul(7) == 7
-    assert _strip_nul(3.5) == 3.5
-    assert _strip_nul(True) is True
-    assert _strip_nul(None) is None
+    assert json.loads(metadata_json)[FLAG] == 1
+    doc, meta = decode_record(document, json.loads(metadata_json))
+    assert doc == "before\x00after"
+    assert meta == {"good": "v\x00w", "nested": ["a\x00b", 7]}
 
 
 def test_pgvector_upsert_escapes_lone_surrogates(monkeypatch):
     """A lone surrogate is escaped, not replaced with U+FFFD, and ids are rejected."""
-    from mempalace.stored_text import StoredTextError, decode_text, restore_metadatas
+    from mempalace.stored_text import StoredTextError, decode_record
 
     hi, lo, s4, s5 = (chr(c) for c in (0xD800, 0xDFFF, 0xDCA1, 0xDC00))
     client, captured = _fake_upsert_client(monkeypatch)
@@ -1596,15 +1571,15 @@ def test_pgvector_upsert_escapes_lone_surrogates(monkeypatch):
     for field in (row_id, document, metadata_json):
         field.encode("utf-8")
         assert lo not in field and s4 not in field and s5 not in field
-    assert decode_text(document) == f"before{lo}after"
-    meta = restore_metadatas([json.loads(metadata_json)])[0]
+    doc, meta = decode_record(document, json.loads(metadata_json))
+    assert doc == f"before{lo}after"
     assert meta["good"] == f"v{s4}w"
     assert meta["nested"] == [f"a{s5}b", 7]
 
 
 def test_pgvector_upsert_escapes_nul_and_surrogate_together(monkeypatch):
     """One row can carry both a NUL and a lone surrogate and still round-trip."""
-    from mempalace.stored_text import decode_text, restore_metadatas
+    from mempalace.stored_text import decode_record
 
     sur = chr(0xD800)
     client, captured = _fake_upsert_client(monkeypatch)
@@ -1625,8 +1600,8 @@ def test_pgvector_upsert_escapes_nul_and_surrogate_together(monkeypatch):
         assert "\x00" not in field
         assert sur not in field
         field.encode("utf-8")
-    assert decode_text(document) == f"doc\x00{sur}y"
-    meta = restore_metadatas([json.loads(metadata_json)])[0]
+    doc, meta = decode_record(document, json.loads(metadata_json))
+    assert doc == f"doc\x00{sur}y"
     assert meta["key"] == f"v\x00{sur}"
     assert meta["nested"] == [f"a\x00{sur}b", 7]
 
@@ -1636,15 +1611,15 @@ def test_pgvector_write_uses_the_shared_escape_not_a_replacement_character():
 
     Both backends now escape it. ``strip_lone_surrogates`` is not the write path.
     """
-    from mempalace.stored_text import decode_text, encode_text
+    from mempalace.stored_text import decode_record, encode_record
 
     original = f"v{chr(0xD800)}w\x00"
-    stored = encode_text(original)
+    stored, meta = encode_record(original, None)
     stored.encode("utf-8")
     assert "\x00" not in stored
     assert chr(0xD800) not in stored
     assert chr(0xFFFD) not in stored
-    assert decode_text(stored) == original
+    assert decode_record(stored, meta) == (original, {})
 
 
 def test_pgvector_backend_advertises_supports_metadata_facets():

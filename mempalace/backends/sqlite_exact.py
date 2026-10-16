@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from ..stored_text import decode_record, prepare_stored_write
 from ._magic import has_sqlite_magic, read_header_fields
 from .base import (
     BackendClosedError,
@@ -758,8 +759,6 @@ class SQLiteExactCollection(BaseCollection):
         )
         if embeddings is None:
             raise ValueError("sqlite_exact requires explicit embeddings")
-        from ..stored_text import prepare_stored_write
-
         documents, ids, metadatas = prepare_stored_write(
             documents, ids, metadatas or [{} for _ in ids]
         )
@@ -809,8 +808,6 @@ class SQLiteExactCollection(BaseCollection):
         )
         if embeddings is None:
             raise ValueError("sqlite_exact requires explicit embeddings")
-        from ..stored_text import prepare_stored_write
-
         documents, ids, metadatas = prepare_stored_write(
             documents, ids, metadatas or [{} for _ in ids]
         )
@@ -893,6 +890,7 @@ class SQLiteExactCollection(BaseCollection):
         ):
             if value is not None and len(value) != n:
                 raise ValueError(f"{label} length {len(value)} does not match ids length {n}")
+        documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         with self._cursor(write=True) as cur:
             collection_id = self._collection_id(cur)
             if documents is None and embeddings is None:
@@ -987,7 +985,7 @@ class SQLiteExactCollection(BaseCollection):
         )
         python_where = where is not None and push is None
         need_doc = spec.documents or bool(where_document)
-        need_meta = spec.metadatas or python_where
+        need_meta = spec.metadatas or python_where or need_doc
         need_emb = spec.embeddings
         cols = ["id"]
         if need_doc:
@@ -1026,7 +1024,7 @@ class SQLiteExactCollection(BaseCollection):
                 doc = row[idx] or ""
                 idx += 1
             if need_meta:
-                meta = _json_loads(row[idx])
+                doc, meta = decode_record(doc, _json_loads(row[idx]))
                 idx += 1
             if need_emb:
                 emb_blob = row[idx]
@@ -1054,10 +1052,11 @@ class SQLiteExactCollection(BaseCollection):
                 unique.append(doc_id)
         if not unique:
             return {}
+        need_meta = spec.documents or spec.metadatas
         cols = ["id"]
         if spec.documents:
             cols.append("document")
-        if spec.metadatas:
+        if need_meta:
             cols.append("metadata_json")
         if spec.embeddings:
             cols.append("embedding")
@@ -1077,8 +1076,8 @@ class SQLiteExactCollection(BaseCollection):
                 if spec.documents:
                     doc = row[idx] or ""
                     idx += 1
-                if spec.metadatas:
-                    meta = _json_loads(row[idx])
+                if need_meta:
+                    doc, meta = decode_record(doc, _json_loads(row[idx]))
                     idx += 1
                 if spec.embeddings:
                     emb_blob = row[idx]
@@ -1210,12 +1209,10 @@ class SQLiteExactCollection(BaseCollection):
             if snapshot != self._index_version(cur):
                 raise _SnapshotChanged()
 
-        from ..stored_text import restore_documents, restore_metadatas
-
         return QueryResult(
             ids=outer_ids,
-            documents=restore_documents(outer_docs),
-            metadatas=restore_metadatas(outer_metas),
+            documents=outer_docs,
+            metadatas=outer_metas,
             distances=outer_dists,
             embeddings=outer_embeds if spec.embeddings else None,
         )
@@ -1320,26 +1317,16 @@ class SQLiteExactCollection(BaseCollection):
         metas: dict[str, dict] = {}
         if not ids:
             return docs, metas
-        cols = ["id"]
-        if spec.documents:
-            cols.append("document")
-        if spec.metadatas:
-            cols.append("metadata_json")
+        doc_col = "document" if spec.documents else "NULL"
         for start in range(0, len(ids), 900):
             chunk = ids[start : start + 900]
             placeholders = ",".join("?" for _ in chunk)
-            for row in cur.execute(
-                f"SELECT {', '.join(cols)} FROM documents "
+            for doc_id, doc, meta_json in cur.execute(
+                f"SELECT id, {doc_col}, metadata_json FROM documents "
                 f"WHERE collection_id = ? AND id IN ({placeholders})",
                 (collection_id, *chunk),
             ):
-                doc_id = row[0]
-                idx = 1
-                if spec.documents:
-                    docs[doc_id] = row[idx] or ""
-                    idx += 1
-                if spec.metadatas:
-                    metas[doc_id] = _json_loads(row[idx])
+                docs[doc_id], metas[doc_id] = decode_record(doc or "", _json_loads(meta_json))
         return docs, metas
 
     def get(
@@ -1413,16 +1400,10 @@ class SQLiteExactCollection(BaseCollection):
 
     @staticmethod
     def _get_result(rows: list[dict], spec: _IncludeSpec) -> GetResult:
-        from ..stored_text import restore_documents, restore_metadatas
-
         return GetResult(
             ids=[row["id"] for row in rows],
-            documents=(
-                restore_documents([row["document"] for row in rows]) if spec.documents else []
-            ),
-            metadatas=(
-                restore_metadatas([row["metadata"] for row in rows]) if spec.metadatas else []
-            ),
+            documents=[row["document"] for row in rows] if spec.documents else [],
+            metadatas=[row["metadata"] for row in rows] if spec.metadatas else [],
             embeddings=(
                 [_decode_vector(row["embedding"]) for row in rows] if spec.embeddings else None
             ),
@@ -1564,7 +1545,10 @@ class SQLiteExactCollection(BaseCollection):
                     (collection_id, *chunk_ids),
                 ).fetchall()
             )
-        by_id = {doc_id: (doc or "", _json_loads(meta_json)) for doc_id, doc, meta_json in docs}
+        by_id = {
+            doc_id: decode_record(doc or "", _json_loads(meta_json))
+            for doc_id, doc, meta_json in docs
+        }
         hits = []
         for doc_id, rank in rows:
             doc_meta = by_id.get(doc_id)

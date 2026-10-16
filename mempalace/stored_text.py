@@ -1,188 +1,171 @@
 """One reversible stored-text policy for every backend.
 
-Postgres cannot store NUL in text, and a lone surrogate cannot be UTF-8
-encoded. Chroma's FTS index is also corrupted by a raw NUL. The palace
-stores those characters as a UTF-8-safe escape, flagged in metadata, and
-returns the original characters on read. Ids are never rewritten: an id
-that cannot be stored is rejected.
+Postgres cannot store NUL in text, a lone surrogate cannot be UTF-8 encoded,
+and a raw NUL corrupts Chroma's FTS index. A string holding either, or one
+that already starts with the escape prefix, is stored as the prefix plus a
+backslash escape, and the record carries ``FLAG`` in its metadata. A read
+decodes only flagged records, and in them only prefixed strings, so text
+that merely looks escaped is returned as written. The flag never reaches
+callers. Ids and metadata keys that cannot be stored are rejected, never
+rewritten.
 
-The escape is a prefix plus a backslash encoding. A second pass sees no
-raw NUL or surrogate, so it does not escape again. A read decodes only
-strings that still carry the prefix, so it does not decode twice.
+``FLAG`` is reserved. A record whose metadata carries ``FLAG: 1`` is taken
+as stored form and written unchanged, so copying raw rows between palaces
+(repair, migrate) stays verbatim; any other value is refused.
+
+Where filters compare against the stored form: a filter value holding NUL or
+a lone surrogate does not match the escaped value.
 """
 
 import re
 
 FLAG = "_mempalace_escaped"
 _PREFIX = "\x01mpesc:"
-_SURROGATE = re.compile(r"[\ud800-\udfff]")
+_BAD = re.compile(r"[\x00\ud800-\udfff]")
+_ESCAPE = re.compile(r"[\\\x00\ud800-\udfff]")
+_UNESCAPE = re.compile(r"\\(\\|0|u[0-9A-F]{4})")
 
 
 class StoredTextError(ValueError):
-    """An id cannot be stored without changing it."""
+    """An id or metadata key cannot be stored without changing it."""
 
 
-def _bad(text: str) -> bool:
-    return "\x00" in text or _SURROGATE.search(text) is not None
+def _needs_escape(text: str) -> bool:
+    return text.startswith(_PREFIX) or _BAD.search(text) is not None
 
 
-def _escape_body(text: str) -> str:
-    parts = []
-    for char in text:
-        code = ord(char)
-        if char == "\\":
-            parts.append("\\\\")
-        elif char == "\x00":
-            parts.append("\\0")
-        elif 0xD800 <= code <= 0xDFFF:
-            parts.append(f"\\u{code:04X}")
-        else:
-            parts.append(char)
-    return "".join(parts)
+def _escape_char(match) -> str:
+    char = match.group()
+    if char == "\\":
+        return "\\\\"
+    if char == "\x00":
+        return "\\0"
+    return f"\\u{ord(char):04X}"
 
 
-def _unescape_body(text: str) -> str:
-    out = []
-    index = 0
-    size = len(text)
-    while index < size:
-        if text[index] != "\\":
-            out.append(text[index])
-            index += 1
-            continue
-        if index + 1 >= size:
-            out.append("\\")
-            break
-        nxt = text[index + 1]
-        if nxt == "\\":
-            out.append("\\")
-            index += 2
-        elif nxt == "0":
-            out.append("\x00")
-            index += 2
-        elif nxt == "u" and index + 6 <= size:
-            try:
-                code = int(text[index + 2 : index + 6], 16)
-            except ValueError:
-                out.append("\\")
-                index += 1
-                continue
-            if 0xD800 <= code <= 0xDFFF:
-                out.append(chr(code))
-                index += 6
-            else:
-                out.append("\\")
-                index += 1
-        else:
-            out.append("\\")
-            index += 1
-    return "".join(out)
+def _unescape_seq(match) -> str:
+    seq = match.group(1)
+    if seq == "\\":
+        return "\\"
+    if seq == "0":
+        return "\x00"
+    return chr(int(seq[1:], 16))
 
 
-def encode_text(text: str) -> str:
-    """Escape NUL and lone surrogates. Other strings are unchanged."""
-    if not isinstance(text, str) or not _bad(text):
-        return text
-    return _PREFIX + _escape_body(text)
-
-
-def decode_text(text: str) -> str:
-    """Reverse :func:`encode_text`. Strings without the prefix are unchanged."""
-    if not isinstance(text, str) or not text.startswith(_PREFIX):
-        return text
-    return _unescape_body(text[len(_PREFIX) :])
-
-
-def _walk(value, fn):
+def _encode(value, changed: list):
     if isinstance(value, str):
-        return fn(value)
-    if isinstance(value, dict):
-        return {
-            (fn(key) if isinstance(key, str) else key): _walk(item, fn)
-            for key, item in value.items()
-        }
+        if not _needs_escape(value):
+            return value
+        changed.append(True)
+        return _PREFIX + _ESCAPE.sub(_escape_char, value)
     if isinstance(value, list):
-        return [_walk(item, fn) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_walk(item, fn) for item in value)
+        return [_encode(item, changed) for item in value]
     return value
 
 
-def reject_stored_id(doc_id: str) -> str:
-    """Raise if ``doc_id`` contains a NUL or a lone surrogate."""
-    if not isinstance(doc_id, str) or not doc_id:
-        raise StoredTextError("id must be a non-empty string")
-    if _bad(doc_id):
+def _decode(value):
+    if isinstance(value, str):
+        if not value.startswith(_PREFIX):
+            return value
+        return _UNESCAPE.sub(_unescape_seq, value[len(_PREFIX) :])
+    if isinstance(value, list):
+        return [_decode(item) for item in value]
+    return value
+
+
+def _check_key(key) -> None:
+    if isinstance(key, str) and _BAD.search(key):
         raise StoredTextError(
-            f"id {doc_id!r} cannot be stored: NUL and lone surrogates are rejected, not rewritten"
+            f"{key!r} cannot be stored: NUL and lone surrogates are rejected, not rewritten"
         )
-    return doc_id
+
+
+def encode_record(document, metadata):
+    """Return ``(document, metadata)`` in stored form.
+
+    ``metadata`` is ``None`` only when it was ``None`` and nothing needed
+    escaping.
+    """
+    if metadata and FLAG in metadata:
+        if metadata[FLAG] != 1:
+            raise StoredTextError(f"metadata key {FLAG!r} is reserved")
+        return document, metadata
+    changed: list = []
+    document = _encode(document, changed)
+    encoded = {}
+    for key, value in (metadata or {}).items():
+        _check_key(key)
+        encoded[key] = _encode(value, changed)
+    if changed:
+        encoded[FLAG] = 1
+    elif metadata is None:
+        return document, None
+    return document, encoded
+
+
+def decode_record(document, metadata):
+    """Reverse :func:`encode_record` and drop the flag."""
+    if not metadata or FLAG not in metadata:
+        return document, metadata
+    metadata = dict(metadata)
+    if not metadata.pop(FLAG):
+        return document, metadata
+    return _decode(document), {key: _decode(value) for key, value in metadata.items()}
 
 
 def prepare_stored_write(documents, ids, metadatas=None):
-    """Escape drawer text and reject ids that cannot be stored.
+    """Encode a write batch and reject ids that cannot be stored.
 
-    A bare string document stays a string (Chroma's one-or-many shape).
-    Metadata is returned only when the caller passed it, with
-    ``_mempalace_escaped`` set to 1 on any record that was escaped.
+    ``documents`` may be ``None`` (a metadata-only update) or a bare string
+    (Chroma's one-or-many shape); either comes back in the same shape.
+    Metadata comes back as ``None`` only when none was passed and nothing was
+    escaped. Otherwise every record gets a dict, and a record with nothing of
+    its own gets ``{FLAG: 1}``: a spare flag is harmless, since only prefixed
+    strings are decoded, and merging backends keep older escaped values
+    readable.
     """
     single = isinstance(documents, str)
-    docs = [documents] if single else list(documents)
-    id_list = list(ids)
-    if len(docs) != len(id_list):
-        raise StoredTextError("documents and ids must be the same length")
-    supplied = metadatas is not None
-    metas = list(metadatas) if supplied else [{} for _ in id_list]
-    if len(metas) != len(id_list):
-        raise StoredTextError("metadatas and ids must be the same length")
-    out_docs = []
-    out_metas = []
-    for doc_id, doc, meta in zip(id_list, docs, metas):
-        reject_stored_id(doc_id)
-        meta = dict(meta or {})
-        encoded_doc = encode_text(doc) if isinstance(doc, str) else doc
-        encoded_meta = _walk(meta, encode_text)
-        if encoded_doc != doc or encoded_meta != meta:
-            encoded_meta[FLAG] = 1
+    ids = [ids] if isinstance(ids, str) else list(ids)
+    docs = [documents] if single else documents
+    for doc_id in ids:
+        if not isinstance(doc_id, str) or not doc_id:
+            raise StoredTextError("id must be a non-empty string")
+        _check_key(doc_id)
+    metas = metadatas if metadatas is not None else [None] * len(ids)
+    out_docs, out_metas = [], []
+    for doc, meta in zip(docs if docs is not None else [None] * len(ids), metas):
+        doc, meta = encode_record(doc, meta)
+        out_docs.append(doc)
+        out_metas.append(meta)
+    if metadatas is None:
+        if all(meta is None for meta in out_metas):
+            out_metas = None
         else:
-            encoded_meta.pop(FLAG, None)
-        out_docs.append(encoded_doc)
-        out_metas.append(encoded_meta)
-    if single:
+            out_metas = [meta if meta is not None else {FLAG: 1} for meta in out_metas]
+    if documents is None:
+        out_docs = None
+    elif single:
         out_docs = out_docs[0]
-    escaped = any(isinstance(meta, dict) and meta.get(FLAG) == 1 for meta in out_metas)
-    if not supplied and not escaped:
-        return out_docs, id_list, None
-    return out_docs, id_list, out_metas
+    return out_docs, ids, out_metas
 
 
-def restore_documents(documents):
-    """Decode escaped documents. A bare string stays a string.
-
-    Query results are a list of lists; each inner document is decoded.
-    """
-    if isinstance(documents, str):
-        return decode_text(documents)
-    if not documents:
-        return documents
-    return [
-        decode_text(doc) if isinstance(doc, str) else restore_documents(doc) for doc in documents
-    ]
-
-
-def restore_metadatas(metadatas):
-    """Decode escaped metadata strings. The flag is left in place.
-
-    Query results are a list of lists of metadata dicts.
-    """
+def restore_rows(documents, metadatas):
+    """Decode parallel ``documents``/``metadatas`` lists, nested one level for
+    query results. Either list may be empty when it was not requested."""
+    if metadatas and isinstance(metadatas[0], list):
+        pairs = [
+            restore_rows(docs, metas)
+            for docs, metas in zip(documents or [[]] * len(metadatas), metadatas)
+        ]
+        return (
+            [docs for docs, _ in pairs] if documents else documents,
+            [metas for _, metas in pairs],
+        )
     if not metadatas:
-        return metadatas
-    restored = []
-    for meta in metadatas:
-        if isinstance(meta, dict):
-            restored.append(_walk(meta, decode_text))
-        elif isinstance(meta, list):
-            restored.append(restore_metadatas(meta))
-        else:
-            restored.append(meta)
-    return restored
+        return documents, metadatas
+    docs = documents if documents else [None] * len(metadatas)
+    pairs = [decode_record(doc, meta) for doc, meta in zip(docs, metadatas)]
+    return (
+        [doc for doc, _ in pairs] if documents else documents,
+        [meta for _, meta in pairs],
+    )

@@ -24,6 +24,7 @@ from urllib import request as urlrequest
 
 import numpy as np
 
+from ..stored_text import decode_record, prepare_stored_write
 from ..version import __version__
 from ._remote_common import (
     RemoteMarkerMixin,
@@ -260,12 +261,11 @@ def _payload_row(point: dict) -> dict:
     vector = point.get("vector")
     if isinstance(vector, dict):
         vector = vector.get("") or vector.get("default") or next(iter(vector.values()), None)
-    from ..stored_text import decode_text, restore_metadatas
-
+    document, meta = decode_record(str(payload.get(_PAYLOAD_DOCUMENT) or ""), meta)
     return {
         "id": str(payload.get(_PAYLOAD_ID) or point.get("id") or ""),
-        "document": decode_text(str(payload.get(_PAYLOAD_DOCUMENT) or "")),
-        "metadata": restore_metadatas([meta])[0],
+        "document": document,
+        "metadata": meta,
         "embedding": vector if isinstance(vector, list) else None,
         "score": point.get("score"),
     }
@@ -835,8 +835,6 @@ class QdrantCollection(BaseCollection):
             raise ValueError("qdrant requires explicit embeddings")
         vectors, dimension = normalize_vectors(embeddings, "qdrant")
         self._ensure_remote_collection(dimension)
-        from ..stored_text import prepare_stored_write
-
         documents, ids, metadatas = prepare_stored_write(
             documents, ids, metadatas or [{} for _ in ids]
         )

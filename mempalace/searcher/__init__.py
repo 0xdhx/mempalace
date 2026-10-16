@@ -43,6 +43,7 @@ from ..palace import (
     get_collection,
     resolve_backend_name,
 )
+from ..stored_text import decode_record
 
 # Closet pointer line format: "topic|entities|→drawer_id_a,drawer_id_b"
 # Multiple lines may join with newlines inside one closet document.
