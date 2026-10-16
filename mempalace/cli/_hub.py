@@ -3,7 +3,10 @@ if __name__ != "mempalace.cli":
     raise ImportError(f"{__name__} is an implementation fragment; import mempalace.cli")
 
 
-_HUB_FORWARD_ENV = "MEMPALACE_HUB_FORWARD"
+from ..hub_client import HUB_FORWARD_ENV as _HUB_FORWARD_ENV
+from ..hub_client import SEARCH_OVERRIDE_ENV_VARS as _SEARCH_OVERRIDE_ENV_VARS
+from ..hub_client import _forwarding_disabled as _hub_forward_disabled
+
 _HUB_HEALTH_TIMEOUT_S = 0.75
 # A backfill mine over a large transcript tree can legitimately run for many
 # minutes inside the hub; the forwarder is a background/CLI process, not a
@@ -11,33 +14,6 @@ _HUB_HEALTH_TIMEOUT_S = 0.75
 _HUB_MINE_TIMEOUT_S = 3600.0
 _HUB_SEARCH_TIMEOUT_S = 600.0
 _HUB_SEARCH_MAX_RESULTS = 100
-_SEARCH_OVERRIDE_ENV_VARS = (
-    "MEMPALACE_BACKEND",
-    "MEMPALACE_BACKEND_EXPLICIT",
-    "MEMPALACE_EMBEDDING_API_KEY",
-    "MEMPALACE_EMBEDDING_API_MODEL",
-    "MEMPALACE_EMBEDDING_API_URL",
-    "MEMPALACE_EMBEDDING_DEVICE",
-    "MEMPALACE_EMBEDDING_MODEL",
-    "MEMPALACE_EMBEDDING_THREADS",
-    "MEMPALACE_LANG",
-    "MEMPAL_LANG",
-    "MEMPALACE_MILVUS_CONSISTENCY_LEVEL",
-    "MEMPALACE_MILVUS_DB_NAME",
-    "MEMPALACE_MILVUS_NAMESPACE",
-    "MEMPALACE_MILVUS_TOKEN",
-    "MEMPALACE_MILVUS_URI",
-    "MEMPALACE_PGVECTOR_DSN",
-    "MEMPALACE_PGVECTOR_NAMESPACE",
-    "MEMPALACE_QDRANT_API_KEY",
-    "MEMPALACE_QDRANT_NAMESPACE",
-    "MEMPALACE_QDRANT_TIMEOUT",
-    "MEMPALACE_QDRANT_URL",
-)
-
-
-def _hub_forward_disabled() -> bool:
-    return os.environ.get(_HUB_FORWARD_ENV, "").strip().lower() in {"0", "false", "no", "off"}
 
 
 def _search_args_forwardable(args) -> bool:

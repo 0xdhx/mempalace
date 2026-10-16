@@ -64,6 +64,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   stamp covers the whole file, so in a bundle export it also lands on
   conversations the step did not touch. The text itself is unchanged. Drawers
   filed before this release carry no stamp until their file is mined again.
+- `mempalace search` no longer hands a search to the running hub when the
+  hub would ignore one of your settings. Hybrid-rank weights, the pgvector
+  shared namespace and the EmbeddingGemma 2 dimension, modalities and
+  revision now keep the search local when set in the environment, and a
+  change to them in `config.json` no longer reuses a hub started with the
+  old values.
 - **A closet match keeps lifting its drawer in the final search order.** The
   hybrid re-rank scored every hit from its raw vector distance, so the rank
   boost a matching closet gave a drawer was dropped and a closet-backed drawer
