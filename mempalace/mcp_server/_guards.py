@@ -160,10 +160,11 @@ _sqlite_integrity_check_error = ""
 # probe's size limit (#2240) — so the status payload can report an absence
 # rather than a clean bill of health.
 _sqlite_integrity_no_verdict_reason = ""
-# One published generation of the four integrity fields. The payload reads
-# this tuple when it still names those objects, so a refresh cannot change
-# the error list between two reads of the same answer.
+# The four fields above as one value, published by each refresh once it has
+# written them, and a count of those publications. A reader that overlaps a
+# refresh answers from this tuple instead of a half-written set of globals.
 _sqlite_integrity_verdict = None
+_sqlite_integrity_generation = 0
 # Serializes quick_check runs between the async startup preflight thread and
 # lazy consumers on the protocol thread (double-checked in
 # _ensure_sqlite_integrity_status) so the O(database size) probe never runs
@@ -726,40 +727,34 @@ def _ensure_sqlite_integrity_status() -> None:
 
 
 def _publish_sqlite_integrity_verdict() -> None:
-    """Swap in one tuple of the integrity globals.
-
-    A single assignment is the generation readers observe. The tuple keeps
-    the same objects the globals name, so a later direct replacement of a
-    global (the test seam) is visible as an identity mismatch.
-    """
-    global _sqlite_integrity_verdict
-    errors = _sqlite_integrity_errors
-    if not isinstance(errors, (list, tuple)):
-        errors = ()
+    # Callers hold _sqlite_integrity_refresh_lock and have written every field.
+    global _sqlite_integrity_verdict, _sqlite_integrity_generation
     _sqlite_integrity_verdict = (
         _sqlite_integrity_checked,
-        errors,
+        _sqlite_integrity_errors,
         _sqlite_integrity_check_error,
         _sqlite_integrity_no_verdict_reason,
     )
+    _sqlite_integrity_generation += 1
 
 
 def _sqlite_integrity_view():
-    """One generation of the integrity fields, copied once."""
-    verdict = _sqlite_integrity_verdict
+    """One whole verdict: the globals, or the published tuple during a refresh.
+
+    The globals are read once each. If a refresh was writing them meanwhile,
+    it either still holds the refresh lock or has published since, and the
+    published tuple is the last verdict it wrote in full.
+    """
+    generation = _sqlite_integrity_generation
     checked = _sqlite_integrity_checked
     errors = _sqlite_integrity_errors
     check_error = _sqlite_integrity_check_error
     reason = _sqlite_integrity_no_verdict_reason
-    if (
-        isinstance(verdict, tuple)
-        and len(verdict) == 4
-        and verdict[0] is checked
-        and verdict[1] is errors
-        and verdict[2] is check_error
-        and verdict[3] is reason
+    verdict = _sqlite_integrity_verdict
+    if verdict is not None and (
+        _sqlite_integrity_refresh_lock.locked() or generation != _sqlite_integrity_generation
     ):
-        checked, errors, check_error, reason = verdict
+        checked, errors, check_error, reason = _sqlite_integrity_verdict
     if not isinstance(errors, (list, tuple)):
         errors = ()
     else:
