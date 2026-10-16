@@ -11,7 +11,6 @@ from __future__ import annotations
 import contextlib
 import io
 import functools
-import json
 import os
 import sys
 from typing import Any
@@ -588,45 +587,29 @@ def run_diary_write(payload: dict[str, Any]) -> dict[str, Any]:
 _MCP_USAGE_ERROR_CODES = frozenset({-32600, -32601, -32602, -32700})
 
 
-def _daemon_result_from_mcp_response(response: Any) -> dict[str, Any]:
-    """Turn a tools/call JSON-RPC response into a daemon job result.
+def _daemon_result_from_mcp_refusal(error: dict[str, Any]) -> dict[str, Any]:
+    """Turn a refused or failed tools/call into a failed daemon job result.
 
-    Tool payloads keep the handler's dict, including a bare ``{"error": ...}``
-    with no success flag, which is a failed job. A JSON-RPC error is a refusal
-    or a bad call and never a successful write.
+    A peer writer holding the palace is the same deferral as the write lock
+    held by another process, so it carries that ``error_class`` and the worker
+    retries it later instead of dead-lettering the write.
     """
-    if not isinstance(response, dict):
-        return {"success": False, "error": "empty MCP response", "exit_code": 1}
-    error = response.get("error")
-    if isinstance(error, dict) and "result" not in response:
-        code = error.get("code")
-        message = error.get("message") or "MCP tool call failed"
-        out: dict[str, Any] = {
-            "success": False,
-            "error": str(message),
-            "exit_code": 2 if code in _MCP_USAGE_ERROR_CODES else 1,
-        }
-        if isinstance(code, int):
-            out["jsonrpc_code"] = code
-        data = error.get("data")
-        if isinstance(data, dict) and data.get("tool"):
-            out["tool"] = data["tool"]
-        return out
+    code = error.get("code")
+    data = error.get("data") if isinstance(error.get("data"), dict) else {}
+    out: dict[str, Any] = {
+        "success": False,
+        "error": str(data.get("message") or error.get("message") or "MCP tool call failed"),
+        "exit_code": 2 if code in _MCP_USAGE_ERROR_CODES else 1,
+        "jsonrpc_code": code,
+    }
+    for key in ("tool", "error_class"):
+        if data.get(key):
+            out[key] = data[key]
+    if data.get("failure_kind") == "peer_contention":
+        from .daemon import LOCK_REFUSAL_ERROR_CLASS
 
-    content = (response.get("result") or {}).get("content") or []
-    text = content[0].get("text") if content and isinstance(content[0], dict) else None
-    if not isinstance(text, str):
-        return {"success": True, "value": response.get("result"), "exit_code": 0}
-    try:
-        payload = json.loads(text)
-    except json.JSONDecodeError:
-        return {"success": True, "value": text, "exit_code": 0}
-    if isinstance(payload, dict):
-        if "success" not in payload:
-            payload["success"] = "error" not in payload
-        payload.setdefault("exit_code", 0 if payload.get("success") else 1)
-        return payload
-    return {"success": True, "value": payload, "exit_code": 0}
+        out["error_class"] = LOCK_REFUSAL_ERROR_CLASS
+    return out
 
 
 @_restores_palace_env
@@ -664,15 +647,21 @@ def run_mcp_tool(payload: dict[str, Any]) -> dict[str, Any]:
 
     if name not in mcp_server.TOOLS:
         return {"success": False, "error": f"unknown MCP tool: {name}", "exit_code": 2}
-    response = mcp_server.handle_request(
-        {
-            "jsonrpc": "2.0",
-            "id": "daemon-mcp-tool",
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments},
-        }
+    refusal, result = mcp_server.call_tool(
+        "daemon-mcp-tool", {"name": name, "arguments": arguments}
     )
-    return _daemon_result_from_mcp_response(response)
+    if refusal is not None:
+        return _daemon_result_from_mcp_refusal(refusal["error"])
+    if isinstance(result, dict):
+        # Several write tools signal failure with a bare {"error": ...} and no
+        # explicit success flag (e.g. tool_create_tunnel / tool_delete_tunnel
+        # validation paths). Infer failure from the "error" key so the daemon
+        # does not persist a failed write as succeeded with exit_code 0.
+        if "success" not in result:
+            result["success"] = "error" not in result
+        result.setdefault("exit_code", 0 if result.get("success") else 1)
+        return result
+    return {"success": True, "value": result, "exit_code": 0}
 
 
 def print_job_result(result: dict[str, Any]) -> int:
