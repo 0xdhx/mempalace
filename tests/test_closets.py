@@ -1353,21 +1353,27 @@ class TestTunnels:
             with pytest.raises(ValueError):
                 create_tunnel(*args)
 
-    def test_corrupt_tunnel_file_does_not_lose_new_writes(self):
-        """A truncated/corrupt tunnels.json (crash mid-write on a system
-        without atomic rename) must not leak into subsequent reads — the
-        file should be treated as empty and a fresh create_tunnel should
-        persist cleanly."""
-        import mempalace.palace_graph as pg
+    def test_corrupt_tunnel_file_is_kept_aside_not_overwritten(self):
+        """A corrupt tunnels.json reads as empty, but the next save refuses
+        to overwrite it: the bytes move to a ``.corrupt-*`` file and the save
+        raises. Saves after that start a fresh file."""
+        import glob
 
-        # Simulate a crash that left a truncated file behind.
-        with open(pg._get_tunnel_file(), "w") as f:
+        import mempalace.palace_graph as pg
+        from mempalace.fsio import CorruptStateError
+
+        tunnel_file = pg._get_tunnel_file()
+        with open(tunnel_file, "w") as f:
             f.write("{not valid json")
 
-        # Load should return [] rather than raising.
         assert list_tunnels() == []
 
-        # A subsequent create must persist (atomic write replaces the corrupt file).
+        with pytest.raises(CorruptStateError):
+            create_tunnel("wing_a", "r1", "wing_b", "r2")
+        (aside,) = glob.glob(tunnel_file + ".corrupt-*")
+        with open(aside) as f:
+            assert f.read() == "{not valid json"
+
         t = create_tunnel("wing_a", "r1", "wing_b", "r2")
         assert list_tunnels() == [t]
 
