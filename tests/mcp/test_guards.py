@@ -1283,6 +1283,31 @@ def test_sqlite_integrity_payload_keeps_the_generation_it_started_with(monkeypat
     assert (payload["ok"] is True) == (payload["error_count"] == 0)
 
 
+def test_sqlite_integrity_payload_answers_from_the_published_verdict_during_a_refresh(
+    monkeypatch,
+):
+    """A refresh holding the lock has only half-written the globals."""
+    from mempalace import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_selected_backend_name", lambda: "chroma")
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_checked", True)
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_errors", [])
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_check_error", "")
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_no_verdict_reason", "no chroma.sqlite3")
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_verdict", None)
+    monkeypatch.setattr(mcp_server, "_sqlite_integrity_generation", 0)
+    mcp_server._publish_sqlite_integrity_verdict()
+
+    with mcp_server._sqlite_integrity_refresh_lock:
+        # Leaving "no verdict": the reason is cleared, the fresh errors are not in yet.
+        mcp_server._sqlite_integrity_no_verdict_reason = ""
+        payload = mcp_server._sqlite_integrity_payload()
+
+    assert payload["checked"] is False
+    assert payload["ok"] is None
+    assert payload["reason"] == "no chroma.sqlite3"
+
+
 def test_node_profile_counts_drawers_under_the_request_lock(monkeypatch):
     """Lock-free profile reads must not mutate the collection cache unlocked."""
     from mempalace import mcp_server
@@ -1300,6 +1325,39 @@ def test_node_profile_counts_drawers_under_the_request_lock(monkeypatch):
 
     assert seen["readers"] >= 1
     assert profile["drawers"] is None
+
+
+def test_node_profile_does_not_wait_behind_a_writer(monkeypatch):
+    """Mesh and logstream routes get the last count while a write holds the lock."""
+    import threading
+
+    from mempalace import mcp_server
+
+    class _Collection:
+        def count(self):
+            return 7
+
+    monkeypatch.setattr(mcp_server, "_get_collection", lambda create=False: _Collection())
+    monkeypatch.setattr(mcp_server, "_last_profile_drawer_count", None)
+    assert mcp_server._drawer_count_for_profile() == 7
+
+    held = threading.Event()
+    release = threading.Event()
+
+    def _writer():
+        with mcp_server._HTTP_REQUEST_LOCK:
+            held.set()
+            release.wait(5)
+
+    writer = threading.Thread(target=_writer)
+    writer.start()
+    try:
+        assert held.wait(2)
+        monkeypatch.setattr(mcp_server, "_get_collection", lambda create=False: None)
+        assert mcp_server._drawer_count_for_profile() == 7
+    finally:
+        release.set()
+        writer.join(5)
 
 
 def test_peer_sync_mutation_waits_for_the_mesh_lock():

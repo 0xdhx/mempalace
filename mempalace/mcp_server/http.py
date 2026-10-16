@@ -36,6 +36,17 @@ class _RWLock:
             if self._handoff:
                 self._cond.notify_all()
 
+    def try_acquire_read(self) -> bool:
+        """Take the read side only if that needs no wait."""
+        with self._cond:
+            if self._writer or (self._waiting_writers and not self._handoff):
+                return False
+            self._readers += 1
+            return True
+
+    def owns_write(self) -> bool:
+        return self._writer and self._writer_ident == threading.get_ident()
+
     def release_read(self) -> None:
         with self._cond:
             self._readers -= 1
@@ -742,26 +753,29 @@ _node_profile_cache: dict = {}
 _ACCELERATOR_NAMES = {"cuda": "CUDA", "dml": "DirectML", "coreml": "CoreML", "cpu": "CPU"}
 
 
+_last_profile_drawer_count = None
+
+
 def _drawer_count_for_profile():
     """Drawer count for the node profile.
 
-    ``_get_collection`` writes the process-wide collection cache. Lock-free
-    routes (/sync/version_vector, mempalace_mesh_peers) call this, so the
-    read takes the request lock's read side. The write side is not
-    reentrant; a thread that already holds it counts without acquiring.
+    ``_get_collection`` writes the process-wide collection cache, so the count
+    needs the request lock's read side. Lock-free routes (/sync/version_vector,
+    mempalace_mesh_peers) call this and must not queue behind a write, so when
+    the read side is not free at once they get the last count taken.
     """
+    global _last_profile_drawer_count
     lock = _HTTP_REQUEST_LOCK
-
-    def _count():
+    owned = lock.owns_write()
+    if not owned and not lock.try_acquire_read():
+        return _last_profile_drawer_count
+    try:
         col = _get_collection(create=False)
-        if col is None:
-            return None
-        return col.count()
-
-    if lock._writer and lock._writer_ident == threading.get_ident():
-        return _count()
-    with lock.read_lock():
-        return _count()
+        _last_profile_drawer_count = None if col is None else col.count()
+    finally:
+        if not owned:
+            lock.release_read()
+    return _last_profile_drawer_count
 
 
 def _node_profile() -> dict:
