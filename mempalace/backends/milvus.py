@@ -24,7 +24,7 @@ from ..config import (
     DEFAULT_MILVUS_CONSISTENCY_LEVEL,
     normalize_milvus_consistency_level,
 )
-from ..stored_text import decode_record, prepare_stored_write
+from ..stored_text import decode_record, encode_filter, prepare_stored_write
 from ._remote_common import (
     RemoteMarkerMixin,
     as_vector_array,
@@ -164,7 +164,7 @@ def _translate_clause(clause: dict) -> str:
         elif key.startswith("$"):
             raise UnsupportedFilterError(f"operator {key!r} not supported by milvus")
         else:
-            parts.append(_translate_field(key, value))
+            parts.append(_translate_field(key, encode_filter(value)))
     return " and ".join(part for part in parts if part)
 
 

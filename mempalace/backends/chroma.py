@@ -24,7 +24,15 @@ import chromadb
 from chromadb.config import Settings as _ChromaSettings
 from chromadb.errors import NotFoundError as _ChromaNotFoundError
 
-from ..stored_text import FLAG, decode_record, prepare_stored_write, restore_rows
+from ..stored_text import (
+    FLAG,
+    decode_record,
+    decode_value,
+    encode_filter,
+    encode_where,
+    prepare_stored_write,
+    restore_rows,
+)
 from ._inproc_sqlite import open_reader as open_palace_reader
 from ._inproc_sqlite import open_writer as open_palace_writer
 from ._inproc_sqlite import palace_db_lock
@@ -2060,7 +2068,7 @@ def _sqlite_wing_room_counts(
     total = 0
     wing_rooms: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for wing, room, n in rows:
-        wing_rooms[wing][room] += int(n)
+        wing_rooms[decode_value(wing)][decode_value(room)] += int(n)
         total += int(n)
     return total, wing_rooms
 
@@ -2087,7 +2095,7 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
                 is None
             ):
                 return None
-            return conn.execute(
+            rows = conn.execute(
                 """
                 SELECT
                     COALESCE(rm.string_value, CAST(rm.int_value AS TEXT),
@@ -2114,6 +2122,10 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
             conn.close()
     except sqlite3.Error:
         return None
+    return [
+        (decode_value(room), decode_value(wing), decode_value(hall), n, decode_value(last))
+        for room, wing, hall, n, last in rows
+    ]
 
 
 def _sqlite_iter_metadata(
@@ -2150,7 +2162,7 @@ def _sqlite_iter_metadata(
     for key, value in (equals or {}).items():
         scope += """ AND e.id IN (SELECT r.id FROM embedding_metadata r
                      WHERE r.key = ? AND r.string_value = ?)"""
-        params.extend((key, value))
+        params.extend((key, encode_filter(value)))
     # Older chromadb schemas lack bool_value; select NULL for any value
     # column the table does not have so the row shape stays fixed.
     present = set(_metadata_value_columns(conn))
@@ -2159,7 +2171,8 @@ def _sqlite_iter_metadata(
         for col in ("string_value", "int_value", "float_value", "bool_value")
     )
     if keys is not None:
-        keys = list(keys)
+        # The escape flag rides along so the caller can decode these keys.
+        keys = list(dict.fromkeys([*keys, FLAG]))
         sql = f"""
             SELECT m.id, {columns} FROM embedding_metadata m
             WHERE m.key IN ({",".join("?" * len(keys))}) AND m.id IN ({scope})
@@ -2209,7 +2222,7 @@ def sqlite_wing_source_counts(palace_path: str, collection_name: str) -> Optiona
                 is None
             ):
                 return None
-            return conn.execute(
+            rows = conn.execute(
                 """
                 SELECT
                     COALESCE(wm.string_value, '') AS wing,
@@ -2231,6 +2244,7 @@ def sqlite_wing_source_counts(palace_path: str, collection_name: str) -> Optiona
             conn.close()
     except sqlite3.Error:
         return None
+    return [(decode_value(wing), decode_value(source), n) for wing, source, n in rows]
 
 
 def _metadata_value_columns(conn) -> list[str]:
@@ -2350,7 +2364,7 @@ def sqlite_list_id_metadata(
                     f"JOIN embedding_metadata {alias} ON {alias}.id = e.id "
                     f"AND {alias}.key = ? AND {alias}.string_value = ?"
                 )
-                params.extend([key, val])
+                params.extend([key, encode_filter(val)])
             params.append(collection_name)
             rows = conn.execute(
                 f"""
@@ -2402,7 +2416,7 @@ def sqlite_list_id_metadata(
     ids: list[str] = []
     metas: list[dict] = []
     for doc_id in order:
-        meta = by_id[doc_id]
+        meta = decode_record(None, by_id[doc_id])[1]
         if any(meta.get(key) != val for key, val in filters.items()):
             continue
         ids.append(doc_id)
@@ -2606,9 +2620,9 @@ def sqlite_diary_rows(
     if not os.path.isfile(db_path) or not isinstance(limit, int):
         return None
     limit = max(1, min(limit, 100))
-    equalities = [("room", "diary"), ("agent", agent_name)]
+    equalities = [("room", "diary"), ("agent", encode_filter(agent_name))]
     if wing:
-        equalities.append(("wing", wing))
+        equalities.append(("wing", encode_filter(wing)))
     try:
         conn = open_palace_reader(db_path)
         try:
@@ -3456,7 +3470,7 @@ class ChromaCollection(BaseCollection):
         if query_embeddings is not None:
             kwargs["query_embeddings"] = query_embeddings
         if where is not None:
-            kwargs["where"] = where
+            kwargs["where"] = encode_where(where)
         if where_document is not None:
             kwargs["where_document"] = where_document
 
@@ -3524,7 +3538,7 @@ class ChromaCollection(BaseCollection):
         if ids is not None:
             kwargs["ids"] = ids
         if where is not None:
-            kwargs["where"] = where
+            kwargs["where"] = encode_where(where)
         if where_document is not None:
             kwargs["where_document"] = where_document
         if limit is not None:
@@ -3560,7 +3574,7 @@ class ChromaCollection(BaseCollection):
         if ids is not None:
             kwargs["ids"] = ids
         if where is not None:
-            kwargs["where"] = where
+            kwargs["where"] = encode_where(where)
         with self._write_lock():
             self._collection.delete(**kwargs)
 
@@ -3597,7 +3611,10 @@ class ChromaCollection(BaseCollection):
                         "metadata recovery pending; use collection reader"
                     )
                 for meta in _sqlite_iter_metadata(conn, name, keys, require_key, equals):
-                    yield decode_record(None, meta)[1]
+                    meta = decode_record(None, meta)[1]
+                    if keys is not None and not meta:
+                        continue
+                    yield meta
             finally:
                 conn.close()
 
@@ -3660,7 +3677,7 @@ class ChromaCollection(BaseCollection):
                 self._palace_path,
                 self._collection.name,
                 limit=limit,
-                equalities=equalities,
+                equalities=[(key, encode_filter(value)) for key, value in equalities],
                 order_field=order_field,
             )
         if records is None:
@@ -3891,11 +3908,12 @@ class ChromaCollection(BaseCollection):
                 drawer["metadata"][key] = value
 
         ordered = []
+        stored_where = encode_where(where)
         for emb_id in candidate_ids:
             drawer = drawers.get(emb_id)
             if drawer is None:
                 continue
-            if not _matches_where(drawer["metadata"], where):
+            if not _matches_where(drawer["metadata"], stored_where):
                 continue
             ordered.append((emb_id, *decode_record(drawer["document"], drawer["metadata"])))
 

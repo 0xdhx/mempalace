@@ -9,12 +9,17 @@ that merely looks escaped is returned as written. The flag never reaches
 callers. Ids and metadata keys that cannot be stored are rejected, never
 rewritten.
 
-``FLAG`` is reserved. A record whose metadata carries ``FLAG: 1`` is taken
-as stored form and written unchanged, so copying raw rows between palaces
-(repair, migrate) stays verbatim; any other value is refused.
+``FLAG`` is reserved: a write that carries it has it dropped and is encoded
+like any other, so a caller cannot pass escaped-looking text off as stored
+form. Code that copies raw rows between palaces (repair, migrate) decodes
+them first.
 
-Where filters compare against the stored form: a filter value holding NUL or
-a lone surrogate does not match the escaped value.
+Every stored string that starts with the prefix was written by the encoder,
+so a reader that cannot see the record's flag (an aggregate over one column)
+may decode a single value with :func:`decode_value`. Filters pushed down to
+a backend compare stored form, so their operands go through
+:func:`encode_where` / :func:`encode_filter`; a filter evaluated in Python
+on decoded rows keeps the caller's values.
 """
 
 import re
@@ -87,9 +92,7 @@ def encode_record(document, metadata):
     escaping.
     """
     if metadata and FLAG in metadata:
-        if metadata[FLAG] != 1:
-            raise StoredTextError(f"metadata key {FLAG!r} is reserved")
-        return document, metadata
+        metadata = {key: value for key, value in metadata.items() if key != FLAG}
     changed: list = []
     document = _encode(document, changed)
     encoded = {}
@@ -101,6 +104,52 @@ def encode_record(document, metadata):
     elif metadata is None:
         return document, None
     return document, encoded
+
+
+def decode_value(value):
+    """Decode one stored value read without its record's flag."""
+    return _decode(value)
+
+
+def index_text(stored: str) -> str:
+    """The words of a stored document for a full-text index.
+
+    NUL and lone surrogates become spaces: the index never returns text, and
+    neither can be tokenized or UTF-8 encoded.
+    """
+    return _BAD.sub(" ", _decode(stored))
+
+
+_EQUALITY_OPS = ("$eq", "$ne", "$in", "$nin")
+
+
+def encode_filter(expected):
+    """Stored form of one field's filter operand: a value or ``{op: value}``.
+
+    Only equality operands are encoded; an escaped value has no useful order,
+    so a range comparison keeps the caller's value.
+    """
+    if isinstance(expected, dict):
+        return {
+            op: _encode(value, []) if op in _EQUALITY_OPS else value
+            for op, value in expected.items()
+        }
+    return _encode(expected, [])
+
+
+def encode_where(where):
+    """A metadata ``where`` with every equality operand in stored form."""
+    if not isinstance(where, dict):
+        return where
+    out = {}
+    for key, expected in where.items():
+        if key in ("$and", "$or") and isinstance(expected, list):
+            out[key] = [encode_where(clause) for clause in expected]
+        elif key.startswith("$"):
+            out[key] = expected
+        else:
+            out[key] = encode_filter(expected)
+    return out
 
 
 def decode_record(document, metadata):

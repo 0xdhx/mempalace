@@ -23,7 +23,13 @@ from typing import Any, Optional
 
 import numpy as np
 
-from ..stored_text import decode_record, prepare_stored_write
+from ..stored_text import (
+    decode_record,
+    decode_value,
+    encode_filter,
+    index_text,
+    prepare_stored_write,
+)
 from ._magic import has_sqlite_magic, read_header_fields
 from .base import (
     BackendClosedError,
@@ -310,7 +316,7 @@ def _equality_where_sql(
         if key.startswith("$") or isinstance(expected, dict) or not _FACET_FIELD_RE.match(key):
             return None
         clauses.append(f"{_json_field_sql(key, locus_columns=locus_columns)} = ?")
-        params.append(expected)
+        params.append(encode_filter(expected))
     return (" AND ".join(clauses) if clauses else "1=1"), params
 
 
@@ -386,8 +392,8 @@ def sqlite_wing_room_counts(
                 """,
                 (collection_id,),
             ):
-                wkey = "?" if wing is None else str(wing)
-                rkey = "?" if room is None else str(room)
+                wkey = "?" if wing is None else str(decode_value(wing))
+                rkey = "?" if room is None else str(decode_value(room))
                 dest = wing_rooms.setdefault(wkey, {})
                 dest[rkey] = dest.get(rkey, 0) + int(n)
             return total, wing_rooms
@@ -425,7 +431,7 @@ def sqlite_wing_source_counts(palace_path: str, collection_name: str) -> Optiona
                 if _documents_has_locus_columns(conn)
                 else "json_extract(metadata_json, '$.wing')"
             )
-            return list(
+            rows = list(
                 conn.execute(
                     f"""
                     SELECT {wing_expr}, json_extract(metadata_json, '$.source_file'), COUNT(*)
@@ -442,6 +448,7 @@ def sqlite_wing_source_counts(palace_path: str, collection_name: str) -> Optiona
             conn.close()
     except sqlite3.Error:
         return None
+    return [(decode_value(wing), decode_value(source), n) for wing, source, n in rows]
 
 
 def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Optional[list[tuple]]:
@@ -469,7 +476,7 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
             room_expr = "room" if locus else "json_extract(metadata_json, '$.room')"
             wing_expr = "wing" if locus else "json_extract(metadata_json, '$.wing')"
             hall_expr = "hall" if locus else "json_extract(metadata_json, '$.hall')"
-            return list(
+            rows = list(
                 conn.execute(
                     f"""
                     SELECT {room_expr}, {wing_expr}, {hall_expr}, COUNT(*),
@@ -485,6 +492,10 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
             conn.close()
     except sqlite3.Error:
         return None
+    return [
+        (decode_value(room), decode_value(wing), decode_value(hall), n, decode_value(last))
+        for room, wing, hall, n, last in rows
+    ]
 
 
 def _matches_where_document(document: str, where_document: Optional[dict]) -> bool:
@@ -726,6 +737,7 @@ class SQLiteExactCollection(BaseCollection):
             fts_enabled = self._fts_available(cur)
         if not fts_enabled:
             return
+        document = index_text(document)
         if doc_rowid is None:
             row = cur.execute(
                 "SELECT rowid FROM documents WHERE collection_id = ? AND id = ?",
@@ -1295,11 +1307,11 @@ class SQLiteExactCollection(BaseCollection):
             vecs.append(vec)
             meta = {}
             if wing is not None:
-                meta["wing"] = wing
+                meta["wing"] = decode_value(wing)
             if room is not None:
-                meta["room"] = room
+                meta["room"] = decode_value(room)
             if source_file is not None:
-                meta["source_file"] = source_file
+                meta["source_file"] = decode_value(source_file)
             metas.append(meta)
         if not vecs:
             return (
@@ -1479,7 +1491,7 @@ class SQLiteExactCollection(BaseCollection):
                 """,
                 (collection_id, *params, int(limit)),
             ).fetchall()
-        return {str(key): int(count) for key, count in rows if key is not None}
+        return {str(decode_value(key)): int(count) for key, count in rows if key is not None}
 
     def lexical_search(self, *, query: str, n_results: int = 10, where: Optional[dict] = None):
         _validate_where(where)

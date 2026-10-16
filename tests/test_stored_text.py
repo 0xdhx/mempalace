@@ -35,17 +35,20 @@ def test_an_unflagged_record_is_never_decoded():
     assert decode_record(LOOKALIKE, {"wing": "w"}) == (LOOKALIKE, {"wing": "w"})
 
 
-def test_the_flag_is_reserved_and_hidden():
-    with pytest.raises(StoredTextError, match="reserved"):
-        encode_record("x", {FLAG: "mine"})
+def test_the_flag_is_hidden_and_never_taken_from_a_caller():
     stored, meta = encode_record(ORIGINAL, {"wing": "w"})
     assert meta[FLAG] == 1
     assert FLAG not in decode_record(stored, meta)[1]
+    # A forged flag is dropped and the text encoded like any other write.
+    forged_doc, forged_meta = encode_record(LOOKALIKE, {FLAG: 1, "note": "x\x00y"})
+    assert "\x00" not in forged_meta["note"]
+    assert decode_record(forged_doc, forged_meta) == (LOOKALIKE, {"note": "x\x00y"})
+    assert encode_record("plain", {FLAG: "mine"}) == ("plain", {})
 
 
-def test_stored_form_is_copied_verbatim():
+def test_a_decoded_copy_is_stored_again_unchanged():
     stored, meta = encode_record(ORIGINAL, {"note": LOOKALIKE})
-    assert encode_record(stored, meta) == (stored, meta)
+    assert encode_record(*decode_record(stored, meta)) == (stored, meta)
 
 
 def test_ids_and_metadata_keys_are_rejected_not_rewritten():
@@ -165,6 +168,96 @@ def test_chroma_sqlite_readers_decode(tmp_path):
     meta = col.get_recent(limit=1, include=["documents", "metadatas"])
     assert meta.documents == [ORIGINAL] and FLAG not in meta.metadatas[0]
     assert all(FLAG not in m for m in col.get_all_metadata())
+
+
+SURROGATE_PATH = "/p/x" + chr(0xDCFF) + "y.txt"
+
+
+def test_chroma_keyed_metadata_scans_decode(tmp_path):
+    from mempalace.backends.chroma import sqlite_wing_source_counts
+    from mempalace.palace import NORMALIZE_VERSION, prefetch_mined_set
+
+    col = _chroma(tmp_path)
+    col.add(
+        documents=["one", "two"],
+        ids=["k1", "k2"],
+        metadatas=[
+            {"note": "foo\x00bar", "wing": "w"},
+            {
+                "source_file": SURROGATE_PATH,
+                "normalize_version": NORMALIZE_VERSION,
+                "wing": "w",
+            },
+        ],
+    )
+    assert list(col.iter_metadata(["note"])) == [{"note": "foo\x00bar"}]
+    assert SURROGATE_PATH in prefetch_mined_set(col)
+
+    transcript = "/home/u/.claude/projects/p/s\x00.jsonl"
+    col.add(documents=["t"], ids=["k3"], metadatas=[{"wing": "w", "source_file": transcript}])
+    assert sqlite_wing_source_counts(str(tmp_path), "mempalace_drawers") == [("w", transcript, 1)]
+
+
+def test_chroma_list_drawers_reader_decodes(tmp_path):
+    from mempalace.backends.chroma import sqlite_list_id_metadata
+
+    col = _chroma(tmp_path)
+    col.add(
+        documents=["one", "two"],
+        ids=["l1", "l2"],
+        metadatas=[{"wing": "w", "note": "foo\x00bar"}, {"wing": "v", "note": "plain"}],
+    )
+    ids, metas = sqlite_list_id_metadata(str(tmp_path), "mempalace_drawers", {"wing": "w"})
+    assert ids == ["l1"]
+    assert metas == [{"wing": "w", "note": "foo\x00bar"}]
+
+
+@pytest.mark.parametrize("make", [_chroma, _sqlite_exact])
+@pytest.mark.parametrize("value", ["a\x00b", "a" + chr(0xD800) + "b", LOOKALIKE])
+def test_a_filter_matches_the_value_read_back(tmp_path, make, value):
+    col = make(tmp_path)
+    col.add(
+        documents=["hit", "miss"],
+        ids=["f1", "f2"],
+        metadatas=[{"source_file": value}, {"source_file": "other"}],
+        embeddings=[[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]],
+    )
+    stored = col.get(ids=["f1"], include=["metadatas"]).metadatas[0]["source_file"]
+    assert stored == value
+    assert col.get(where={"source_file": stored}).ids == ["f1"]
+    assert col.get(where={"source_file": {"$in": [stored]}}).ids == ["f1"]
+    assert col.get(where={"source_file": {"$ne": stored}}).ids == ["f2"]
+
+
+def test_a_forged_flag_cannot_store_raw_text(tmp_path):
+    import sqlite3
+
+    col = _chroma(tmp_path)
+    col.add(
+        documents=[LOOKALIKE, "raw\x00nul"],
+        ids=["g1", "g2"],
+        metadatas=[{FLAG: 1}, {FLAG: 1}],
+    )
+    got = col.get(ids=["g1", "g2"], include=["documents", "metadatas"])
+    assert got.documents == [LOOKALIKE, "raw\x00nul"]
+    assert all(FLAG not in meta for meta in got.metadatas)
+    conn = sqlite3.connect(str(tmp_path / "chroma.sqlite3"))
+    try:
+        stored = [row[0] for row in conn.execute("SELECT string_value FROM embedding_metadata")]
+    finally:
+        conn.close()
+    assert not any(isinstance(value, str) and "\x00" in value for value in stored)
+
+
+def test_sqlite_exact_full_text_finds_words_next_to_an_escape(tmp_path):
+    col = _sqlite_exact(tmp_path)
+    col.add(
+        documents=["foo\x00bar", "baz" + chr(0xD800) + "qux"],
+        ids=["x1", "x2"],
+        embeddings=[[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]],
+    )
+    assert [hit.document for hit in col.lexical_search(query="bar").hits] == ["foo\x00bar"]
+    assert [hit.id for hit in col.lexical_search(query="qux").hits] == ["x2"]
 
 
 def test_bm25_fallback_decodes(tmp_path):

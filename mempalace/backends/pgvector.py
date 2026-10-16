@@ -48,7 +48,7 @@ from urllib import parse as urlparse
 
 import numpy as np
 
-from ..stored_text import decode_record, prepare_stored_write
+from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
 from ._remote_common import (
     RemoteMarkerMixin,
     as_vector_array,
@@ -524,7 +524,7 @@ def _where_to_sql(where: Optional[dict], params: list) -> str:
             continue
         if key.startswith("$"):  # pragma: no cover - guarded upstream
             raise UnsupportedFilterError(f"operator {key!r} not pushed down by pgvector")
-        clauses.append(_field_sql(key, expected, params))
+        clauses.append(_field_sql(key, encode_filter(expected), params))
     return " AND ".join(clauses) if clauses else "TRUE"
 
 
@@ -921,7 +921,7 @@ class _PgVectorClient:
         # Exclude NULL bucket: matches Qdrant's facet semantics; mcp_server
         # reconciles missing values into "unknown" via the count diff
         # (count(*) - sum(facet_values)).
-        return {str(row[0]): int(row[1]) for row in rows if row[0] is not None}
+        return {str(decode_value(row[0])): int(row[1]) for row in rows if row[0] is not None}
 
     def drop_table(self, table: str) -> None:
         self._execute(f"DROP TABLE IF EXISTS {_quote_identifier(table)}")

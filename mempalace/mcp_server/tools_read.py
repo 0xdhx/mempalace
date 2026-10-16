@@ -56,7 +56,7 @@ def _tool_status_via_sqlite() -> dict:
                     """,
                     (collection_name, key),
                 ):
-                    target[value] = count
+                    target[decode_value(value)] = count
         finally:
             conn.close()
     except _sqlite3.Error:

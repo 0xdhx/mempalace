@@ -24,7 +24,7 @@ from urllib import request as urlrequest
 
 import numpy as np
 
-from ..stored_text import decode_record, prepare_stored_write
+from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
 from ..version import __version__
 from ._remote_common import (
     RemoteMarkerMixin,
@@ -555,7 +555,7 @@ class _QdrantRESTClient:
         hits = result.get("hits") or []
 
         return {
-            str(hit["value"]): int(hit.get("count") or 0)
+            str(decode_value(hit["value"])): int(hit.get("count") or 0)
             for hit in hits
             if hit.get("value") is not None
         }
@@ -633,7 +633,7 @@ def _qdrant_filter(where: Optional[dict]) -> Optional[dict]:
             return None
         if key.startswith("$"):
             return None
-        condition, not_conditions = _condition(key, expected)
+        condition, not_conditions = _condition(key, encode_filter(expected))
         if condition is None:
             return None
         must.append(condition)
