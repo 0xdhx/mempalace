@@ -108,7 +108,8 @@ def _closet_boosts(closets_col, *, query: str, n_results: int, where: dict) -> d
 
     sqlite_exact (and any lexical backend) uses FTS instead of a second
     exact-cosine scan over the closet collection — closets are pointer
-    lines, so BM25 is the better signal anyway.
+    lines, so BM25 is the better signal anyway. Vector closet distances are
+    returned on the cosine scale whatever metric the closet collection uses.
     """
     boosts: dict = {}
     n_hits = max(1, n_results * 2)
@@ -131,6 +132,7 @@ def _closet_boosts(closets_col, *, query: str, n_results: int, where: dict) -> d
     if where:
         ckwargs["where"] = where
     closet_results = closets_col.query(**ckwargs)
+    closet_metric = _metric_for_collection(closets_col)
     for rank, (cdoc, cmeta, cdist) in enumerate(
         zip(
             _first_or_empty(closet_results, "documents"),
@@ -141,7 +143,11 @@ def _closet_boosts(closets_col, *, query: str, n_results: int, where: dict) -> d
         cmeta = cmeta or {}
         source = cmeta.get("source_file", "")
         if source and source not in boosts:
-            boosts[source] = (rank, cdist, (cdoc or "")[:200])
+            boosts[source] = (
+                rank,
+                _cosine_scale_distance(cdist, closet_metric),
+                (cdoc or "")[:200],
+            )
     return boosts
 
 
@@ -389,12 +395,8 @@ def search_memories(
                 matched_via = "drawer+closet"
                 closet_preview = c_preview
 
-        # Clamp to the valid cosine-distance range [0, 2]. When a strong
-        # closet boost (up to 0.40) exceeds the raw distance, the subtraction
-        # can go negative — which (a) yields ``similarity > 1.0`` downstream
-        # and (b) makes the sort key land *below* ordinary positive distances,
-        # inverting the ranking so the best hybrid matches sort last.
-        effective_dist = max(0.0, min(2.0, dist - boost))
+        # On the cosine scale, so l2 and ip palaces rank the same way.
+        effective_dist = _boosted_cosine_distance(dist, boost, metric)
         entry = {
             "drawer_id": _result_drawer_id(meta, stored_drawer_id),
             "text": doc,
@@ -469,6 +471,7 @@ def search_memories(
         pool_size=pool_size,
         date_window_active=date_window_active,
         stats=stats,
+        distance_metric=metric,
     )
     if _copies_left_results_short(hits, n_results, candidates_fetched, pool_size):
         if _pool_scale < _MAX_POOL_SCALE and pool_size < _MAX_FOLD_POOL:

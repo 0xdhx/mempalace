@@ -265,6 +265,10 @@ def _hybrid_rank(
       themselves. Since the absolute scale is unbounded, BM25 is min-max
       normalized within the candidate set so weights are commensurable.
 
+    * A candidate with a ``closet_boost`` is scored from its boosted
+      distance (cosine scale, taken back to ``metric``'s scale), the distance
+      the vector pass ranked it by, so re-scoring doesn't drop the boost.
+
     Candidates with ``distance=None`` are treated as vector-unknown
     (no vector signal available) and scored on BM25 contribution alone.
     Used by candidate-union mode to merge BM25-only candidates that the
@@ -283,18 +287,26 @@ def _hybrid_rank(
 
     scored = []
     for r, raw, norm in zip(results, bm25_raw, bm25_norm):
-        vec_sim = _distance_to_similarity(r.get("distance"), metric)
+        distance = r.get("distance")
+        boost = r.get("closet_boost") or 0.0
+        if boost and distance is not None:
+            boosted = _boosted_cosine_distance(distance, boost, metric)
+            distance = _metric_scale_distance(boosted, metric)
+        vec_sim = _distance_to_similarity(distance, metric)
         r["bm25_score"] = round(raw, 3)
         scored.append((vector_weight * vec_sim + bm25_weight * norm, r))
 
-    # Break exact score ties toward the more recently authored drawer so equal-score
-    # candidates rank chronologically instead of in arbitrary backend order. ISO-8601
-    # ``authored_at`` strings sort chronologically; missing dates sort oldest.
+    # Break exact score ties by raw vector distance first: boosted drawers closer
+    # than their boost all clamp to the same score and must keep vector order.
+    # Then toward the more recently authored drawer, so equal-score candidates rank
+    # chronologically instead of in arbitrary backend order. ISO-8601 ``authored_at``
+    # strings sort chronologically; missing dates and distances sort last.
     # authored_at lives at the top level on the search_memories path and nested under
     # "metadata" on the candidate-union path; check both so the tie-break works for each.
     scored.sort(
         key=lambda pair: (
             pair[0],
+            -pair[1]["distance"] if pair[1].get("distance") is not None else -math.inf,
             pair[1].get("authored_at") or pair[1].get("metadata", {}).get("authored_at") or "",
         ),
         reverse=True,

@@ -29,6 +29,7 @@ except (OSError, AttributeError):
 sys.stdout = sys.stderr
 
 from .version import __version__  # noqa: E402
+from .search_util import _cosine_scale_distance  # noqa: E402
 from .query_parser import (  # noqa: E402
     QueryParseError,
     parse_coordinate_input,
@@ -176,7 +177,13 @@ def _enrich_search_results(res: Dict[str, Any]) -> Dict[str, Any]:
         res["summary"] = "No matching memories found in the palace for this query."
         return res
 
-    distances = [d for d in (_search_distance(item) for item in results_list) if d is not None]
+    # The bands are on the cosine scale; the raw distance may be l2 or ip.
+    metric = res.get("distance_metric") or "cosine"
+    distances = [
+        _cosine_scale_distance(d, metric)
+        for d in (_search_distance(item) for item in results_list)
+        if d is not None
+    ]
     if distances:
         min_dist = min(distances)
         if min_dist > 0.52:
