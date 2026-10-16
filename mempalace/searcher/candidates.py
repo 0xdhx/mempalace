@@ -473,13 +473,19 @@ def _window_and_fallback_gate(
     return since_dt, before_dt, active, None
 
 
+def _has_distance_cutoff(max_distance) -> bool:
+    """``None``, ``0`` or a negative ``max_distance`` means no cutoff."""
+    return max_distance is not None and max_distance > 0.0
+
+
 def _beyond_max_distance(dist, max_distance, metric) -> bool:
     """True when ``dist`` is past a ``max_distance`` cutoff given on the cosine scale.
 
-    ``max_distance`` of ``None`` or ``0`` means no cutoff. Compared on the raw
-    value before rounding.
+    Compared on the raw value before rounding.
     """
-    return bool(max_distance) and _cosine_scale_distance(dist, metric) > max_distance
+    return _has_distance_cutoff(max_distance) and (
+        _cosine_scale_distance(dist, metric) > max_distance
+    )
 
 
 def _candidate_out_of_scope(dist, meta, max_distance, since_dt, before_dt, metric="cosine"):

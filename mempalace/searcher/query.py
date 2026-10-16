@@ -223,7 +223,7 @@ def search_memories(
             2 = opposite — whatever metric the collection declares (``l2`` and
             ``ip`` distances are converted before comparing). Candidates past
             it are dropped and counted in ``filtered_by_max_distance``.
-            ``None`` (the default) or ``0`` applies no cutoff.
+            ``None`` (the default), ``0`` or a negative value applies no cutoff.
         vector_disabled: When True, route to the sqlite-only BM25 fallback
             (#1222). Set by the MCP server when the HNSW capacity probe
             detects a divergence that would segfault chromadb on segment

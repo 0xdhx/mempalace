@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and ask the AI to save instead of saving silently, set `hooks.silent_save` to
   `false` in `~/.mempalace/config.json`. When no interpreter can import
   mempalace, the hooks print `{}` and exit 0 as before.
+- **`mempalace_search` no longer applies a default distance cutoff.** It used to
+  drop every hit past cosine distance 1.5, which could hide a relevant but
+  distant drawer. Pass `max_distance` to keep a cutoff; it is now read on the
+  cosine scale (0 = identical, 2 = opposite) whatever metric the palace uses,
+  and the response reports how many hits it dropped in
+  `filtered_by_max_distance`. In `candidate_strategy: "union"`, a lexical-only
+  hit whose vector distance can't be computed is kept with `distance: null` and
+  `fallback_reason: "distance_unavailable"` instead of disappearing.
 
 ---
 

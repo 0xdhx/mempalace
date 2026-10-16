@@ -432,7 +432,7 @@ def _merge_bm25_union_candidates(
     metric = _metric_for_collection(drawers_col)
     lexical_distances = (
         _lexical_hit_vector_distances(drawers_col, query, lexical.hits, metric)
-        if max_distance
+        if _has_distance_cutoff(max_distance)
         else {}
     )
 
@@ -472,7 +472,7 @@ def _merge_bm25_union_candidates(
             "_source_file_full": full_source,
             "_chunk_index": meta.get("chunk_index"),
         }
-        if distance is None and max_distance:
+        if distance is None and _has_distance_cutoff(max_distance):
             # The cutoff could not be checked; keep the hit and say why.
             entry["fallback_reason"] = "distance_unavailable"
         bm25_extra.append(entry)
