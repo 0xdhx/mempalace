@@ -46,8 +46,25 @@ def test_a_boost_clamped_at_zero_lifts_no_further_than_an_exact_match():
 
     ranked = _hybrid_rank([clamped, exact], "unrelated", metric="cosine")
 
-    # Equal vector scores, so the newer drawer wins the tie.
+    # Equal vector scores; the closer raw distance breaks the tie, not the date.
     assert ranked[0] is exact
+
+
+def test_boosted_hits_closer_than_their_boost_keep_vector_order():
+    # Each clamps to an effective distance of 0; the newest is the farthest.
+    hits = [
+        {
+            "text": f"doc {i}",
+            "distance": 0.05 * (i + 1),
+            "closet_boost": 0.4,
+            "authored_at": f"2026-01-0{i + 1}",
+        }
+        for i in range(5)
+    ]
+
+    ranked = _hybrid_rank(list(reversed(hits)), "unrelated", metric="cosine")
+
+    assert ranked == hits
 
 
 def test_a_closet_boosted_drawer_stays_first_after_the_hybrid_rank():
