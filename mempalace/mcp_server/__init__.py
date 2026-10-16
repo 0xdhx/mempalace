@@ -123,6 +123,7 @@ from ..searcher import (  # noqa: E402
     SearchError,
     _distance_to_similarity,
     _metric_for_collection,
+    build_where_filter,
     search as cli_search,
     search_memories,
 )
