@@ -26,6 +26,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `false` in `~/.mempalace/config.json`. When no interpreter can import
   mempalace, the hooks print `{}` and exit 0 as before.
 
+### Bug Fixes
+
+- **A mine stops when it cannot read which files are already filed.** The
+  already-mined check used to answer "not mined" on any palace read error, so a
+  re-mine re-filed files it could not see. It now raises `MinedSetUnavailable`
+  and the project, conversation and format miners all abort the run on it. A
+  pass that crashed between batches (fewer drawers than the largest
+  `chunk_total` any of them names) reads as unfinished on every check.
+
 ---
 
 ## [3.11.0] — 2026-10-12
