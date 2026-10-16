@@ -16,6 +16,12 @@ import sys
 from typing import Any
 
 from .config import MempalaceConfig
+from .tool_capabilities import (  # noqa: F401  (re-exported for callers and tests)
+    MAINTENANCE_TOOLS,
+    READ_TOOLS,
+    WRITE_TOOLS,
+    classify_tool,
+)
 
 _EXPLICIT_BACKEND_ENV = "MEMPALACE_BACKEND_EXPLICIT"
 _PALACE_PATH_ENV = "MEMPALACE_PALACE_PATH"
@@ -55,64 +61,6 @@ _BACKEND_ENV = "MEMPALACE_BACKEND"
 # (e.g. qdrant) cannot poison every later job in the same daemon process —
 # including mcp_tool jobs, which read MempalaceConfig (and thus the leaked env).
 _PER_JOB_ENV = (_PALACE_PATH_ENV, _BACKEND_ENV, _EXPLICIT_BACKEND_ENV)
-
-
-READ_TOOLS = frozenset(
-    {
-        "mempalace_status",
-        "mempalace_list_wings",
-        "mempalace_list_rooms",
-        "mempalace_get_taxonomy",
-        "mempalace_get_aaak_spec",
-        "mempalace_traverse",
-        "mempalace_find_tunnels",
-        "mempalace_graph_stats",
-        "mempalace_list_tunnels",
-        "mempalace_list_hallways",
-        "mempalace_follow_tunnels",
-        "mempalace_search",
-        "mempalace_check_duplicate",
-        "mempalace_get_drawer",
-        "mempalace_get_drawers",
-        "mempalace_list_drawers",
-        "mempalace_diary_read",
-        "mempalace_kg_query",
-        "mempalace_kg_stats",
-        "mempalace_kg_timeline",
-    }
-)
-
-WRITE_TOOLS = frozenset(
-    {
-        "mempalace_add_drawer",
-        "mempalace_checkpoint",
-        "mempalace_delete_by_source",
-        "mempalace_delete_drawer",
-        "mempalace_delete_drawers",
-        "mempalace_update_drawer",
-        "mempalace_diary_write",
-        "mempalace_kg_add",
-        "mempalace_kg_invalidate",
-        "mempalace_create_tunnel",
-        "mempalace_delete_tunnel",
-        "mempalace_delete_hallway",
-        "mempalace_hook_settings",
-        "mempalace_memories_filed_away",
-    }
-)
-
-MAINTENANCE_TOOLS = frozenset({"mempalace_mine", "mempalace_sync", "mempalace_reconnect"})
-
-
-def classify_tool(name: str) -> str:
-    """Return ``read``, ``write``, ``maintenance``, or ``unknown`` for an MCP tool."""
-    if name in READ_TOOLS:
-        return "read"
-    if name in WRITE_TOOLS:
-        return "write"
-    if name in MAINTENANCE_TOOLS:
-        return "maintenance"
-    return "unknown"
 
 
 def _apply_backend(backend: str | None) -> None:

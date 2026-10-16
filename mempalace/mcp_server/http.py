@@ -142,20 +142,11 @@ _HTTP_MINE_LOCK = threading.Lock()
 # and holding an MCP request open that long would time the client out with
 # no explanation.
 _HTTP_RECONNECT_MINE_WAIT_S = 10.0
-# Tools that hold the request lock exclusively for a long run but reach
-# mine_yield_point() between files, where waiting requests may run.
-_HTTP_YIELDING_TOOLS = frozenset({"mempalace_mine"})
-# Tools whose handler makes one request-local embedding call before an
-# otherwise independent backend operation. Holding ``_HTTP_REQUEST_LOCK``
-# through that inference stalls unrelated requests for the whole model call.
-# Compound read-modify-write tools stay fully serialized.
-_HTTP_EMBEDDING_RELEASE_TOOLS = frozenset(
-    {
-        "mempalace_search",
-        "mempalace_check_duplicate",
-        "mempalace_diary_write",
-    }
-)
+# Lock-free, yielding, and embedding-release tools: see the flags in
+# mempalace.tool_capabilities.
+_HTTP_LOCK_FREE_TOOLS = _tool_capabilities.HTTP_LOCK_FREE_TOOLS
+_HTTP_YIELDING_TOOLS = _tool_capabilities.HTTP_YIELDING_TOOLS
+_HTTP_EMBEDDING_RELEASE_TOOLS = _tool_capabilities.HTTP_EMBEDDING_RELEASE_TOOLS
 # Reserved before a request releases the request lock mid-embedding so
 # ``mempalace_reconnect`` cannot close backend handles during that window.
 # Reconnect acquires this before the request lock; embedding reacquires the
@@ -167,34 +158,6 @@ _HTTP_MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _HTTP_ACTIVE_CLIENT_WINDOW_S = 120.0
 
 _HTTP_PROTOCOL_METHODS = frozenset({"initialize", "ping", "tools/list"})
-
-# RFC 003 phase 5: logstream tools touch only logstream.sqlite3 (its own WAL
-# database with internal locking) — never Chroma or the KG. Dispatching them
-# outside _HTTP_REQUEST_LOCK keeps a five-minute mempalace_event_wait
-# long-poll from stalling every other agent on a shared hub, and lets the
-# SSE stream coexist with normal tool traffic.
-# Knowledge-graph tools use their own SQLite database and lock. Mesh peers
-# and the AAAK spec are process-local reads.
-_HTTP_LOCK_FREE_TOOLS = frozenset(
-    {
-        "mempalace_event_append",
-        "mempalace_task_create",
-        "mempalace_event_list",
-        "mempalace_event_wait",
-        "mempalace_event_ack",
-        "mempalace_artifact_put",
-        "mempalace_artifact_get",
-        "mempalace_patch_submit",
-        "mempalace_kg_query",
-        "mempalace_kg_add",
-        "mempalace_kg_invalidate",
-        "mempalace_kg_supersede",
-        "mempalace_kg_timeline",
-        "mempalace_kg_stats",
-        "mempalace_mesh_peers",
-        "mempalace_get_aaak_spec",
-    }
-)
 
 # SSE stream limits (GET /logstream/stream). Each connected client holds one
 # handler thread, so the cap is a thread-exhaustion guard, not a rate limit.
@@ -596,11 +559,7 @@ def _http_dispatch(request):
         return handle_request(request)
     if tool_name in _HTTP_LOCK_FREE_TOOLS:
         return handle_request(request)
-    # service.classify_tool is the authoritative read/write registry. The
-    # lock-free set above is a storage-boundary override for independent DBs.
-    from ..service import classify_tool
-
-    if classify_tool(tool_name) == "read":
+    if _tool_capabilities.classify_tool(tool_name) == "read":
         release_mode = _embedding_release_mode(tool_name, request, "read")
         if release_mode:
             with _http_embedding_release_installed(release_mode), _HTTP_REQUEST_LOCK.read_lock():
