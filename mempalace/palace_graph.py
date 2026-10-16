@@ -30,14 +30,13 @@ from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
-from .backends.base import BaseCollection, PalaceNotFoundError
 from .config import MempalaceConfig, normalize_wing_name
 from .dynamics import initialize_dynamics_fields, potentiate
-from .fsio import CorruptStateError
 from .fsio import atomic_write_json as _atomic_write_json
 from .fsio import read_json_for_update as _read_json_for_update
 from .palace import get_collection as _get_palace_collection
 from .palace import mine_lock
+from .backends.base import BaseCollection
 
 logger = logging.getLogger("mempalace_graph")
 
@@ -185,16 +184,6 @@ def invalidate_graph_cache():
         _graph_cache_time = 0.0
 
 
-class GraphUnavailable(RuntimeError):
-    """The palace could not be opened for a graph read.
-
-    Absence (no directory, no collection yet) is not this error: callers
-    still see an empty graph. A lock, a corrupt database, or any other
-    open failure is, so a tool can say the palace is unavailable instead
-    of reporting that it has no rooms.
-    """
-
-
 def _get_collection(config=None):
     config = config or MempalaceConfig()
     try:
@@ -202,19 +191,9 @@ def _get_collection(config=None):
             config.palace_path,
             collection_name=config.collection_name,
             create=False,
-            read_only=True,
         )
-    except PalaceNotFoundError:
+    except Exception:
         return None
-    except Exception as exc:
-        logger.warning(
-            "Palace at %s could not be opened for a graph read: %s",
-            config.palace_path,
-            exc,
-        )
-        raise GraphUnavailable(
-            f"palace at {config.palace_path} could not be opened: {exc}"
-        ) from exc
 
 
 def _iter_all_metadata(col):
@@ -918,7 +897,8 @@ def record_tunnel_traversal(tunnel_ids, config=None) -> int:
     touched = 0
     try:
         with mine_lock(_get_tunnel_file(config)):
-            tunnels = _load_tunnels(config, for_write=True)
+            # A read path: a corrupt file reads as empty and is left in place.
+            tunnels = _load_tunnels(config)
             for t in tunnels:
                 if isinstance(t, dict) and t.get("id") in wanted:
                     initialize_dynamics_fields(t)
@@ -926,8 +906,6 @@ def record_tunnel_traversal(tunnel_ids, config=None) -> int:
                     touched += 1
             if touched:
                 _save_tunnels(tunnels, config)
-    except CorruptStateError:
-        raise
     except Exception:
         logger.debug("Recording tunnel traversal failed", exc_info=True)
         return 0

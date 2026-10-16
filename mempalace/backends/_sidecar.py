@@ -13,7 +13,6 @@ import json
 import os
 from typing import Optional
 
-from ..fsio import CorruptStateError
 from ..fsio import atomic_write_json as _atomic_write_json
 from ..fsio import read_json_for_update as _read_json_for_update
 
@@ -77,29 +76,15 @@ def write_embedder_sidecar(path: Optional[str], collection_name: Optional[str], 
 
     try:
         with mine_lock(path):
-            data = _sidecar_for_update(path)
+            # A sidecar that does not parse is moved aside and the write refused.
+            data = dict(_read_json_for_update(path, expect=dict) or {})
             data[collection_name] = {
                 "model_name": str(identity.model_name),
                 "dimension": int(identity.dimension or 0),
             }
-            _write_atomically(path, data)
+            _atomic_write_json(path, data)
     except (OSError, NotImplementedError, TypeError, ValueError) as exc:
         raise _record_error(path, collection_name, exc) from exc
-
-
-def _sidecar_for_update(path: str) -> dict:
-    """The sidecar dict a write may merge into.
-
-    A missing file is ``{}``. A file that does not parse is not replaced
-    with that empty dict: the bytes are moved aside and the write is refused.
-    """
-    if not os.path.lexists(path):
-        return {}
-    try:
-        loaded = _read_json_for_update(path, expect=dict)
-    except CorruptStateError:
-        raise
-    return dict(loaded or {})
 
 
 def _record_error(path: str, collection_name: str, exc: BaseException):
@@ -110,13 +95,3 @@ def _record_error(path: str, collection_name: str, exc: BaseException):
         f"in {path}: {type(exc).__name__}: {exc}. Without it a later model swap "
         "would not be detected; check that the palace directory is writable and retry."
     )
-
-
-def _write_atomically(path: str, data: dict) -> None:
-    """Replace ``path`` with ``data`` as JSON, or leave it untouched.
-
-    Published through :func:`mempalace.fsio.atomic_write_json`, so a crash
-    mid-write leaves the previous sidecar intact instead of a truncated
-    file, which would read back as "no identity recorded".
-    """
-    _atomic_write_json(path, data)

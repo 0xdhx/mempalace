@@ -8,6 +8,7 @@ only the configured model name (cheap), and persistence is exercised with
 ``EmbedderIdentity`` objects and explicit vectors.
 """
 
+import errno
 import json
 import os
 import warnings
@@ -646,7 +647,11 @@ def test_a_failed_sidecar_write_leaves_the_previous_sidecar_intact(tmp_path, mon
 
         monkeypatch.setattr(_sidecar.json, "dump", dump_half)
     elif failure == "fsync":
-        monkeypatch.setattr(_sidecar.os, "fsync", boom)
+
+        def no_fsync(fd):
+            raise OSError(errno.EINVAL, "Invalid argument")
+
+        monkeypatch.setattr(_sidecar.os, "fsync", no_fsync)
     else:
         monkeypatch.setattr(_sidecar.os, "replace", boom)
 

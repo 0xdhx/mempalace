@@ -37,16 +37,15 @@ import json
 import re
 import logging
 import os
-
-from .fsio import atomic_write_json as _atomic_write_json
-from .fsio import read_json_for_update as _read_json_for_update
-from .fsio import refuse_unparsed as _refuse_unparsed
 from collections import defaultdict
 from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
 from .dynamics import initialize_dynamics_fields
+from .fsio import atomic_write_json as _atomic_write_json
+from .fsio import read_json_for_update as _read_json_for_update
+from .fsio import refuse_unparsed as _refuse_unparsed
 
 logger = logging.getLogger("mempalace_hallways")
 
@@ -117,7 +116,6 @@ def _load_hallways_for_write(config=None) -> list[dict]:
     if isinstance(loaded, list):
         return loaded
     _refuse_unparsed(path, "is not a hallway document")
-    return []
 
 
 def _load_hallways(config=None) -> list[dict]:

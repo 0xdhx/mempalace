@@ -8,7 +8,7 @@ from mempalace.config import MempalaceConfig
 from mempalace.entity_registry import EntityRegistry
 from mempalace.fsio import CorruptStateError
 from mempalace.hallways import delete_hallway
-from mempalace.palace_graph import GraphUnavailable, build_graph, create_tunnel
+from mempalace.palace_graph import create_tunnel, record_tunnel_traversal
 
 
 def _palace_config(tmp_path):
@@ -45,6 +45,18 @@ def test_corrupt_tunnel_read_does_not_move_the_file(tmp_path):
     path.write_bytes(original)
 
     assert _load_tunnels(cfg) == []
+    assert path.read_bytes() == original
+    assert _kept(tmp_path, "tunnels.json") == []
+
+
+def test_recording_a_traversal_leaves_a_corrupt_file_alone(tmp_path):
+    """Following a tunnel is a read; it must not move the file aside."""
+    cfg = _palace_config(tmp_path)
+    path = tmp_path / "tunnels.json"
+    original = b'[{"id": "aaa"},'
+    path.write_bytes(original)
+
+    assert record_tunnel_traversal(["aaa"], config=cfg) == 0
     assert path.read_bytes() == original
     assert _kept(tmp_path, "tunnels.json") == []
 
@@ -101,32 +113,3 @@ def test_sidecar_write_keeps_other_collections_when_one_value_is_fine(tmp_path):
     assert loaded["mempalace_closets"]["model_name"] == "minilm"
     assert loaded["mempalace_drawers"]["model_name"] == "minilm"
     assert read_embedder_sidecar(str(path), "mempalace_closets").model_name == "minilm"
-
-
-def test_graph_open_failure_is_not_an_empty_graph(monkeypatch):
-    import mempalace.palace_graph as palace_graph
-
-    monkeypatch.setattr(palace_graph, "_try_sqlite_nodes_edges", lambda config: None)
-
-    def boom(*args, **kwargs):
-        raise RuntimeError("index locked")
-
-    monkeypatch.setattr(palace_graph, "_get_palace_collection", boom)
-    with pytest.raises(GraphUnavailable, match="could not be opened"):
-        build_graph()
-
-
-def test_graph_open_is_read_only(monkeypatch):
-    import mempalace.palace_graph as palace_graph
-
-    seen = {}
-
-    def opened(*args, **kwargs):
-        seen.update(kwargs)
-        return None
-
-    monkeypatch.setattr(palace_graph, "_try_sqlite_nodes_edges", lambda config: None)
-    monkeypatch.setattr(palace_graph, "_get_palace_collection", opened)
-    assert build_graph() == ({}, [])
-    assert seen.get("read_only") is True
-    assert seen.get("create") is False

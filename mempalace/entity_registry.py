@@ -162,41 +162,37 @@ class EntityRegistry:
     def __init__(self, data: dict, path: Path):
         self._data = data
         self._path = path
+        # Set by ``load`` when the file on disk could not be used: ``save``
+        # then refuses rather than replacing it with this empty registry.
+        self._unparsed: Optional[str] = None
+        self._unreadable: Optional[str] = None
 
     # ── Load / Save ──────────────────────────────────────────────────────────
 
     @classmethod
     def load(cls, config_dir: Optional[Path] = None) -> "EntityRegistry":
         path = (Path(config_dir) / "entity_registry.json") if config_dir else cls.DEFAULT_PATH
-        refuses = False
-        reason = ""
-        data = cls._empty()
-        if path.exists():
-            try:
-                loaded = json.loads(path.read_text(encoding="utf-8-sig"))
-            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
-                refuses = True
-                reason = "does not parse"
-            except OSError as exc:
-                refuses = True
-                reason = f"could not be read ({exc})"
+        registry = cls(cls._empty(), path)
+        if not path.exists():
+            return registry
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8-sig"))
+        except ValueError:
+            registry._unparsed = "does not parse"
+        except OSError as exc:
+            registry._unreadable = f"could not be read ({exc})"
+        else:
+            if isinstance(loaded, dict):
+                registry._data = loaded
             else:
-                if isinstance(loaded, dict):
-                    data = loaded
-                else:
-                    refuses = True
-                    reason = "is not a JSON object"
-        registry = cls(data, path)
-        registry._refuses_save = refuses
-        registry._corrupt_reason = reason
+                registry._unparsed = "is not a JSON object"
         return registry
 
     def save(self):
-        if getattr(self, "_refuses_save", False):
-            reason = getattr(self, "_corrupt_reason", "could not be read")
-            if reason in ("does not parse", "is not a JSON object"):
-                _refuse_unparsed(self._path, reason)
-            raise CorruptStateError(self._path, reason)
+        if self._unparsed:
+            _refuse_unparsed(self._path, self._unparsed)
+        if self._unreadable:
+            raise CorruptStateError(self._path, self._unreadable)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         try:
             self._path.parent.chmod(0o700)
