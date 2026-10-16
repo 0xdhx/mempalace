@@ -160,6 +160,11 @@ _sqlite_integrity_check_error = ""
 # probe's size limit (#2240) — so the status payload can report an absence
 # rather than a clean bill of health.
 _sqlite_integrity_no_verdict_reason = ""
+# The four fields above as one value, published by each refresh once it has
+# written them, and a count of those publications. A reader that overlaps a
+# refresh answers from this tuple instead of a half-written set of globals.
+_sqlite_integrity_verdict = None
+_sqlite_integrity_generation = 0
 # Serializes quick_check runs between the async startup preflight thread and
 # lazy consumers on the protocol thread (double-checked in
 # _ensure_sqlite_integrity_status) so the O(database size) probe never runs
@@ -761,6 +766,7 @@ def _refresh_sqlite_integrity_status_locked() -> None:
         _sqlite_integrity_errors = []
         _sqlite_integrity_check_error = ""
         _sqlite_integrity_no_verdict_reason = ""
+        _publish_sqlite_integrity_verdict()
         return
 
     max_bytes = _startup_integrity_size_limit_bytes()
@@ -785,6 +791,10 @@ def _refresh_sqlite_integrity_status_locked() -> None:
                 f"({_STARTUP_INTEGRITY_MAX_MB_ENV}); no quick_check has run "
                 "against this palace. Run `mempalace repair` for a full check."
             )
+            _sqlite_integrity_checked = True
+            _sqlite_integrity_errors = []
+            _sqlite_integrity_check_error = ""
+            _publish_sqlite_integrity_verdict()
             logger.warning(
                 "SQLite startup integrity check skipped: %s is %s MB "
                 "(> %s MB limit); PRAGMA quick_check would block MCP "
@@ -795,9 +805,6 @@ def _refresh_sqlite_integrity_status_locked() -> None:
                 limit_mb,
                 _STARTUP_INTEGRITY_MAX_MB_ENV,
             )
-            _sqlite_integrity_checked = True
-            _sqlite_integrity_errors = []
-            _sqlite_integrity_check_error = ""
             return
 
     try:
@@ -812,19 +819,11 @@ def _refresh_sqlite_integrity_status_locked() -> None:
         _sqlite_integrity_no_verdict_reason = ""
     else:
         fresh_errors = [str(error) for error in status.errors if str(error)]
-        # _sqlite_integrity_payload reads these globals without the lock, so
-        # the order within each branch is chosen to keep that branch's own
-        # window on the safer side: entering "no verdict" records the reason
-        # before the list it explains, and leaving it clears the reason only
-        # once the fresh errors are in place.
-        #
-        # No write order makes the payload safe, and this one does not claim
-        # to. That reader loads the error list more than once, so a refresh
-        # landing between two of its loads can still publish `ok: true` for a
-        # palace with no database. The way to close that is to publish the
-        # verdict as one value, which is a change to what this gate stores
-        # rather than to
-        # the order it stores it in.
+        # Entering "no verdict" records the reason before the list it explains,
+        # and leaving it clears the reason only once the fresh errors are in
+        # place. The payload reads the published tuple, not these globals one
+        # by one; the order still keeps a lock-free reader of the globals on
+        # the safer side of each branch.
         if status.checked:
             _sqlite_integrity_errors = fresh_errors
             _sqlite_integrity_no_verdict_reason = ""
@@ -834,6 +833,7 @@ def _refresh_sqlite_integrity_status_locked() -> None:
         _sqlite_integrity_check_error = ""
 
     _sqlite_integrity_checked = True
+    _publish_sqlite_integrity_verdict()
 
     if _sqlite_integrity_errors:
         logger.error(
@@ -855,23 +855,46 @@ def _ensure_sqlite_integrity_status() -> None:
             _refresh_sqlite_integrity_status_locked()
 
 
+def _publish_sqlite_integrity_verdict() -> None:
+    # Callers hold _sqlite_integrity_refresh_lock and have written every field.
+    global _sqlite_integrity_verdict, _sqlite_integrity_generation
+    _sqlite_integrity_verdict = (
+        _sqlite_integrity_checked,
+        _sqlite_integrity_errors,
+        _sqlite_integrity_check_error,
+        _sqlite_integrity_no_verdict_reason,
+    )
+    _sqlite_integrity_generation += 1
+
+
+def _sqlite_integrity_view():
+    """One whole verdict: the globals, or the published tuple during a refresh.
+
+    The globals are read once each. If a refresh was writing them meanwhile,
+    it either still holds the refresh lock or has published since, and the
+    published tuple is the last verdict it wrote in full.
+    """
+    generation = _sqlite_integrity_generation
+    checked = _sqlite_integrity_checked
+    errors = _sqlite_integrity_errors
+    check_error = _sqlite_integrity_check_error
+    reason = _sqlite_integrity_no_verdict_reason
+    verdict = _sqlite_integrity_verdict
+    if verdict is not None and (
+        _sqlite_integrity_refresh_lock.locked() or generation != _sqlite_integrity_generation
+    ):
+        checked, errors, check_error, reason = _sqlite_integrity_verdict
+    if not isinstance(errors, (list, tuple)):
+        errors = ()
+    else:
+        errors = tuple(errors)
+    return checked, errors, check_error or "", reason or ""
+
+
 def _sqlite_integrity_payload() -> dict:
     _ensure_sqlite_integrity_status()
+    checked, errors, check_error, reason = _sqlite_integrity_view()
 
-    # These globals are read one at a time, without the refresh lock, as they
-    # have always been, and a refresh landing between two of those reads can
-    # make this function publish a verdict the gate never held. Both directions
-    # produce one: reading through, as here, can answer `ok: true` for a palace
-    # with no database, because the error list the branch below tests is read
-    # again when the payload is built; snapshotting into locals first can answer
-    # `ok: true` for a palace whose corruption the refresh had just found,
-    # because separate loads stay separate moments either way. A snapshot
-    # therefore trades one window for another of the same class rather than
-    # closing anything, which is why it is not taken here. Holding the refresh
-    # lock across this function would close it, at the cost of serialising every
-    # status read behind an O(database size) probe; publishing the verdict as
-    # one value closes it without that, and is the change worth making.
-    #
     # The integrity gate only knows how to check chroma.sqlite3, and
     # _refresh_sqlite_integrity_status short-circuits for non-chroma backends,
     # so on a non-chroma backend no quick_check runs. Reporting checked/ok true
@@ -879,8 +902,9 @@ def _sqlite_integrity_payload() -> dict:
     # chroma.sqlite3 the active backend does not use (#1931). Recorded errors
     # only ever come from the chroma path, so surface them regardless of the
     # backend lookup (which may itself fail); only the clean case is
-    # reclassified as not-applicable.
-    if not _sqlite_integrity_errors:
+    # reclassified as not-applicable. ``errors`` is the generation captured
+    # above: the backend lookup must not observe a later refresh.
+    if not errors:
         try:
             backend_name = _selected_backend_name()
         except Exception:
@@ -915,7 +939,7 @@ def _sqlite_integrity_payload() -> dict:
         # Asked after the backend and not before it: both reasons describe a
         # chroma path, so a server running something else has to be told that
         # rather than handed a reason about a chroma.sqlite3 it never uses.
-        if _sqlite_integrity_no_verdict_reason:
+        if reason:
             return {
                 "checked": False,
                 "ok": None,
@@ -926,12 +950,12 @@ def _sqlite_integrity_payload() -> dict:
                 else "",
                 "error_count": 0,
                 "errors": [],
-                "reason": _sqlite_integrity_no_verdict_reason,
+                "reason": reason,
             }
 
     payload = {
-        "checked": _sqlite_integrity_checked,
-        "ok": not _sqlite_integrity_errors,
+        "checked": checked,
+        "ok": not errors,
         # Which SQLite produced this verdict. An "ok" from a build that cannot
         # detect a given FTS5 fault is not the same claim as an "ok" from one
         # that can, and the two are otherwise indistinguishable here (#2240).
@@ -940,15 +964,15 @@ def _sqlite_integrity_payload() -> dict:
         "sqlite_path": os.path.join(_config.palace_path, "chroma.sqlite3")
         if _config.palace_path
         else "",
-        "error_count": len(_sqlite_integrity_errors),
-        "errors": _sqlite_integrity_errors[:10],
+        "error_count": len(errors),
+        "errors": list(errors[:10]),
     }
 
-    if len(_sqlite_integrity_errors) > 10:
-        payload["truncated"] = len(_sqlite_integrity_errors) - 10
+    if len(errors) > 10:
+        payload["truncated"] = len(errors) - 10
 
-    if _sqlite_integrity_check_error:
-        payload["check_error"] = _sqlite_integrity_check_error
+    if check_error:
+        payload["check_error"] = check_error
 
     return payload
 
@@ -958,8 +982,9 @@ def _mcp_sqlite_integrity_refusal(req_id, tool_name: str):
         return None
 
     _ensure_sqlite_integrity_status()
+    errors = _sqlite_integrity_view()[1]
 
-    if not _sqlite_integrity_errors:
+    if not errors:
         return None
 
     return {
@@ -979,8 +1004,8 @@ def _mcp_sqlite_integrity_refusal(req_id, tool_name: str):
                     if _config.palace_path
                     else ""
                 ),
-                "errors": _sqlite_integrity_errors[:10],
-                "error_count": len(_sqlite_integrity_errors),
+                "errors": list(errors[:10]),
+                "error_count": len(errors),
                 # This is the payload an operator is most likely to paste into
                 # a report, so it carries the build behind the verdict too.
                 "sqlite_version": sqlite3.sqlite_version,
