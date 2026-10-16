@@ -642,6 +642,24 @@ def tool_add_drawer(
         return outcome
 
 
+def _purge_revisions(drawer_ids=(), source_file=None):
+    """Drop the saved prior text of drawers that were just deleted.
+
+    Runs after the drawer delete commits, so a failed delete keeps them. The
+    drawers are already gone, so a failure here is logged, not raised.
+    Returns the number removed, or ``None`` when the purge failed.
+    """
+    from ..revisions import purge_drawer_revisions
+
+    try:
+        return purge_drawer_revisions(
+            _config.palace_path, drawer_ids=drawer_ids, source_file=source_file
+        )
+    except OSError:
+        logger.exception("Revision purge failed after a drawer delete")
+        return None
+
+
 def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
     """Write-ahead, delete, and closet-purge one already resolved record.
 
@@ -675,13 +693,17 @@ def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
         " [bulk]" if bulk else "",
     )
 
-    return {
+    outcome = {
         "success": True,
         "drawer_id": drawer_id,
         "deleted_ids": record["ids"],
         "chunks_deleted": len(record["ids"]),
         "closets_deleted": closets_deleted,
     }
+    # A batch purges once for every id it deleted (tool_delete_drawers).
+    if not bulk:
+        outcome["revisions_deleted"] = _purge_revisions([drawer_id, *record["ids"]])
+    return outcome
 
 
 def _delete_resolved_drawer(col, drawer_id: str, *, bulk: bool = False):
@@ -1172,6 +1194,7 @@ def tool_delete_by_source(source_file: str, dry_run: bool = True):
             "source_file": source_file,
             "deleted": match_count,
             "closets_deleted": closets_deleted,
+            "revisions_deleted": _purge_revisions(source_file=source_file),
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1566,7 +1589,8 @@ def tool_delete_drawers(drawer_ids: list):
     come back in input order. A missing id is an ``error`` slot counted in
     ``errors``; later ids are still deleted.
 
-    A list of 1 to 500 ids returns ``{"results", "count", "deleted", "errors"}``.
+    A list of 1 to 500 ids returns
+    ``{"results", "count", "deleted", "errors", "revisions_deleted"}``.
     A non-list, an empty list, or more than 500 ids returns ``{"error"}``
     and deletes nothing.
     """
@@ -1587,6 +1611,7 @@ def tool_delete_drawers(drawer_ids: list):
     results = []
     deleted = 0
     errors = 0
+    deleted_ids: list[str] = []
     for drawer_id in drawer_ids:
         try:
             if found is None:
@@ -1607,6 +1632,7 @@ def tool_delete_drawers(drawer_ids: list):
             results.append({"drawer_id": drawer_id, "error": outcome["error"]})
             continue
         deleted += 1
+        deleted_ids += [drawer_id, *outcome["deleted_ids"]]
         results.append(
             {
                 "drawer_id": drawer_id,
@@ -1621,4 +1647,5 @@ def tool_delete_drawers(drawer_ids: list):
         "count": len(results),
         "deleted": deleted,
         "errors": errors,
+        "revisions_deleted": _purge_revisions(deleted_ids) if deleted_ids else 0,
     }

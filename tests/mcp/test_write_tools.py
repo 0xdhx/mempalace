@@ -1751,4 +1751,91 @@ class TestDeleteBySource:
         assert content["match_count"] == 2
 
 
+class TestDeletePurgesRevisions:
+    """Deleting a drawer removes its saved prior text; other drawers keep theirs."""
+
+    def _revise(self, monkeypatch, config, kg, *drawer_ids):
+        from mempalace import mcp_server
+
+        _patch_mcp_server(monkeypatch, config, kg)
+        for drawer_id in drawer_ids:
+            assert mcp_server.tool_update_drawer(drawer_id, content=f"new {drawer_id}")["success"]
+
+    def _revised_ids(self, palace_path):
+        from mempalace.revisions import load_drawer_revisions
+
+        return {row["drawer_id"] for row in load_drawer_revisions(palace_path)}
+
+    def test_delete_removes_only_that_drawers_revisions(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        from mempalace import mcp_server
+
+        self._revise(monkeypatch, config, kg, "drawer_proj_backend_aaa", "drawer_proj_backend_bbb")
+
+        result = mcp_server.tool_delete_drawer("drawer_proj_backend_aaa")
+
+        assert result["success"] is True
+        assert result["revisions_deleted"] == 1
+        assert self._revised_ids(palace_path) == {"drawer_proj_backend_bbb"}
+
+    def test_bulk_delete_removes_every_deleted_drawers_revisions(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        from mempalace import mcp_server
+
+        self._revise(
+            monkeypatch,
+            config,
+            kg,
+            "drawer_proj_backend_aaa",
+            "drawer_proj_backend_bbb",
+            "drawer_proj_frontend_ccc",
+        )
+
+        result = mcp_server.tool_delete_drawers(
+            ["drawer_proj_backend_aaa", "drawer_proj_backend_bbb", "drawer_missing"]
+        )
+
+        assert result["deleted"] == 2
+        assert result["revisions_deleted"] == 2
+        assert self._revised_ids(palace_path) == {"drawer_proj_frontend_ccc"}
+
+    def test_delete_by_source_removes_that_sources_revisions(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        from mempalace import mcp_server
+
+        self._revise(monkeypatch, config, kg, "drawer_proj_backend_aaa", "drawer_proj_backend_bbb")
+
+        result = mcp_server.tool_delete_by_source("auth.py", dry_run=False)
+
+        assert result["deleted"] == 1
+        assert result["revisions_deleted"] == 1
+        assert self._revised_ids(palace_path) == {"drawer_proj_backend_bbb"}
+
+    def test_a_failed_delete_keeps_the_revisions(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        from mempalace import mcp_server
+
+        self._revise(monkeypatch, config, kg, "drawer_proj_backend_aaa")
+        real_get = mcp_server._get_collection
+
+        def _failing_collection(create=False):
+            col = real_get(create=create)
+
+            def _boom(**_kwargs):
+                raise RuntimeError("delete failed")
+
+            col.delete = _boom
+            return col
+
+        monkeypatch.setattr(mcp_server, "_get_collection", _failing_collection)
+
+        assert mcp_server.tool_delete_drawer("drawer_proj_backend_aaa")["success"] is False
+        assert mcp_server.tool_delete_by_source("auth.py", dry_run=False)["success"] is False
+        assert self._revised_ids(palace_path) == {"drawer_proj_backend_aaa"}
+
+
 # ── KG Tools ────────────────────────────────────────────────────────────

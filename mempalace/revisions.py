@@ -2,8 +2,8 @@
 
 The write-ahead log redacts content. This log lives in the palace directory,
 the same privacy domain as the drawers, and keeps the verbatim document
-``update_drawer`` is about to replace. Revisions are retained: nothing caps
-the file, and deleting a drawer does not remove its earlier revisions.
+``update_drawer`` is about to replace. Nothing caps the file. Deleting a
+drawer removes its revisions too (``purge_drawer_revisions``).
 """
 
 from __future__ import annotations
@@ -85,3 +85,59 @@ def load_drawer_revisions(palace_path: str, drawer_id: str | None = None) -> lis
             if isinstance(row, dict) and (drawer_id is None or row.get("drawer_id") == drawer_id):
                 rows.append(row)
     return rows
+
+
+def purge_drawer_revisions(
+    palace_path: str,
+    drawer_ids=(),
+    source_file: str | None = None,
+) -> int:
+    """Remove the revisions of deleted drawers and return how many went.
+
+    A revision matches when its ``drawer_id`` is in ``drawer_ids`` or its
+    recorded ``source_file`` equals ``source_file``. The file is rewritten
+    through a temp file and ``os.replace``, so a crash leaves either the old
+    or the new file. Lines a crash tore are unreadable, so they are dropped
+    too. The file is removed once nothing is left.
+    """
+    if not palace_path:
+        return 0
+    path = revisions_path(palace_path)
+    try:
+        raw = path.read_bytes()
+    except FileNotFoundError:
+        return 0
+    ids = set(drawer_ids)
+    kept: list[bytes] = []
+    removed = 0
+    for line in raw.splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        meta = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        if row.get("drawer_id") in ids or (
+            source_file is not None and meta.get("source_file") == source_file
+        ):
+            removed += 1
+        else:
+            kept.append(line)
+    if not removed:
+        return 0
+    if not kept:
+        path.unlink()
+        return removed
+    tmp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    try:
+        with os.fdopen(os.open(str(tmp), flags, 0o600), "wb") as handle:
+            handle.write(b"\n".join(kept) + b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(str(tmp), str(path))
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    return removed

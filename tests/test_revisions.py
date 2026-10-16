@@ -1,4 +1,9 @@
-from mempalace.revisions import append_drawer_revision, load_drawer_revisions, revisions_path
+from mempalace.revisions import (
+    append_drawer_revision,
+    load_drawer_revisions,
+    purge_drawer_revisions,
+    revisions_path,
+)
 
 
 def test_append_creates_a_missing_palace_dir_and_writes_lf(tmp_path):
@@ -23,3 +28,37 @@ def test_load_skips_a_torn_line(tmp_path):
         "first",
         "second",
     ]
+
+
+def test_purge_drops_matching_drawers_and_torn_lines(tmp_path):
+    palace = str(tmp_path)
+    append_drawer_revision(palace, "d1", "gone", {"source_file": "a.md"})
+    with revisions_path(palace).open("ab") as handle:
+        handle.write(b'{"revision_id": "torn", "drawer_')
+    append_drawer_revision(palace, "d2", "kept", {"source_file": "b.md"})
+    append_drawer_revision(palace, "d3", "gone by source", {"source_file": "c.md"})
+
+    assert purge_drawer_revisions(palace, ["d1"], source_file="c.md") == 2
+
+    raw = revisions_path(palace).read_bytes()
+    assert b"torn" not in raw and b"\r" not in raw
+    assert [r["content"] for r in load_drawer_revisions(palace)] == ["kept"]
+    assert list(tmp_path.iterdir()) == [revisions_path(palace)]
+
+
+def test_purge_without_a_match_leaves_the_file_alone(tmp_path):
+    palace = str(tmp_path)
+    append_drawer_revision(palace, "d1", "kept")
+    before = revisions_path(palace).read_bytes()
+
+    assert purge_drawer_revisions(palace, ["other"]) == 0
+    assert revisions_path(palace).read_bytes() == before
+    assert purge_drawer_revisions(str(tmp_path / "missing"), ["d1"]) == 0
+
+
+def test_purge_removes_the_file_when_nothing_is_left(tmp_path):
+    palace = str(tmp_path)
+    append_drawer_revision(palace, "d1", "only")
+
+    assert purge_drawer_revisions(palace, ["d1"]) == 1
+    assert not revisions_path(palace).exists()

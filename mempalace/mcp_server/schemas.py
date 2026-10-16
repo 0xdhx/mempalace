@@ -459,7 +459,7 @@ TOOLS = {
         "handler": tool_checkpoint,
     },
     "mempalace_delete_drawer": {
-        "description": "Delete a drawer by ID. Irreversible.",
+        "description": "Delete a drawer by ID. Irreversible. Its earlier revisions in drawer_revisions.jsonl are removed too.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -480,7 +480,8 @@ TOOLS = {
             "accepted call (1 to 500 IDs) always returns `results` plus "
             "`deleted`/`errors` totals, including a one-ID call. An empty "
             "list, a non-list, or more than 500 IDs is rejected with `error` "
-            "and deletes nothing."
+            "and deletes nothing. Each deleted drawer's earlier revisions are "
+            "removed too."
         ),
         "input_schema": {
             "type": "object",
@@ -567,7 +568,7 @@ TOOLS = {
         "handler": tool_mine,
     },
     "mempalace_delete_by_source": {
-        "description": "Bulk-delete every drawer mined from one source_file (exact match). Use to clean up benchmark/test data accidentally mined into a user wing (#1722). Returns a dry-run match count and sample by default; pass dry_run=false to commit. Irreversible.",
+        "description": "Bulk-delete every drawer mined from one source_file (exact match). Use to clean up benchmark/test data accidentally mined into a user wing (#1722). Returns a dry-run match count and sample by default; pass dry_run=false to commit. Irreversible; a commit also removes those drawers' earlier revisions.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -670,7 +671,7 @@ TOOLS = {
         "handler": tool_list_drawers,
     },
     "mempalace_update_drawer": {
-        "description": "Update an existing drawer's content and/or metadata (wing, room). Fetches existing drawer first; returns error if not found. The replaced text is kept verbatim in the palace's drawer_revisions.jsonl and is retained, including after the drawer is deleted.",
+        "description": "Update an existing drawer's content and/or metadata (wing, room). Fetches existing drawer first; returns error if not found. The replaced text is kept verbatim in the palace's drawer_revisions.jsonl until the drawer is deleted.",
         "input_schema": {
             "type": "object",
             "properties": {

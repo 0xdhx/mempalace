@@ -147,25 +147,25 @@ Save a whole session in one call. Semantic-dedups each item, files the non-dupli
 
 ### `mempalace_delete_drawer`
 
-Delete a drawer by ID. Irreversible.
+Delete a drawer by ID. Irreversible. The drawer's earlier revisions in `drawer_revisions.jsonl` are removed with it.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `drawer_id` | string | **Yes** | ID of the drawer to delete |
 
-**Returns:** `{ success, drawer_id }`
+**Returns:** `{ success, drawer_id, deleted_ids, chunks_deleted, closets_deleted, revisions_deleted }`. `revisions_deleted` is `null` when the drawer was deleted but its revisions could not be removed.
 
 ---
 
 ### `mempalace_delete_drawers`
 
-Delete many drawers by ID in one call. Irreversible. Each ID is removed the same way as `mempalace_delete_drawer`: a logical drawer id removes the whole group, including its chunk rows, and a physical chunk id removes that one row. A missing ID is an item in `results` and is counted in `errors`; the rest of the batch still runs. An accepted call is 1 to 500 IDs and always returns `results`, including a one-ID call. An empty list or more than 500 IDs is rejected and deletes nothing.
+Delete many drawers by ID in one call. Irreversible. Each ID is removed the same way as `mempalace_delete_drawer`: a logical drawer id removes the whole group, including its chunk rows, and a physical chunk id removes that one row. A missing ID is an item in `results` and is counted in `errors`; the rest of the batch still runs. An accepted call is 1 to 500 IDs and always returns `results`, including a one-ID call. An empty list or more than 500 IDs is rejected and deletes nothing. The earlier revisions of every deleted drawer are removed once the batch finishes.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `drawer_ids` | array of strings | **Yes** | Drawer IDs to delete (1 to 500) |
 
-**Returns:** `{ results, count, deleted, errors }` for an accepted call. Each result is `{ drawer_id, deleted_ids, chunks_deleted, closets_deleted }` or `{ drawer_id, error }`. A rejected call returns `{ error }`.
+**Returns:** `{ results, count, deleted, errors, revisions_deleted }` for an accepted call. Each result is `{ drawer_id, deleted_ids, chunks_deleted, closets_deleted }` or `{ drawer_id, error }`. A rejected call returns `{ error }`.
 
 ---
 
@@ -200,7 +200,7 @@ Mine a directory into the palace — the MCP equivalent of `mempalace mine`. `mo
 
 ### `mempalace_delete_by_source`
 
-Bulk-delete every drawer mined from one `source_file` (exact match). Use this to clean up benchmark or test data that was accidentally mined into a user wing — for example ShareGPT dumps or `results_mempal_*.jsonl` eval files drowning out real memories in semantic search. Matching is pushed down to the storage backend via a `where` filter, so it is not subject to the SQLite variable limit no matter how many drawers share the source. Returns a dry-run match count and a small sample by default; pass `dry_run=false` to commit. Irreversible.
+Bulk-delete every drawer mined from one `source_file` (exact match). Use this to clean up benchmark or test data that was accidentally mined into a user wing — for example ShareGPT dumps or `results_mempal_*.jsonl` eval files drowning out real memories in semantic search. Matching is pushed down to the storage backend via a `where` filter, so it is not subject to the SQLite variable limit no matter how many drawers share the source. Returns a dry-run match count and a small sample by default; pass `dry_run=false` to commit. Irreversible. A commit also removes the earlier revisions recorded for drawers from that source.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -208,7 +208,7 @@ Bulk-delete every drawer mined from one `source_file` (exact match). Use this to
 | `dry_run` | boolean | No | Preview the match count without deleting; default `true`. Pass `false` to actually delete |
 
 **Returns (dry run):** `{ success, dry_run, source_file, match_count, sample, hint }`
-**Returns (commit):** `{ success, dry_run, source_file, deleted }`
+**Returns (commit):** `{ success, dry_run, source_file, deleted, closets_deleted, revisions_deleted }`
 
 ---
 
@@ -275,7 +275,7 @@ List drawers with pagination. Optional wing/room filter. Returns IDs, wings, roo
 
 Update an existing drawer's content and/or metadata (wing, room). Fetches the existing drawer first; returns an error if not found.
 
-Before the overwrite, the replaced text and metadata are appended verbatim to `drawer_revisions.jsonl` in the palace directory. If that append fails, the update is refused. Revisions are retained: the file is not capped, and deleting a drawer does not remove its earlier revisions.
+Before the overwrite, the replaced text and metadata are appended verbatim to `drawer_revisions.jsonl` in the palace directory. If that append fails, the update is refused. Revisions are kept across updates and are not capped. Deleting the drawer (`mempalace_delete_drawer`, `mempalace_delete_drawers` or `mempalace_delete_by_source`) removes them.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
