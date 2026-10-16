@@ -1263,6 +1263,60 @@ def test_run_mcp_tool_refuses_a_write_when_the_server_is_read_only(monkeypatch):
     assert out["tool"] == "mempalace_add_drawer"
 
 
+def test_run_mcp_tool_keeps_the_tool_exception_detail(monkeypatch):
+    import mempalace.mcp_server as mcp
+    from mempalace import service
+
+    def handler(**_arguments):
+        raise ValueError("disk full")
+
+    monkeypatch.setattr(
+        mcp,
+        "TOOLS",
+        {"mempalace_add_drawer": {"handler": handler, "input_schema": {"properties": {}}}},
+    )
+    out = service.run_mcp_tool({"name": "mempalace_add_drawer", "arguments": {}})
+
+    assert out["success"] is False
+    assert out["jsonrpc_code"] == -32000
+    assert out["error_class"] == "ValueError"
+    assert out["error"] == "disk full"
+
+
+def test_run_mcp_tool_defers_when_a_peer_writer_holds_the_palace(monkeypatch):
+    import mempalace.mcp_server as mcp
+    from mempalace import service
+    from mempalace.daemon import LOCK_REFUSAL_ERROR_CLASS
+
+    monkeypatch.setattr(
+        mcp,
+        "TOOLS",
+        {
+            "mempalace_add_drawer": {
+                "handler": lambda **kw: {"success": True},
+                "input_schema": {"properties": {}},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        mcp,
+        "_mcp_tool_preflight_refusal",
+        lambda req_id, tool_name: {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {
+                "code": -32001,
+                "message": "Peer MCP writer active",
+                "data": {"tool": tool_name, "failure_kind": "peer_contention"},
+            },
+        },
+    )
+    out = service.run_mcp_tool({"name": "mempalace_add_drawer", "arguments": {}})
+
+    assert out["success"] is False
+    assert out["error_class"] == LOCK_REFUSAL_ERROR_CLASS
+
+
 def test_run_mcp_tool_dispatches_write_tool(monkeypatch):
     import mempalace.mcp_server as mcp
     from mempalace import service
