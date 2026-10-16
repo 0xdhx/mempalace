@@ -1108,8 +1108,11 @@ def test_pgvector_id_lookup_uses_the_primary_key():
     _Recorder().scroll_rows("tbl", ids=["b", "a"])
 
     assert "id = ANY(%s)" in captured["sql"]
-    assert "WHERE (TRUE) AND id = ANY(%s)" in captured["sql"]
     assert captured["params"] == [["b", "a"]]
+
+    captured.clear()
+    assert _Recorder().scroll_rows("tbl", ids=[]) == []
+    assert captured == {}
 
     _Recorder().scroll_rows("tbl", where={"wing": "x"}, ids=["b"])
     assert "metadata @>" in captured["sql"]

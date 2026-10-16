@@ -877,10 +877,10 @@ class _PgVectorClient:
     ) -> list[dict]:
         qi = _quote_identifier(table)
         params: list = []
+        if ids is not None and not ids:
+            return []
         where_sql = _where_to_sql(where, params) if where else "TRUE"
         if ids is not None:
-            # Primary-key lookup. An empty list matches nothing; it must not
-            # fall through to an unfiltered scan.
             where_sql = f"({where_sql}) AND id = ANY(%s)"
             params.append([str(item) for item in ids])
         # Project NULL into the document slot when the caller only needs
@@ -1170,12 +1170,10 @@ class PgVectorCollection(BaseCollection):
         # stays a local filter on that already-narrow result.
         pushdown = None if _requires_local_filter(where, where_document) else where
         rows = self._scroll(where=pushdown, ids=ids, with_embedding=with_embedding)
-        id_set = None if ids is None else set(ids)
         return [
             row
             for row in rows
-            if (id_set is None or row["id"] in id_set)
-            and _matches_where(row["metadata"], where)
+            if _matches_where(row["metadata"], where)
             and _matches_where_document(row["document"], where_document)
         ]
 
