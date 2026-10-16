@@ -20,8 +20,8 @@ from datetime import datetime
 from collections import defaultdict
 from typing import Optional
 
-from .backends import BackendError, PalaceNotFoundError
-from .collision_scan import CollisionError, assert_no_collisions
+from .backends import PalaceNotFoundError
+from .collision_scan import assert_no_collisions
 from .ids import (
     ID_RECIPE,
     make_convo_drawer_id,
@@ -34,9 +34,8 @@ from .entities import entities_metadata
 from .palace import (
     CHUNKER_VERSIONS,
     CONVO_CHUNKER_VERSION,
+    MINE_ABORTS,
     NORMALIZE_VERSION,
-    MineAlreadyRunning,
-    MinedSetUnavailable,
     SKIP_DIRS,
     _metadata_matches_extract_mode,
     _validate_palace_fts5_after_mine,
@@ -57,11 +56,6 @@ logger = logging.getLogger("mempalace_mcp")
 # Third value of _file_chunks_locked when the stale-drawer purge raised: the
 # file was not mined. Truthy, so it still reads as "nothing filed".
 PURGE_FAILED = "purge_failed"
-
-# A file that fails is recorded and the mine moves on; these mean the palace
-# or the run is unusable, so they abort the mine instead.
-_ABORTS_MINE = (BackendError, CollisionError, MineAlreadyRunning, MinedSetUnavailable)
-
 
 # Cached hall keywords — avoids re-reading config per drawer
 _HALL_KEYWORDS_CACHE = None
@@ -1343,7 +1337,7 @@ def _mine_convos_impl(
             print(f"  + [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers_added}")
             if limit > 0 and files_mined >= limit:
                 break
-        except _ABORTS_MINE:
+        except MINE_ABORTS:
             raise
         except Exception as exc:
             files_failed.append(source_file)

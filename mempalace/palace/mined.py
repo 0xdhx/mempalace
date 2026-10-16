@@ -66,6 +66,11 @@ class MinedSetUnavailable(RuntimeError):
     """
 
 
+# A file that fails is recorded and the mine moves on; these mean the palace
+# or the run is unusable, so every miner aborts on them instead.
+MINE_ABORTS = (BackendError, CollisionError, MineAlreadyRunning, MinedSetUnavailable)
+
+
 def _fast_collection_metadata(collection, keys, require_key=None, equals=None):
     """Chroma's one-pass sqlite metadata stream, or ``None`` for other backends.
 
@@ -170,66 +175,66 @@ def file_already_mined(
     (the file itself was never touched) but are short of the full set. A
     drawer with no ``chunk_total`` (legacy rows, or a single-shot
     ``add_drawer()`` call with no partial-batch risk) is trusted on its own,
-    exactly as before.
+    exactly as before. A group is complete once it holds the largest
+    ``chunk_total`` any of its drawers names, the rule
+    :func:`prefetch_mined_set` and :func:`prefetch_complete_mtimes` use too.
+
+    Raises :class:`MinedSetUnavailable` when the palace cannot be read: a
+    read error that answered False would re-file the source as unmined.
     """
-    try:
-        # Under the additive-mining model, a single ``source_file`` can have
-        # multiple ``parent_drawer_id`` groups in the palace — one per
-        # mining pass — each with its own stored ``source_mtime`` and
-        # ``normalize_version``. The function must return True if ANY stored
-        # group is current (matching version + matching mtime when checked),
-        # because ChromaDB's ``get(..., limit=1)`` has undefined ordering
-        # across multiple matching rows: a ``limit=1`` shortcut picks
-        # whichever row ChromaDB orders first and only checks that one,
-        # causing spurious re-mines whenever the stale group is returned.
-        # Iterating via the same paginated pattern used in the
-        # extract_mode-is-set branch lets the function short-circuit on the
-        # first matching group regardless of ordering.
-        current_mtime = os.path.getmtime(source_file) if check_mtime else None
-        offset = 0
-        # Tracks, per matching stored_mtime group, how many drawers have
-        # been seen so far toward that group's own chunk_total (#21).
-        group_counts: dict = {}
-        while True:
+    current_mtime = None
+    if check_mtime:
+        try:
+            current_mtime = os.path.getmtime(source_file)
+        except OSError:
+            return False
+    # A source can hold several stored groups, one per mining pass, so every
+    # matching drawer is walked: get() ordering across groups is undefined.
+    # Per stored_mtime group: [drawers seen, largest chunk_total].
+    groups: dict = {}
+    offset = 0
+    while True:
+        try:
             results = collection.get(
                 where={"source_file": source_file},
                 limit=1000,
                 offset=offset,
                 include=["metadatas"],
             )
-            ids = results.get("ids") or []
-            metadatas = results.get("metadatas") or []
-            for meta in metadatas:
-                meta = meta or {}
-                # extract_mode scoping (was the existing ``else`` branch):
-                if extract_mode is not None and not _metadata_matches_extract_mode(
-                    meta, extract_mode
-                ):
-                    continue
+        except Exception as exc:
+            raise MinedSetUnavailable(
+                f"could not read whether {source_file} is already mined; stopping "
+                f"rather than filing it again ({exc!r})"
+            ) from exc
+        ids = results.get("ids") or []
+        for meta in results.get("metadatas") or []:
+            meta = meta or {}
+            if extract_mode is not None and not _metadata_matches_extract_mode(meta, extract_mode):
+                continue
+            try:
                 if not _meta_is_current(meta, extract_mode):
                     continue
-                if not check_mtime:
-                    return True
                 stored_mtime = meta.get("source_mtime")
-                if stored_mtime is None:
-                    continue
-                if abs(float(stored_mtime) - current_mtime) >= 0.001:
+                if check_mtime and (
+                    stored_mtime is None or abs(float(stored_mtime) - current_mtime) >= 0.001
+                ):
                     continue
                 chunk_total = meta.get("chunk_total")
                 if chunk_total is None:
-                    # No completion marker on this drawer — can't verify
-                    # completeness for its group, trust the match as before.
+                    # No completion marker (legacy rows, sentinels): trusted.
                     return True
-                seen = group_counts.get(stored_mtime, 0) + 1
-                group_counts[stored_mtime] = seen
-                if seen >= chunk_total:
-                    return True
-            if not ids:
-                break
-            offset += len(ids)
-        return False
-    except Exception:
-        return False
+                if not _is_plain_number(chunk_total):
+                    return False
+                entry = groups.setdefault(stored_mtime, [0, 0])
+                entry[0] += 1
+                entry[1] = max(entry[1], chunk_total)
+            except (TypeError, ValueError):
+                # A stored value the check cannot compare proves nothing.
+                return False
+        if not ids:
+            break
+        offset += len(ids)
+    return any(seen >= largest for seen, largest in groups.values())
 
 
 # Above this many candidate files, one filtered get costs more round trips
@@ -302,7 +307,7 @@ def prefetch_mined_set(
         chunk_total = meta.get("chunk_total")
         if chunk_total is not None:
             try:
-                entry["chunk_total"] = int(chunk_total)
+                entry["chunk_total"] = max(entry["chunk_total"] or 0, int(chunk_total))
             except (TypeError, ValueError):
                 pass
 

@@ -58,6 +58,7 @@ These get reported and skipped.
 
 from __future__ import annotations
 
+import contextlib
 import enum
 import hashlib
 import logging
@@ -70,6 +71,7 @@ from pathlib import Path
 from typing import Optional, Union
 
 from .palace import (
+    MINE_ABORTS,
     NORMALIZE_VERSION,
     SKIP_DIRS,
     _validate_palace_fts5_after_mine,
@@ -919,10 +921,9 @@ def _mine_formats_impl(
                 # Cheap mtime read up-front — used as the idempotency key on
                 # subsequent re-mines (check_mtime=True compares stored vs.
                 # current mtime).
-                try:
-                    source_mtime: Optional[float] = os.path.getmtime(source_file)
-                except OSError:
-                    source_mtime = None
+                source_mtime: Optional[float] = None
+                with contextlib.suppress(OSError):
+                    source_mtime = os.path.getmtime(source_file)
 
                 # Pass extract_mode="format" so format-mode idempotency is
                 # scoped to its own drawer set — drawers from convo_miner /
@@ -998,6 +999,8 @@ def _mine_formats_impl(
                 print(f"  + [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers_added}")
                 if limit > 0 and files_mined >= limit:
                     break
+            except MINE_ABORTS:
+                raise
             except Exception as exc:
                 # Log and continue — one malformed file shouldn't kill the
                 # whole mine. Mirrors miner.py's per-file recovery.

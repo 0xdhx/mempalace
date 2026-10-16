@@ -19,6 +19,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   the same consent `init`, `rooms propose` and `kg normalize` ask for, and every
   LLM provider now refuses a non-local endpoint until that consent is given.
 
+### Bug Fixes
+
+- **A mine stops when it cannot read which files are already filed.** The
+  already-mined check used to answer "not mined" on any palace read error, so a
+  re-mine re-filed files it could not see. It now raises `MinedSetUnavailable`
+  and the project, conversation and format miners all abort the run on it. A
+  pass that crashed between batches (fewer drawers than the largest
+  `chunk_total` any of them names) reads as unfinished on every check.
+
 ---
 
 ## [3.11.0] — 2026-10-12

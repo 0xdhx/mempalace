@@ -3514,11 +3514,11 @@ def _prefetch_cases_palace(tmp_path):
             room="_registry",
             ingest_mode="registry",
         ),
-        # Two drawers naming different totals: file_already_mined's answer
-        # depends on the order Chroma returns them in.
+        # Two drawers naming different totals: the largest one decides, so
+        # 2 drawers short of 3 is a partial pass.
         *drawers("mixed_totals", 1, source_mtime=mtime["mixed_totals"], chunk_total=2),
         *drawers("mixed_totals", 1, source_mtime=mtime["mixed_totals"], chunk_total=3),
-        # A string total makes file_already_mined's comparison raise -> False.
+        # A string total cannot prove completeness -> not mined.
         *drawers("text_total", 1, source_mtime=mtime["text_total"], chunk_total="1"),
     ]
     col.add(
@@ -3541,9 +3541,8 @@ def test_prefetch_complete_mtimes_never_skips_a_file_the_per_file_check_would_mi
     per_file = {
         name for name, path in paths.items() if file_already_mined(col, path, check_mtime=True)
     }
-    assert fast <= per_file
     assert fast == {"complete", "legacy", "sentinel", "two_groups", "drift"}
-    assert per_file - {"mixed_totals"} == fast
+    assert per_file == fast
 
     # Sources outside this mine's file list are not tracked.
     assert set(prefetch_complete_mtimes(col, [paths["complete"]])) == {paths["complete"]}
@@ -3614,3 +3613,62 @@ def test_mine_skips_prefetched_files_without_a_per_file_query(tmp_path, monkeypa
     monkeypatch.setattr(palace_pkg, "_fast_collection_metadata", lambda *_a, **_k: None)
     mine(str(project_root), palace_path)
     assert sorted(asked) == ["f0.py", "f1.py", "f2.py"]
+
+
+class _UnreadableCollection:
+    def get(self, **kwargs):
+        raise RuntimeError("palace read failed")
+
+
+def test_file_already_mined_raises_when_the_palace_cannot_be_read(tmp_path):
+    from mempalace.palace import MinedSetUnavailable
+
+    src = tmp_path / "a.md"
+    write_file(src, "content")
+    for check_mtime in (False, True):
+        with pytest.raises(MinedSetUnavailable):
+            file_already_mined(_UnreadableCollection(), str(src), check_mtime=check_mtime)
+
+
+def test_file_already_mined_reads_a_partial_pass_as_unfinished_without_mtime(tmp_path):
+    from mempalace.palace import get_collection
+
+    col = get_collection(str(tmp_path / "palace"), create=True)
+    src = str(tmp_path / "a.md")
+    col.add(
+        ids=["a0", "a1"],
+        documents=["one", "two"],
+        embeddings=[[0.1, 0.2], [0.2, 0.1]],
+        metadatas=[{"source_file": src, "normalize_version": NORMALIZE_VERSION, "chunk_total": 3}]
+        * 2,
+    )
+    assert file_already_mined(col, src) is False
+
+
+def test_mine_aborts_when_the_mined_set_cannot_be_read(tmp_path, monkeypatch):
+    import mempalace.miner as miner_mod
+    from mempalace.palace import MinedSetUnavailable, get_collection
+
+    project_root = tmp_path / "proj"
+    _make_minable_project(project_root, n_files=2)
+    palace_path = str(tmp_path / "palace")
+    mine(str(project_root), palace_path)
+    col = get_collection(palace_path)
+    before = sorted(col.get(include=["metadatas"])["ids"])
+
+    # A backend without Chroma's sqlite stream asks per file, and the palace
+    # read fails underneath it.
+    monkeypatch.setattr(miner_mod, "prefetch_complete_mtimes", lambda *_a, **_k: None)
+    real_get = type(col).get
+
+    def failing_get(self, *args, **kwargs):
+        if "source_file" in (kwargs.get("where") or {}):
+            raise RuntimeError("palace read failed")
+        return real_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(col), "get", failing_get)
+    with pytest.raises(MinedSetUnavailable):
+        mine(str(project_root), palace_path)
+
+    monkeypatch.setattr(type(col), "get", real_get)
+    assert sorted(get_collection(palace_path).get(include=["metadatas"])["ids"]) == before
