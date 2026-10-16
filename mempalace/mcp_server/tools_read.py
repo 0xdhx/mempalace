@@ -965,7 +965,8 @@ def tool_follow_tunnels(wing: str, room: str, record: bool = True):
     recorded (``access_count`` / ``strength``). Internal callers that only
     decorate another result, such as the light server's search enrichment,
     pass ``record=False``: a search hit is not a crossing. A read-only
-    server or a peer without the writer lock never writes the tunnel file.
+    server never writes the tunnel file. Recording needs no writer lease:
+    it takes the tunnel file's own lock and never touches the vector store.
     """
     try:
         wing = sanitize_name(wing, "wing")
@@ -975,7 +976,4 @@ def tool_follow_tunnels(wing: str, room: str, record: bool = True):
     col = _get_collection()
     if not col:
         return _collection_error_or_no_palace()
-    # _MCP_WRITER_READ_ONLY is set only after a failed lease attempt. A peer
-    # that has never tried a mutation still has no lock, and must not write.
-    may_record = bool(record) and not _READ_ONLY and _MCP_WRITER_LOCK_CM is not None
-    return follow_tunnels(wing, room, col=col, record=may_record)
+    return follow_tunnels(wing, room, col=col, record=bool(record) and not _READ_ONLY)
