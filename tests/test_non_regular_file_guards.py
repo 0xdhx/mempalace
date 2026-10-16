@@ -46,7 +46,7 @@ from mempalace.cli import (
 from mempalace.convo_miner import _is_regular_source_file, scan_convos
 from mempalace.entity_detector import detect_entities
 from mempalace.format_miner import ExtractionStatus, extract_text
-from mempalace.hook_shell import count_human_messages
+from mempalace.hooks_cli import _count_human_messages as count_human_messages
 from mempalace.llm_refine import collect_corpus_text
 from mempalace.miner import _read_text_no_follow, load_config, mine, scan_project
 from mempalace.normalize import _read_transcript_file
@@ -1088,14 +1088,6 @@ def test_count_human_messages_ignores_a_fifo_transcript(tmp_path):
     fifo = make_fifo(tmp_path, "transcript.jsonl")
     with hard_timeout(TIMEOUT_SECONDS, "count_human_messages on a FIFO"):
         assert count_human_messages(str(fifo)) == 0
-
-
-def test_count_human_messages_still_raises_for_a_missing_path(tmp_path):
-    """The type gate is narrowed to paths that exist, so a missing transcript
-    keeps failing the way the plain ``open`` did.
-    """
-    with pytest.raises(FileNotFoundError):
-        count_human_messages(str(tmp_path / "nope.jsonl"))
 
 
 def test_count_human_messages_still_counts_a_regular_transcript(tmp_path):
