@@ -393,6 +393,7 @@ def _merge_bm25_union_candidates(
     since_dt=None,
     before_dt=None,
     stats: dict = None,
+    known_distances: dict = None,
 ) -> None:
     """Append top-K backend lexical candidates into ``hits`` in place.
 
@@ -412,9 +413,13 @@ def _merge_bm25_union_candidates(
     lexical hits and computes their vector distance; a hit past the cutoff is
     dropped and counted in ``stats["filtered_by_max_distance"]``. A hit whose
     distance cannot be computed is kept with ``distance=None`` and
-    ``fallback_reason="distance_unavailable"`` rather than lost.
+    ``fallback_reason="distance_unavailable"`` rather than lost. A hit the
+    vector path already measured reuses that distance from
+    ``known_distances``; if the vector path dropped it, it stays dropped and
+    is not counted twice.
     """
     stats = {} if stats is None else stats
+    known_distances = known_distances or {}
     where = build_where_filter(wing, room, source_file)
     try:
         lexical = drawers_col.lexical_search(
@@ -430,9 +435,10 @@ def _merge_bm25_union_candidates(
         return
 
     metric = _metric_for_collection(drawers_col)
+    unmeasured = [hit for hit in lexical.hits if hit.id not in known_distances]
     lexical_distances = (
-        _lexical_hit_vector_distances(drawers_col, query, lexical.hits, metric)
-        if _has_distance_cutoff(max_distance)
+        _lexical_hit_vector_distances(drawers_col, query, unmeasured, metric)
+        if _has_distance_cutoff(max_distance) and unmeasured
         else {}
     )
 
@@ -447,11 +453,16 @@ def _merge_bm25_union_candidates(
         ):
             continue
         full_source = meta.get("source_file", "") or ""
-        distance = lexical_distances.get(hit.id)
-        if distance is not None:
+        if hit.id in known_distances:
+            distance = known_distances[hit.id]
             if _beyond_max_distance(distance, max_distance, metric):
+                continue  # the vector path already dropped and counted it
+        else:
+            distance = lexical_distances.get(hit.id)
+            if distance is not None and _beyond_max_distance(distance, max_distance, metric):
                 stats["filtered_by_max_distance"] = stats.get("filtered_by_max_distance", 0) + 1
                 continue
+        if distance is not None:
             distance = round(distance, 4)
         entry = {
             "drawer_id": _result_drawer_id(meta, hit.id),

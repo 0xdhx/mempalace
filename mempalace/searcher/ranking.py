@@ -186,16 +186,21 @@ def _bm25_scores(
 def _vector_distance(
     query_vector: list[float], candidate_vector: list[float], metric: str
 ) -> float:
-    """Return a backend-style distance between two already-normalized vectors."""
+    """Return the distance Chroma's own query reports for ``metric``.
+
+    Chroma's ``l2`` space reports squared Euclidean distance and its ``ip``
+    space reports ``1 - dot``, so a recomputed candidate ranks and filters on
+    the same scale as a queried one.
+    """
     if not query_vector or not candidate_vector or len(query_vector) != len(candidate_vector):
         raise ValueError("embedding dimensions do not match")
 
     if metric == "l2":
-        return math.sqrt(sum((a - b) ** 2 for a, b in zip(query_vector, candidate_vector)))
+        return sum((a - b) ** 2 for a, b in zip(query_vector, candidate_vector))
 
     dot = sum(a * b for a, b in zip(query_vector, candidate_vector))
     if metric == "ip":
-        return -dot
+        return 1.0 - dot
 
     q_norm = math.sqrt(sum(a * a for a in query_vector))
     c_norm = math.sqrt(sum(b * b for b in candidate_vector))

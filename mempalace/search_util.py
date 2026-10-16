@@ -53,11 +53,12 @@ def _distance_to_similarity(distance, metric: str = "cosine") -> float:
     :func:`_hybrid_rank`.
 
     * ``cosine`` — distance ∈ [0, 2], 0 = identical: ``max(0, 1 - d)``.
-    * ``l2`` — Euclidean ∈ [0, ∞): ``1 / (1 + d)`` (1 at d=0, →0 as d→∞).
-    * ``ip`` — inner-product distance (e.g. pgvector ``<#>`` = -dot, lower =
-      closer), unbounded and signed: logistic squash ``1 / (1 + e^d)``.
-      Provisional until a real ip backend exercises it; no in-tree backend
-      uses ip today.
+    * ``l2`` — Chroma's squared Euclidean ∈ [0, ∞): ``1 / (1 + d)`` (1 at
+      d=0, →0 as d→∞).
+    * ``ip`` — Chroma's ``1 - dot`` (lower = closer), unbounded for
+      non-unit vectors: logistic squash ``1 / (1 + e^d)``. Only legacy Chroma
+      palaces created with ``hnsw:space=ip`` use it; pgvector, qdrant,
+      sqlite_exact and milvus report cosine.
 
     ``distance is None`` (vector-unknown, e.g. a BM25-only candidate) maps to
     0.0 so the candidate scores on its BM25 contribution alone.
@@ -78,15 +79,14 @@ def _cosine_scale_distance(distance: float, metric: str = "cosine") -> float:
     """Express a backend ``distance`` on the cosine scale (0 = identical, 2 = opposite).
 
     ``max_distance`` is documented on the cosine scale, so a cutoff means the
-    same thing whatever metric the collection declares. The mapping assumes
-    unit-length embeddings, which every in-tree embedder produces:
-    ``l2`` is ``sqrt(2 * cos_dist)`` and ``ip`` (``-dot``) is ``cos_dist - 1``.
+    same thing whatever metric the collection declares. Distances follow
+    Chroma's conventions: ``l2`` is squared Euclidean, ``ip`` is ``1 - dot``.
+    For unit-length embeddings, which every in-tree embedder produces,
+    squared ``l2`` is ``2 * cos_dist`` and ``ip`` already equals ``cos_dist``.
     """
     m = (metric or "cosine").lower()
     if m == "l2":
-        return distance * distance / 2.0
-    if m == "ip":
-        return 1.0 + distance
+        return distance / 2.0
     return distance
 
 

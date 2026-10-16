@@ -356,6 +356,9 @@ def search_memories(
 
     scored: list = []
     stats: dict = {}
+    # Every candidate the vector path measured, kept or dropped, so union
+    # mode neither re-admits nor re-counts a drawer this loop already gated.
+    measured: dict = {}
     drawer_docs = _first_or_empty(drawer_results, "documents")
     stored_drawer_ids = _aligned_query_ids(drawer_results, len(drawer_docs))
     for stored_drawer_id, doc, meta, dist in zip(
@@ -366,6 +369,8 @@ def search_memories(
     ):
         meta = meta or {}
         doc = doc or ""
+        if stored_drawer_id:
+            measured[stored_drawer_id] = dist
         gate = _candidate_out_of_scope(dist, meta, max_distance, since_dt, before_dt, metric)
         if gate == "distance":
             stats["filtered_by_max_distance"] = stats.get("filtered_by_max_distance", 0) + 1
@@ -446,6 +451,7 @@ def search_memories(
         since_dt=since_dt,
         before_dt=before_dt,
         stats=stats,
+        known_distances=measured,
     )
     if strategy_error:
         return strategy_error

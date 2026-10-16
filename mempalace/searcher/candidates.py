@@ -266,12 +266,14 @@ def _apply_candidate_strategy(
     since_dt=None,
     before_dt=None,
     stats: dict = None,
+    known_distances: dict = None,
 ) -> None:
     """Dispatch to the registered merger for ``strategy``.
 
     Strategy validity is assumed (``_validate_candidate_strategy`` runs
     earlier); ``"vector"`` is a no-op. ``stats`` collects what the merger
-    dropped or could not do, for the response envelope.
+    dropped or could not do, for the response envelope. ``known_distances``
+    maps stored ids the vector path already measured to their distance.
     """
     merger = _CANDIDATE_MERGERS[strategy]
     if merger is not None:
@@ -287,6 +289,7 @@ def _apply_candidate_strategy(
             since_dt=since_dt,
             before_dt=before_dt,
             stats=stats,
+            known_distances=known_distances,
         )
 
 
@@ -305,6 +308,7 @@ def _finalize_candidate_hits(
     since_dt=None,
     before_dt=None,
     stats: dict = None,
+    known_distances: dict = None,
 ) -> tuple:
     try:
         _apply_candidate_strategy(
@@ -320,6 +324,7 @@ def _finalize_candidate_hits(
             since_dt=since_dt,
             before_dt=before_dt,
             stats=stats,
+            known_distances=known_distances,
         )
     except UnsupportedCapabilityError:
         return [], _search_error_result(
