@@ -8,6 +8,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Upgrade notes
+
+- **`closet_llm` reads `MEMPALACE_LLM_ENDPOINT`, `MEMPALACE_LLM_MODEL` and
+  `MEMPALACE_LLM_KEY` instead of the generic `LLM_ENDPOINT`, `LLM_MODEL` and
+  `LLM_KEY`.** Generic names are often set for other tools, and reading them
+  could send drawer content to an endpoint nobody chose for MemPalace. Rename the
+  variables; when only the old names are set, the command says so. A non-local
+  endpoint also needs `--accept-external-llm` or `MEMPALACE_ACCEPT_EXTERNAL_LLM=1`,
+  the same consent `init`, `rooms propose` and `kg normalize` ask for, and every
+  LLM provider now refuses a non-local endpoint until that consent is given.
+- **The legacy shell hooks under `hooks/` no longer read `MEMPAL_VERBOSE`.**
+  `mempal_save_hook.sh` and `mempal_precompact_hook.sh` now hand off to
+  `mempalace hook run` like the plugin hooks, through a shared
+  `mempal_hook_run.sh` that must stay next to them. To have the Stop hook block
+  and ask the AI to save instead of saving silently, set `hooks.silent_save` to
+  `false` in `~/.mempalace/config.json`. When no interpreter can import
+  mempalace, the hooks print `{}` and exit 0 as before.
+- **`mempalace_search` no longer applies a default distance cutoff.** It used to
+  drop every hit past cosine distance 1.5, which could hide a relevant but
+  distant drawer. Pass `max_distance` to keep a cutoff; it is now read on the
+  cosine scale (0 = identical, 2 = opposite) whatever metric the palace uses,
+  and the response reports how many hits it dropped in
+  `filtered_by_max_distance`. In `candidate_strategy: "union"`, a lexical-only
+  hit whose vector distance can't be computed is kept with `distance: null` and
+  `fallback_reason: "distance_unavailable"` instead of disappearing.
+
+### Bug Fixes
+
+- **A mine stops when it cannot read which files are already filed.** The
+  already-mined check used to answer "not mined" on any palace read error, so a
+  re-mine re-filed files it could not see. It now raises `MinedSetUnavailable`
+  and the project, conversation and format miners all abort the run on it. A
+  pass that crashed between batches (fewer drawers than the largest
+  `chunk_total` any of them names) reads as unfinished on every check.
 
 ---
 

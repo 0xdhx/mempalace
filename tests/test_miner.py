@@ -21,6 +21,7 @@ from mempalace.miner import (
 )
 from mempalace.palace import (
     CONVO_CHUNKER_VERSION,
+    GENERAL_EXTRACTOR_VERSION,
     NORMALIZE_VERSION,
     file_already_mined,
     prefetch_mined_set,
@@ -926,7 +927,7 @@ def test_file_already_mined_check_mtime():
             metadatas=[
                 {
                     "source_file": test_file,
-                    "source_mtime": str(mtime),
+                    "source_mtime": mtime,
                     "normalize_version": NORMALIZE_VERSION,
                 }
             ],
@@ -1002,6 +1003,7 @@ def test_file_already_mined_scopes_convo_extract_mode():
                     "source_file": source_file,
                     "extract_mode": "general",
                     "normalize_version": NORMALIZE_VERSION,
+                    "general_extractor_version": GENERAL_EXTRACTOR_VERSION,
                 }
             ],
         )
@@ -1013,9 +1015,10 @@ def test_file_already_mined_scopes_convo_extract_mode():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def test_convo_chunker_version_only_gates_the_exchange_scope():
-    """An older chunker revision makes exchange rows stale, while project
-    rows (no extract_mode) never carry the field and stay current."""
+def test_chunker_versions_only_gate_the_convo_scopes():
+    """An older or missing chunker stamp makes exchange and general rows
+    stale, while project rows (no extract_mode) never carry one and stay
+    current."""
     tmpdir = tempfile.mkdtemp()
     try:
         palace_path = os.path.join(tmpdir, "palace")
@@ -1026,9 +1029,10 @@ def test_convo_chunker_version_only_gates_the_exchange_scope():
         )
         chat = os.path.join(tmpdir, "chat.jsonl")
         project = os.path.join(tmpdir, "notes.md")
+        general_chat = os.path.join(tmpdir, "general.jsonl")
         col.add(
-            ids=["old_exchange", "project"],
-            documents=["exchange drawer", "project drawer"],
+            ids=["old_exchange", "old_general", "project"],
+            documents=["exchange drawer", "general drawer", "project drawer"],
             metadatas=[
                 {
                     "source_file": chat,
@@ -1036,12 +1040,19 @@ def test_convo_chunker_version_only_gates_the_exchange_scope():
                     "normalize_version": NORMALIZE_VERSION,
                     "convo_chunker_version": CONVO_CHUNKER_VERSION - 1,
                 },
+                {
+                    "source_file": general_chat,
+                    "extract_mode": "general",
+                    "normalize_version": NORMALIZE_VERSION,
+                },
                 {"source_file": project, "normalize_version": NORMALIZE_VERSION},
             ],
         )
 
         assert file_already_mined(col, chat, extract_mode="exchange") is False
         assert chat not in prefetch_mined_set(col, extract_mode="exchange")
+        assert file_already_mined(col, general_chat, extract_mode="general") is False
+        assert general_chat not in prefetch_mined_set(col, extract_mode="general")
         assert file_already_mined(col, project) is True
         assert project in prefetch_mined_set(col)
     finally:
@@ -1114,6 +1125,7 @@ def test_file_already_mined_extract_mode_paginates_large_sources():
             "source_file": source_file,
             "extract_mode": "general",
             "normalize_version": NORMALIZE_VERSION,
+            "general_extractor_version": GENERAL_EXTRACTOR_VERSION,
         }
     )
 
@@ -3502,11 +3514,11 @@ def _prefetch_cases_palace(tmp_path):
             room="_registry",
             ingest_mode="registry",
         ),
-        # Two drawers naming different totals: file_already_mined's answer
-        # depends on the order Chroma returns them in.
+        # Two drawers naming different totals: the largest one decides, so
+        # 2 drawers short of 3 is a partial pass.
         *drawers("mixed_totals", 1, source_mtime=mtime["mixed_totals"], chunk_total=2),
         *drawers("mixed_totals", 1, source_mtime=mtime["mixed_totals"], chunk_total=3),
-        # A string total makes file_already_mined's comparison raise -> False.
+        # A string total cannot prove completeness -> not mined.
         *drawers("text_total", 1, source_mtime=mtime["text_total"], chunk_total="1"),
     ]
     col.add(
@@ -3529,9 +3541,8 @@ def test_prefetch_complete_mtimes_never_skips_a_file_the_per_file_check_would_mi
     per_file = {
         name for name, path in paths.items() if file_already_mined(col, path, check_mtime=True)
     }
-    assert fast <= per_file
     assert fast == {"complete", "legacy", "sentinel", "two_groups", "drift"}
-    assert per_file - {"mixed_totals"} == fast
+    assert per_file == fast
 
     # Sources outside this mine's file list are not tracked.
     assert set(prefetch_complete_mtimes(col, [paths["complete"]])) == {paths["complete"]}
@@ -3602,3 +3613,114 @@ def test_mine_skips_prefetched_files_without_a_per_file_query(tmp_path, monkeypa
     monkeypatch.setattr(palace_pkg, "_fast_collection_metadata", lambda *_a, **_k: None)
     mine(str(project_root), palace_path)
     assert sorted(asked) == ["f0.py", "f1.py", "f2.py"]
+
+
+class _UnreadableCollection:
+    def get(self, **kwargs):
+        raise RuntimeError("palace read failed")
+
+
+def test_file_already_mined_raises_when_the_palace_cannot_be_read(tmp_path):
+    from mempalace.palace import MinedSetUnavailable
+
+    src = tmp_path / "a.md"
+    write_file(src, "content")
+    for check_mtime in (False, True):
+        with pytest.raises(MinedSetUnavailable):
+            file_already_mined(_UnreadableCollection(), str(src), check_mtime=check_mtime)
+
+
+def test_file_already_mined_reads_a_partial_pass_as_unfinished_without_mtime(tmp_path):
+    from mempalace.palace import get_collection
+
+    col = get_collection(str(tmp_path / "palace"), create=True)
+    src = str(tmp_path / "a.md")
+    col.add(
+        ids=["a0", "a1"],
+        documents=["one", "two"],
+        embeddings=[[0.1, 0.2], [0.2, 0.1]],
+        metadatas=[{"source_file": src, "normalize_version": NORMALIZE_VERSION, "chunk_total": 3}]
+        * 2,
+    )
+    assert file_already_mined(col, src) is False
+
+
+def test_mine_aborts_when_the_mined_set_cannot_be_read(tmp_path, monkeypatch):
+    import mempalace.miner as miner_mod
+    from mempalace.palace import MinedSetUnavailable, get_collection
+
+    project_root = tmp_path / "proj"
+    _make_minable_project(project_root, n_files=2)
+    palace_path = str(tmp_path / "palace")
+    mine(str(project_root), palace_path)
+    col = get_collection(palace_path)
+    before = sorted(col.get(include=["metadatas"])["ids"])
+
+    # A backend without Chroma's sqlite stream asks per file, and the palace
+    # read fails underneath it.
+    monkeypatch.setattr(miner_mod, "prefetch_complete_mtimes", lambda *_a, **_k: None)
+    real_get = type(col).get
+
+    def failing_get(self, *args, **kwargs):
+        if "source_file" in (kwargs.get("where") or {}):
+            raise RuntimeError("palace read failed")
+        return real_get(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(col), "get", failing_get)
+    with pytest.raises(MinedSetUnavailable):
+        mine(str(project_root), palace_path)
+
+    monkeypatch.setattr(type(col), "get", real_get)
+    assert sorted(get_collection(palace_path).get(include=["metadatas"])["ids"]) == before
+
+
+class _RowsCollection:
+    """Pages stored metadata rows in a fixed order, as a backend would."""
+
+    def __init__(self, rows):
+        self.rows = rows
+
+    def count(self):
+        return len(self.rows)
+
+    def get(self, where=None, limit=1000, offset=0, include=None):
+        src = (where or {}).get("source_file")
+        rows = [r for r in self.rows if src is None or r["source_file"] == src]
+        page = rows[offset : offset + limit]
+        return {"ids": [str(offset + i) for i in range(len(page))], "metadatas": page}
+
+
+def _exchange_rows(src, *totals):
+    rows = []
+    for total in totals:
+        meta = {
+            "source_file": src,
+            "source_mtime": 1.0,
+            "normalize_version": NORMALIZE_VERSION,
+            "extract_mode": "exchange",
+            "convo_chunker_version": CONVO_CHUNKER_VERSION,
+        }
+        if total is not None:
+            meta["chunk_total"] = total
+        rows.append(meta)
+    return rows
+
+
+@pytest.mark.parametrize("totals", [(2, 3), (3, 2)])
+def test_prefetch_mined_set_reads_mixed_totals_the_same_in_any_order(totals):
+    # Two drawers naming totals 2 and 3 are a partial pass, whichever comes back first.
+    col = _RowsCollection(_exchange_rows("s.jsonl", *totals))
+    assert prefetch_mined_set(col, extract_mode="exchange") == {}
+
+
+def test_prefetch_mined_set_leaves_an_unprovable_source_to_the_per_file_check():
+    col = _RowsCollection(_exchange_rows("s.jsonl", "1"))
+    assert prefetch_mined_set(col, extract_mode="exchange") == {}
+    assert file_already_mined(col, "s.jsonl", extract_mode="exchange") is False
+
+
+@pytest.mark.parametrize("totals", [(None, "x"), ("x", None)])
+def test_file_already_mined_answers_the_same_in_any_row_order(totals):
+    # An untracked row next to one whose total cannot be compared proves nothing.
+    col = _RowsCollection(_exchange_rows("s.jsonl", *totals))
+    assert file_already_mined(col, "s.jsonl", extract_mode="exchange") is False

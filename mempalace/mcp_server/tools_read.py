@@ -579,6 +579,11 @@ def tool_get_taxonomy():
     return result
 
 
+# The cosine distance ``min_similarity >= 1.0`` maps to: float error on an
+# identical vector stays below it.
+_EXACT_MATCH_DISTANCE = 1e-5
+
+
 def tool_search(
     query: str,
     limit: int = 5,
@@ -690,10 +695,13 @@ def tool_search(
         return result
 
     # Backwards compat: convert old similarity scale (higher=stricter) to
-    # distance scale (lower=stricter). Similarity 0.8 → distance 0.2.
-    dist = (1.0 - min_similarity) if min_similarity is not None else max_distance
-    if dist is None:
-        dist = 1.5
+    # distance scale (lower=stricter). Similarity 0.8 → distance 0.2, and
+    # 1.0 or more means exact matches only, not "no cutoff".
+    # No cutoff unless the caller asks for one.
+    if min_similarity is not None:
+        dist = max(1.0 - min_similarity, _EXACT_MATCH_DISTANCE)
+    else:
+        dist = max_distance
 
     # Ensure the vector-disabled probe has been run via the safe
     # sqlite/pickle path before we touch chromadb. Calling _get_client()
@@ -965,7 +973,8 @@ def tool_follow_tunnels(wing: str, room: str, record: bool = True):
     recorded (``access_count`` / ``strength``). Internal callers that only
     decorate another result, such as the light server's search enrichment,
     pass ``record=False``: a search hit is not a crossing. A read-only
-    server or a peer without the writer lock never writes the tunnel file.
+    server never writes the tunnel file. Recording needs no writer lease:
+    it takes the tunnel file's own lock and never touches the vector store.
     """
     try:
         wing = sanitize_name(wing, "wing")
@@ -975,6 +984,4 @@ def tool_follow_tunnels(wing: str, room: str, record: bool = True):
     col = _get_collection()
     if not col:
         return _collection_error_or_no_palace()
-    return follow_tunnels(
-        wing, room, col=col, record=record and not (_READ_ONLY or _MCP_WRITER_READ_ONLY)
-    )
+    return follow_tunnels(wing, room, col=col, record=bool(record) and not _READ_ONLY)

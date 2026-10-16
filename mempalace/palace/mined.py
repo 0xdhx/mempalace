@@ -29,15 +29,34 @@ def _metadata_matches_extract_mode(meta: dict, extract_mode: Optional[str]) -> b
 def _meta_is_current(meta: dict, extract_mode: Optional[str]) -> bool:
     """True when a drawer was filed by the current pipeline for its scope.
 
-    Pre-v2 drawers have no ``normalize_version`` and count as stale. In the
-    exchange scope a missing ``convo_chunker_version`` is stale too, so a
-    chunker fix re-mines conversation files without touching project files.
+    Pre-v2 drawers have no ``normalize_version`` and count as stale. In a
+    convo scope with a ``CHUNKER_VERSIONS`` entry a missing or older stamp
+    is stale too, so a chunker fix re-mines conversation files without
+    touching project files.
     """
     if meta.get("normalize_version", 1) < NORMALIZE_VERSION:
         return False
-    if extract_mode == "exchange":
-        return meta.get("convo_chunker_version", 1) >= CONVO_CHUNKER_VERSION
+    if extract_mode in CHUNKER_VERSIONS:
+        key, current = CHUNKER_VERSIONS[extract_mode]
+        return meta.get(key, 1) >= current
     return True
+
+
+def _is_plain_number(value) -> bool:
+    # NaN compares unequal to itself and would never prove a match.
+    return isinstance(value, (int, float)) and value == value
+
+
+def _is_comparable(meta: dict, extract_mode: Optional[str] = None) -> bool:
+    """True when every value the mined-set checks compare is a plain number.
+
+    A source with any other value is "unprovable": every check answers "not
+    mined" for it, whatever order its rows come back in.
+    """
+    keys = ["normalize_version", "source_mtime", "chunk_total"]
+    if extract_mode in CHUNKER_VERSIONS:
+        keys.append(CHUNKER_VERSIONS[extract_mode][0])
+    return all(meta.get(key) is None or _is_plain_number(meta[key]) for key in keys)
 
 
 # Every metadata key the mined-set checks below read.
@@ -49,6 +68,7 @@ _MINED_SCAN_KEYS = (
     "ingest_mode",
     "normalize_version",
     "convo_chunker_version",
+    "general_extractor_version",
     "content_hash",
     "wing",
 )
@@ -61,6 +81,11 @@ class MinedSetUnavailable(RuntimeError):
     "not mined yet" and "no duplicate", which cannot be told apart from a
     complete answer, so a mine would re-file sources or write duplicates blind.
     """
+
+
+# A file that fails is recorded and the mine moves on; these mean the palace
+# or the run is unusable, so every miner aborts on them instead.
+MINE_ABORTS = (BackendError, CollisionError, MineAlreadyRunning, MinedSetUnavailable)
 
 
 def _fast_collection_metadata(collection, keys, require_key=None, equals=None):
@@ -139,8 +164,8 @@ def file_already_mined(
       - no drawers exist for this source_file
       - the stored `normalize_version` is missing or older than the current
         schema (triggers silent rebuild after a normalization upgrade), or,
-        for extract_mode="exchange", the stored `convo_chunker_version` is
-        missing or older than CONVO_CHUNKER_VERSION
+        for a convo extract_mode in CHUNKER_VERSIONS, its chunker stamp is
+        missing or older than the current revision
       - `check_mtime=True` and the file's mtime differs from the stored one
 
     When check_mtime=True (used by the project miner, and by the convo
@@ -167,66 +192,66 @@ def file_already_mined(
     (the file itself was never touched) but are short of the full set. A
     drawer with no ``chunk_total`` (legacy rows, or a single-shot
     ``add_drawer()`` call with no partial-batch risk) is trusted on its own,
-    exactly as before.
+    exactly as before. A group is complete once it holds the largest
+    ``chunk_total`` any of its drawers names, the rule
+    :func:`prefetch_mined_set` and :func:`prefetch_complete_mtimes` use too.
+
+    Raises :class:`MinedSetUnavailable` when the palace cannot be read: a
+    read error that answered False would re-file the source as unmined.
     """
-    try:
-        # Under the additive-mining model, a single ``source_file`` can have
-        # multiple ``parent_drawer_id`` groups in the palace — one per
-        # mining pass — each with its own stored ``source_mtime`` and
-        # ``normalize_version``. The function must return True if ANY stored
-        # group is current (matching version + matching mtime when checked),
-        # because ChromaDB's ``get(..., limit=1)`` has undefined ordering
-        # across multiple matching rows: a ``limit=1`` shortcut picks
-        # whichever row ChromaDB orders first and only checks that one,
-        # causing spurious re-mines whenever the stale group is returned.
-        # Iterating via the same paginated pattern used in the
-        # extract_mode-is-set branch lets the function short-circuit on the
-        # first matching group regardless of ordering.
-        current_mtime = os.path.getmtime(source_file) if check_mtime else None
-        offset = 0
-        # Tracks, per matching stored_mtime group, how many drawers have
-        # been seen so far toward that group's own chunk_total (#21).
-        group_counts: dict = {}
-        while True:
+    current_mtime = None
+    if check_mtime:
+        try:
+            current_mtime = os.path.getmtime(source_file)
+        except OSError:
+            return False
+    # A source can hold several stored groups, one per mining pass, so every
+    # matching drawer is walked and the answer is decided after the walk:
+    # get() ordering is undefined. Per stored_mtime group: [drawers seen,
+    # largest chunk_total, whether some drawer has no chunk_total].
+    groups: dict = {}
+    unprovable = False
+    offset = 0
+    while True:
+        try:
             results = collection.get(
                 where={"source_file": source_file},
                 limit=1000,
                 offset=offset,
                 include=["metadatas"],
             )
-            ids = results.get("ids") or []
-            metadatas = results.get("metadatas") or []
-            for meta in metadatas:
-                meta = meta or {}
-                # extract_mode scoping (was the existing ``else`` branch):
-                if extract_mode is not None and not _metadata_matches_extract_mode(
-                    meta, extract_mode
-                ):
-                    continue
-                if not _meta_is_current(meta, extract_mode):
-                    continue
-                if not check_mtime:
-                    return True
-                stored_mtime = meta.get("source_mtime")
-                if stored_mtime is None:
-                    continue
-                if abs(float(stored_mtime) - current_mtime) >= 0.001:
-                    continue
-                chunk_total = meta.get("chunk_total")
-                if chunk_total is None:
-                    # No completion marker on this drawer — can't verify
-                    # completeness for its group, trust the match as before.
-                    return True
-                seen = group_counts.get(stored_mtime, 0) + 1
-                group_counts[stored_mtime] = seen
-                if seen >= chunk_total:
-                    return True
-            if not ids:
-                break
-            offset += len(ids)
+        except Exception as exc:
+            raise MinedSetUnavailable(
+                f"could not read whether {source_file} is already mined; stopping "
+                f"rather than filing it again ({exc!r})"
+            ) from exc
+        ids = results.get("ids") or []
+        for meta in results.get("metadatas") or []:
+            meta = meta or {}
+            if extract_mode is not None and not _metadata_matches_extract_mode(meta, extract_mode):
+                continue
+            if not _is_comparable(meta, extract_mode):
+                unprovable = True
+                continue
+            if not _meta_is_current(meta, extract_mode):
+                continue
+            stored_mtime = meta.get("source_mtime")
+            if check_mtime and (stored_mtime is None or abs(stored_mtime - current_mtime) >= 0.001):
+                continue
+            chunk_total = meta.get("chunk_total")
+            entry = groups.setdefault(stored_mtime, [0, 0, False])
+            entry[0] += 1
+            if chunk_total is None:
+                # No completion marker (legacy rows, sentinels): trusted.
+                entry[2] = True
+            else:
+                entry[1] = max(entry[1], chunk_total)
+        if not ids:
+            break
+        offset += len(ids)
+    if unprovable:
         return False
-    except Exception:
-        return False
+    return any(untracked or seen >= largest for seen, largest, untracked in groups.values())
 
 
 # Above this many candidate files, one filtered get costs more round trips
@@ -279,9 +304,15 @@ def prefetch_mined_set(
     omitted, the behaviour is unchanged: a bulk sweep still benefits more
     from one full scan than from many filtered queries.
     """
-    # Per source_file: per stored_mtime group → count + optional chunk_total.
-    # A source is only "mined" once some group is complete.
+    # Per source_file: per stored_mtime group -> [count, largest chunk_total,
+    # whether some drawer has no chunk_total]. A source is only "mined" once
+    # some group is complete, and never while any of its rows is unprovable.
     groups: dict[str, dict] = {}
+    unprovable: set = set()
+
+    def _reset():
+        groups.clear()
+        unprovable.clear()
 
     def _absorb(meta):
         meta = meta or {}
@@ -290,21 +321,23 @@ def prefetch_mined_set(
             return
         if not _metadata_matches_extract_mode(meta, extract_mode):
             return
+        if not _is_comparable(meta, extract_mode):
+            unprovable.add(src)
+            return
         if not _meta_is_current(meta, extract_mode):
             return
         stored_mtime = meta.get("source_mtime")
         mtime_key = float(stored_mtime) if stored_mtime is not None else None
-        entry = groups.setdefault(src, {}).setdefault(mtime_key, {"count": 0, "chunk_total": None})
-        entry["count"] += 1
+        entry = groups.setdefault(src, {}).setdefault(mtime_key, [0, 0, False])
+        entry[0] += 1
         chunk_total = meta.get("chunk_total")
-        if chunk_total is not None:
-            try:
-                entry["chunk_total"] = int(chunk_total)
-            except (TypeError, ValueError):
-                pass
+        if chunk_total is None:
+            entry[2] = True
+        else:
+            entry[1] = max(entry[1], chunk_total)
 
     def _scan_all():
-        _scan_collection_metadata(collection, _MINED_SCAN_KEYS, _absorb, groups.clear)
+        _scan_collection_metadata(collection, _MINED_SCAN_KEYS, _absorb, _reset)
 
     if source_files is not None and len(source_files) <= _PREFETCH_SCOPE_THRESHOLD:
         if source_files:
@@ -325,20 +358,18 @@ def prefetch_mined_set(
                     offset += len(ids)
             except Exception:
                 logger.warning("prefetch_mined_set: scoped fetch failed; scanning")
-                groups.clear()
+                _reset()
                 _scan_all()
     else:
         _scan_all()
 
     mined: dict[str, Optional[float]] = {}
     for src, by_mtime in groups.items():
-        for mtime_key, entry in by_mtime.items():
-            chunk_total = entry["chunk_total"]
-            if chunk_total is None:
-                # Legacy / registry: no completion marker — trust membership.
-                mined[src] = mtime_key
-                break
-            if entry["count"] >= chunk_total:
+        if src in unprovable:
+            continue
+        for mtime_key, (count, largest, untracked) in by_mtime.items():
+            # Legacy / registry rows carry no completion marker: trusted.
+            if untracked or count >= largest:
                 mined[src] = mtime_key
                 break
     return mined
@@ -346,11 +377,6 @@ def prefetch_mined_set(
 
 # The keys file_already_mined() reads when called without an extract_mode.
 _PROJECT_MINED_KEYS = ("source_file", "source_mtime", "chunk_total", "normalize_version")
-
-
-def _is_plain_number(value) -> bool:
-    # NaN compares unequal to itself and would never prove a match.
-    return isinstance(value, (int, float)) and value == value
 
 
 def prefetch_complete_mtimes(collection, source_files) -> Optional[dict[str, tuple]]:
@@ -390,17 +416,13 @@ def prefetch_complete_mtimes(collection, source_files) -> Optional[dict[str, tup
             src = meta.get("source_file")
             if src not in wanted or src in unprovable:
                 continue
-            version = meta.get("normalize_version", 1)
-            stored_mtime = meta.get("source_mtime")
-            chunk_total = meta.get("chunk_total")
-            if not (
-                _is_plain_number(version)
-                and (stored_mtime is None or _is_plain_number(stored_mtime))
-                and (chunk_total is None or _is_plain_number(chunk_total))
-            ):
+            if not _is_comparable(meta):
                 unprovable.add(src)
                 groups.pop(src, None)
                 continue
+            version = meta.get("normalize_version", 1)
+            stored_mtime = meta.get("source_mtime")
+            chunk_total = meta.get("chunk_total")
             if version < NORMALIZE_VERSION or stored_mtime is None:
                 # file_already_mined() skips this drawer without counting it.
                 continue

@@ -43,6 +43,13 @@ from ..palace import (
     get_collection,
     resolve_backend_name,
 )
+from ..search_util import (
+    _cosine_scale_distance,
+    _distance_to_similarity,
+    _first_or_empty,
+    _metric_for_collection,
+    build_where_filter,
+)
 from ..stored_text import decode_record
 
 # Closet pointer line format: "topic|entities|→drawer_id_a,drawer_id_b"
