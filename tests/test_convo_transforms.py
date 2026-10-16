@@ -10,9 +10,11 @@ from mempalace.normalize import (
     _format_tool_use,
     _split_conversations,
     _try_chatgpt_json,
+    _try_claude_ai_json_split,
     _try_claude_code_jsonl,
     _try_codex_jsonl,
     _try_continue_json,
+    _try_gemini_json,
     _try_gemini_jsonl,
     _try_pi_jsonl,
     _try_slack_json,
@@ -165,6 +167,49 @@ def test_a_tool_result_with_no_turn_before_it_is_recorded_as_omitted():
     with recording_transforms() as run:
         assert _try_claude_code_jsonl(session)
     assert run.applied == {"tool_result_omitted"}
+
+
+def test_gemini_json_records_dropped_parts_roles_and_joined_parts():
+    session = {
+        "contents": [
+            {"role": "system", "parts": [{"text": "be brief"}]},
+            {"role": "user", "parts": [{"text": "what is"}, {"text": "this"}, {"inlineData": {}}]},
+            {"role": "model", "parts": [{"text": "A chart."}, {"functionCall": {"name": "f"}}]},
+        ]
+    }
+    with recording_transforms() as run:
+        assert _try_gemini_json(session)
+    assert run.applied == {"conversations.content_block_drop", "line_join_spaces"}
+
+    clean = {
+        "contents": [
+            {"role": "user", "parts": [{"text": "hello"}]},
+            {"role": "model", "parts": [{"text": "hi"}]},
+        ]
+    }
+    with recording_transforms() as run:
+        assert _try_gemini_json(clean)
+    assert run.applied == set()
+
+
+def test_claude_ai_and_slack_record_what_they_leave_out():
+    claude_ai = [
+        {"role": "system", "content": "be brief"},
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi"},
+    ]
+    with recording_transforms() as run:
+        assert _try_claude_ai_json_split(claude_ai)
+    assert run.applied == {"conversations.content_block_drop"}
+
+    slack = [
+        {"type": "message", "user": "U1", "text": "see the file"},
+        {"type": "message", "user": "U2", "text": "", "files": [{"name": "a.png"}]},
+        {"type": "message", "user": "U2", "text": "got it"},
+    ]
+    with recording_transforms() as run:
+        assert _try_slack_json(slack)
+    assert "conversations.content_block_drop" in run.applied
 
 
 def test_codex_tool_output_and_reasoning_are_recorded():

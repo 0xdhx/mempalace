@@ -371,6 +371,8 @@ def _try_claude_code_jsonl(content: str) -> Optional[str]:
         if not isinstance(entry, dict):
             continue
         msg_type = entry.get("type", "")
+        # system, summary and other entries carry session bookkeeping and UI
+        # chrome rather than conversation, so skipping them is not recorded.
         message = entry.get("message", {})
         if not isinstance(message, dict):
             continue
@@ -649,6 +651,7 @@ def _try_gemini_json(data) -> Optional[str]:
         # Extract text — try "parts" first (Gemini API), then "content" (flat).
         text = ""
         parts = item.get("parts")
+        joined_parts = 0
         if isinstance(parts, list):
             text_parts = []
             for p in parts:
@@ -656,6 +659,10 @@ def _try_gemini_json(data) -> Optional[str]:
                     text_parts.append(p)
                 elif isinstance(p, dict) and "text" in p:
                     text_parts.append(p["text"])
+                elif p:
+                    # inlineData, functionCall, functionResponse and the like.
+                    _record("conversations.content_block_drop")
+            joined_parts = len([t for t in text_parts if t])
             text = " ".join(text_parts).strip()
         else:
             text = _extract_content(item.get("content", ""))
@@ -663,6 +670,8 @@ def _try_gemini_json(data) -> Optional[str]:
         if not text:
             continue
 
+        if role in ("user", "model", "assistant") and joined_parts > 1:
+            _record("line_join_spaces")
         if role == "user":
             messages.append(("user", text))
         elif role == "model":
@@ -672,6 +681,9 @@ def _try_gemini_json(data) -> Optional[str]:
             # Defensive: some hand-crafted exports use "assistant" even
             # for Gemini sessions. Accept but don't flip has_model_role.
             messages.append(("assistant", text))
+        else:
+            # System and other roles are not filed.
+            _record("conversations.content_block_drop")
 
     # Disambiguator: must have seen at least one role="model" entry.
     # This prevents the Gemini parser from claiming Claude/ChatGPT data.
@@ -741,10 +753,15 @@ def _collect_claude_messages(items) -> list:
             continue
         role = item.get("role") or item.get("sender", "")
         text = _extract_content(item.get("content", "")) or (item.get("text") or "").strip()
-        if role in ("user", "human") and text:
+        if not text:
+            continue
+        if role in ("user", "human"):
             messages.append(("user", text))
-        elif role in ("assistant", "ai") and text:
+        elif role in ("assistant", "ai"):
             messages.append(("assistant", text))
+        else:
+            # System and other roles are not filed.
+            _record("conversations.content_block_drop")
     return messages
 
 
@@ -764,7 +781,7 @@ def _try_chatgpt_json(data) -> Optional[str]:
     # first-child walk from the root.
     messages = _attempt(
         _chatgpt_conversation, _chatgpt_active_path(mapping, data.get("current_node"))
-    ) or _chatgpt_conversation(_chatgpt_root_path(mapping))
+    ) or _attempt(_chatgpt_conversation, _chatgpt_root_path(mapping))
     if messages:
         return _messages_to_transcript(messages)
     return None
@@ -910,6 +927,9 @@ def _try_slack_json(data) -> Optional[str]:
         # Sanitize speaker ID: strip brackets, newlines, and control chars
         # to prevent chunk-boundary injection via crafted exports
         user_id = re.sub(r"[\[\]\n\r\x00-\x1f]", "_", raw_user_id).strip() or "unknown"
+        if item.get("files") or item.get("attachments"):
+            # Uploaded files and link attachments are not filed.
+            _record("conversations.content_block_drop")
         text = item.get("text")
         text = text.strip() if isinstance(text, str) else ""
         if not text:
