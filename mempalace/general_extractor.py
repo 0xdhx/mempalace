@@ -392,19 +392,16 @@ def _slice_on_whitespace(content: str, chunk_size: int) -> List[str]:
 
 def extract_memories(
     text: str,
-    min_confidence: float = 0.3,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
 ) -> List[Dict]:
     """
     Extract memories from a text string.
 
-    Paragraphs that match no marker are stored as ``memory_type="general"``
-    with their text unchanged. ``min_confidence`` is accepted for callers
-    and does not discard text.
+    Every non-blank paragraph is kept. One that matches no marker is
+    stored as ``memory_type="general"``.
 
     Args:
         text: The text to extract from (any format).
-        min_confidence: Retained for callers. Not used to drop paragraphs.
         chunk_size: Per-memory character cap. Segments exceeding this
             size are sliced on whitespace into multiple memories that share
             the same ``memory_type``. Caller (typically ``mine_convos``)
@@ -542,10 +539,8 @@ if __name__ == "__main__":
 
     type_counts = Counter(m["memory_type"] for m in memories)
     print(f"Extracted {len(memories)} memories:")
-    for mtype in ["decision", "preference", "milestone", "problem", "emotional"]:
-        count = type_counts.get(mtype, 0)
-        if count:
-            print(f"  {mtype:12} {count}")
+    for mtype, count in type_counts.most_common():
+        print(f"  {mtype:12} {count}")
 
     print()
     for m in memories[:10]:

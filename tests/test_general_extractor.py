@@ -360,7 +360,7 @@ def test_markdown_bold_does_not_override_decision_classification():
         "The rollout details are documented under **Migration notes**."
     )
 
-    memories = extract_memories(text, min_confidence=0.1)
+    memories = extract_memories(text)
 
     assert len(memories) == 1
     assert memories[0]["memory_type"] == "decision"

@@ -32,6 +32,7 @@ from .normalize import UnparsedCodexTranscriptError, normalize_conversations
 from .source_identity import identity_metadata, source_directory_identity
 from .entities import entities_metadata
 from .palace import (
+    CHUNKER_VERSIONS,
     CONVO_CHUNKER_VERSION,
     NORMALIZE_VERSION,
     SKIP_DIRS,
@@ -269,8 +270,9 @@ def _register_file(
         "normalize_version": NORMALIZE_VERSION,
         "id_recipe": ID_RECIPE,
     }
-    if extract_mode == "exchange":
-        meta["convo_chunker_version"] = CONVO_CHUNKER_VERSION
+    if extract_mode in CHUNKER_VERSIONS:
+        key, version = CHUNKER_VERSIONS[extract_mode]
+        meta[key] = version
     if source_mtime is not None:
         meta["source_mtime"] = source_mtime
     if content_hash is not None:
@@ -789,8 +791,9 @@ def _file_chunks_locked(
                         "id_recipe": ID_RECIPE,
                         "chunk_total": chunk_total,
                     }
-                    if extract_mode == "exchange":
-                        meta["convo_chunker_version"] = CONVO_CHUNKER_VERSION
+                    if extract_mode in CHUNKER_VERSIONS:
+                        key, version = CHUNKER_VERSIONS[extract_mode]
+                        meta[key] = version
                     if source_mtime is not None:
                         meta["source_mtime"] = source_mtime
                     if source_dir_ino:
