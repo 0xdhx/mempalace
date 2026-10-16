@@ -28,7 +28,11 @@ from .ids import (
     make_convo_sentinel_id,
     make_exchange_drawer_id,
 )
-from .normalize import UnparsedCodexTranscriptError, normalize_conversations_with_mtime
+from .normalize import (
+    UnparsedCodexTranscriptError,
+    normalize_conversations_with_mtime,
+    spellchecking_user_turns,
+)
 from .source_identity import identity_metadata, source_directory_identity
 from .entities import entities_metadata
 from .palace import (
@@ -695,6 +699,7 @@ def _file_chunks_locked(
     content_hash=None,
     source_dir_ino=None,
     source_mtime: Optional[float] = None,
+    spellchecked: bool = False,
 ):
     """Lock the source file, purge stale drawers, and upsert fresh chunks.
 
@@ -802,6 +807,10 @@ def _file_chunks_locked(
                         meta[key] = version
                     if source_mtime is not None:
                         meta["source_mtime"] = source_mtime
+                    if spellchecked:
+                        # Every drawer of a file whose text the speller
+                        # changed: RFC 002 ``spellcheck_user``.
+                        meta["transforms"] = "spellcheck_user"
                     if source_dir_ino:
                         # Which directory this transcript was read from, so
                         # ``sync`` can tell a neighbour in the same directory
@@ -877,8 +886,13 @@ def _split_new_and_duplicate_conversations(
     wing: str,
     source_file: str,
     mined_content_hashes: dict,
+    verbatim: Optional[list] = None,
 ) -> tuple:
     """Hash each conversation and split them into (new, duplicate) lists.
+
+    ``verbatim`` is the same conversations as written when spell correction
+    rewrote them; the hash is taken from it, so turning the opt-in on does
+    not file a conversation a second time.
 
     A conversation is a duplicate when its hash is already registered under
     a *different* source_file in the same wing — mining the same transcript
@@ -886,10 +900,13 @@ def _split_new_and_duplicate_conversations(
     is scoped to (wing, hash). Returns ([(hash, text), ...] new, [(hash,
     dup_source_file), ...] duplicates).
     """
+    hashed = [c for c in verbatim or () if c]
+    if len(hashed) != len(conversations):
+        hashed = conversations
     new_items = []
     duplicates = []
-    for conversation in conversations:
-        content_hash = hashlib.sha256(conversation.strip().encode("utf-8")).hexdigest()
+    for conversation, text in zip(conversations, hashed):
+        content_hash = hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
         dup_source = mined_content_hashes.get((wing, content_hash))
         if dup_source is None or dup_source == source_file:
             new_items.append((content_hash, conversation))
@@ -1121,6 +1138,7 @@ def _mine_convos_impl(
     writes_at_start = palace_write_serial()
     palace_config = MempalaceConfig(palace_path=palace_path)
     cfg_chunk_size = palace_config.chunk_size
+    spellcheck = palace_config.convo_spellcheck
     # Only override convo_miner's MIN_CHUNK_SIZE when the user has set
     # min_chunk_size explicitly. min_chunk_size_explicit returns the
     # validated value or None — None keeps convo's lower 30-char floor
@@ -1210,15 +1228,16 @@ def _mine_convos_impl(
                 files_skipped += 1
                 continue
 
-            normalized = _normalize_convo_conversations(
-                filepath,
-                source_file,
-                collection,
-                wing,
-                agent,
-                extract_mode,
-                dry_run,
-            )
+            with spellchecking_user_turns(spellcheck) as spellcheck_run:
+                normalized = _normalize_convo_conversations(
+                    filepath,
+                    source_file,
+                    collection,
+                    wing,
+                    agent,
+                    extract_mode,
+                    dry_run,
+                )
             if normalized is None:
                 continue
             conversations, source_mtime = normalized
@@ -1231,7 +1250,11 @@ def _mine_convos_impl(
             # filed under a different source_file in this wing are dropped;
             # the rest are re-joined and mined as usual.
             new_items, duplicates = _split_new_and_duplicate_conversations(
-                conversations, wing, source_file, mined_content_hashes
+                conversations,
+                wing,
+                source_file,
+                mined_content_hashes,
+                verbatim=spellcheck_run.verbatim,
             )
             if not new_items:
                 if not dry_run:
@@ -1320,6 +1343,7 @@ def _mine_convos_impl(
                 content_hash=content_hash,
                 source_dir_ino=source_directory_identity(filepath),
                 source_mtime=source_mtime,
+                spellchecked=spellcheck_run.changed,
             )
             if skipped == PURGE_FAILED:
                 files_failed.append(source_file)

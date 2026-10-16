@@ -25,6 +25,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and ask the AI to save instead of saving silently, set `hooks.silent_save` to
   `false` in `~/.mempalace/config.json`. When no interpreter can import
   mempalace, the hooks print `{}` and exit 0 as before.
+- **Conversation mining no longer spell-corrects your messages by default.**
+  When the optional `autocorrect` package was installed, chat imports rewrote
+  user turns before filing them. Turns are now stored as written. To keep the
+  old behaviour, set `"convo": {"spellcheck": true}` in `config.json` or
+  `MEMPALACE_CONVO_SPELLCHECK=1`; it corrects user messages only, and every
+  drawer from a file whose text the speller changed carries
+  `transforms: "spellcheck_user"` in its metadata. Drawers filed before this
+  release keep their corrected text until the source file is mined again.
 - **`mempalace_search` no longer applies a default distance cutoff.** It used to
   drop every hit past cosine distance 1.5, which could hide a relevant but
   distant drawer. Pass `max_distance` to keep a cutoff; it is now read on the
@@ -42,6 +50,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and the project, conversation and format miners all abort the run on it. A
   pass that crashed between batches (fewer drawers than the largest
   `chunk_total` any of them names) reads as unfinished on every check.
+- ChatGPT imports file the branch the conversation ended on (`current_node`),
+  not the first draft of every regenerated or edited turn.
+- A Slack message with `"user": null` is filed under `unknown` instead of
+  failing the whole export.
 - **A closet match keeps lifting its drawer in the final search order.** The
   hybrid re-rank scored every hit from its raw vector distance, so the rank
   boost a matching closet gave a drawer was dropped and a closet-backed drawer
