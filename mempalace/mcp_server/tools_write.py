@@ -854,8 +854,7 @@ def tool_mine(
     A mine that ran but could not file some files returns ``success: False``
     with ``error_class: "MineFileErrors"``, ``files_failed``, up to 20
     ``failed_files`` and the same ``output``.
-    Project and conversation mines take the palace write lock. Format mines
-    (``extract`` mode) do not. A concurrent project or conversation mine
+    The palace write lock is held by the miners themselves, so a concurrent mine
     surfaces as a structured already-running error. Orphan cleanup is not part of
     mining — use ``mempalace_sync`` for that.
     """
@@ -1505,17 +1504,12 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
             },
         )
 
-        # A closet quotes the source file, not the stored drawer, so it only
-        # goes stale on a content change; wing/room alone leaves it correct (#2325).
-        # Purge only after the drawer write commits. A failed upsert must leave
-        # the closets in place.
-        source_file = old_meta.get("source_file")
-
-        def _purge_closets_after_write() -> int:
-            if content is not None and source_file:
-                return _purge_source_closets(source_file, commit=True)
-            return 0
-
+        outcome = {
+            "success": True,
+            "drawer_id": drawer_id,
+            "wing": new_meta.get("wing", ""),
+            "room": new_meta.get("room", ""),
+        }
         if should_chunk:
             chunk_ids, chunk_docs, chunk_metas = _build_chunk_rows(
                 drawer_id,
@@ -1531,43 +1525,28 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
             if stale_ids:
                 col.delete(ids=stale_ids)
 
-            closets_deleted = _purge_closets_after_write()
-            _invalidate_overview_caches()
-
+            outcome["chunks"] = len(chunk_ids)
+            outcome["chunk_ids"] = chunk_ids
             logger.info("Updated drawer: %s (%s rows)", drawer_id, len(chunk_ids))
+        else:
+            update_kwargs = {"ids": [record["ids"][0]]}
+            if content is not None:
+                update_kwargs["documents"] = [new_doc]
+            update_kwargs["metadatas"] = [new_meta]
 
-            outcome = {
-                "success": True,
-                "drawer_id": drawer_id,
-                "wing": new_meta.get("wing", ""),
-                "room": new_meta.get("room", ""),
-                "chunks": len(chunk_ids),
-                "chunk_ids": chunk_ids,
-                "closets_deleted": closets_deleted,
-            }
-            if revision_id:
-                outcome["revision_id"] = revision_id
-            _wal_result("update_drawer", outcome)
-            return outcome
+            col.update(**update_kwargs)
+            logger.info("Updated drawer: %s", drawer_id)
 
-        update_kwargs = {"ids": [record["ids"][0]]}
-        if content is not None:
-            update_kwargs["documents"] = [new_doc]
-        update_kwargs["metadatas"] = [new_meta]
-
-        col.update(**update_kwargs)
-        closets_deleted = _purge_closets_after_write()
+        # A closet quotes the source file, not the stored drawer, so it only
+        # goes stale on a content change; wing/room alone leaves it correct (#2325).
+        # Purged only after the drawer write commits, so a failed write keeps them.
+        source_file = old_meta.get("source_file")
+        outcome["closets_deleted"] = (
+            _purge_source_closets(source_file, commit=True)
+            if content is not None and source_file
+            else 0
+        )
         _invalidate_overview_caches()
-
-        logger.info("Updated drawer: %s", drawer_id)
-
-        outcome = {
-            "success": True,
-            "drawer_id": drawer_id,
-            "wing": new_meta.get("wing", ""),
-            "room": new_meta.get("room", ""),
-            "closets_deleted": closets_deleted,
-        }
         if revision_id:
             outcome["revision_id"] = revision_id
         _wal_result("update_drawer", outcome)

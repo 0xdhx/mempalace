@@ -670,7 +670,7 @@ TOOLS = {
         "handler": tool_list_drawers,
     },
     "mempalace_update_drawer": {
-        "description": "Update an existing drawer's content and/or metadata (wing, room). Fetches existing drawer first; returns error if not found.",
+        "description": "Update an existing drawer's content and/or metadata (wing, room). Fetches existing drawer first; returns error if not found. The replaced text is kept verbatim in the palace's drawer_revisions.jsonl and is retained, including after the drawer is deleted.",
         "input_schema": {
             "type": "object",
             "properties": {

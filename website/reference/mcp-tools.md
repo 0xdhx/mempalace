@@ -275,6 +275,8 @@ List drawers with pagination. Optional wing/room filter. Returns IDs, wings, roo
 
 Update an existing drawer's content and/or metadata (wing, room). Fetches the existing drawer first; returns an error if not found.
 
+Before the overwrite, the replaced text and metadata are appended verbatim to `drawer_revisions.jsonl` in the palace directory. If that append fails, the update is refused. Revisions are retained: the file is not capped, and deleting a drawer does not remove its earlier revisions.
+
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `drawer_id` | string | **Yes** | ID of the drawer to update |
@@ -282,7 +284,7 @@ Update an existing drawer's content and/or metadata (wing, room). Fetches the ex
 | `wing` | string | No | New wing (omit to keep existing) |
 | `room` | string | No | New room (omit to keep existing) |
 
-**Returns:** `{ success, drawer_id, updated_fields }`
+**Returns:** `{ success, drawer_id, wing, room, closets_deleted, revision_id? }` (plus `chunks` and `chunk_ids` for a chunked drawer)
 
 ---
 
