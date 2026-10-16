@@ -40,8 +40,8 @@ _SLACK_PROVENANCE_FOOTER = (
     "\n[source: slack-export | multi-party chat — speaker roles are positional, not verified]"
 )
 
-# Lines spell correction changed while ``spellchecking_user_turns`` is on;
-# None (the default) keeps user turns as written.
+# The ``SpellcheckRun`` of an open ``spellchecking_user_turns`` block; None
+# (the default) keeps user turns as written.
 _USER_TURN_SPELLCHECK = ContextVar("_USER_TURN_SPELLCHECK", default=None)
 
 
@@ -229,21 +229,31 @@ def normalize_conversations(filepath: str) -> list:
 def normalize_conversations_with_mtime(filepath: str) -> Tuple[list, float]:
     """``normalize_conversations`` plus the mtime of the bytes it read."""
     content, mtime = _read_transcript_file_with_mtime(filepath)
+    run = _USER_TURN_SPELLCHECK.get()
+    if run is not None:
+        token = _USER_TURN_SPELLCHECK.set(None)
+        try:
+            run.verbatim = _split_conversations(content, filepath)
+        finally:
+            _USER_TURN_SPELLCHECK.reset(token)
+    return _split_conversations(content, filepath), mtime
 
+
+def _split_conversations(content: str, filepath: str) -> list:
     if not content.strip():
-        return [], mtime
+        return []
 
     lines = content.split("\n")
     if sum(1 for line in lines if line.strip().startswith(">")) >= 3:
-        return [content], mtime
+        return [content]
 
     ext = Path(filepath).suffix.lower()
     if ext in (".json", ".jsonl") or content.strip()[:1] in ("{", "["):
         split = _try_normalize_json_split(content)
         if split:
-            return split, mtime
+            return split
 
-    return [content], mtime
+    return [content]
 
 
 def _try_normalize_json(content: str) -> Optional[str]:
@@ -1048,30 +1058,28 @@ def _format_tool_result(content, tool_name: str) -> str:
     return "→ " + text
 
 
+class SpellcheckRun:
+    """What ``spellchecking_user_turns`` did: whether the speller changed any
+    user message, and the conversations as written (``verbatim``), parsed
+    from the same bytes so callers can hash the uncorrected text."""
+
+    def __init__(self):
+        self.changed = False
+        self.verbatim: Optional[list] = None
+
+
 @contextmanager
 def spellchecking_user_turns(enabled: bool):
     """Spell-correct user messages parsed inside this block when ``enabled``.
 
-    Yields the list of corrected lines it changed, so the caller can stamp
-    the drawers that hold them. Turns are kept as written otherwise.
+    Yields a ``SpellcheckRun``. Turns are kept as written otherwise.
     """
-    changed: list = []
-    token = _USER_TURN_SPELLCHECK.set(changed if enabled else None)
+    run = SpellcheckRun()
+    token = _USER_TURN_SPELLCHECK.set(run if enabled else None)
     try:
-        yield changed
+        yield run
     finally:
         _USER_TURN_SPELLCHECK.reset(token)
-
-
-def _spellcheck_user_turn(text: str, changed: list) -> str:
-    from mempalace.spellcheck import spellcheck_user_text
-
-    corrected = spellcheck_user_text(text)
-    if corrected != text:
-        # The speller rewrites words in place and keeps every newline.
-        old_lines = text.split("\n")
-        changed.extend(line for old, line in zip(old_lines, corrected.split("\n")) if line != old)
-    return corrected
 
 
 def _messages_to_transcript(messages: list) -> str:
@@ -1080,14 +1088,18 @@ def _messages_to_transcript(messages: list) -> str:
     Turns are kept as written unless the caller opted in to spell correction
     with ``spellchecking_user_turns``, which only touches user messages.
     """
-    changed = _USER_TURN_SPELLCHECK.get()
+    run = _USER_TURN_SPELLCHECK.get()
     lines = []
     i = 0
     while i < len(messages):
         role, text = messages[i]
         if role == "user":
-            if changed is not None:
-                text = _spellcheck_user_turn(text, changed)
+            if run is not None:
+                from mempalace.spellcheck import spellcheck_user_text
+
+                corrected = spellcheck_user_text(text)
+                run.changed = run.changed or corrected != text
+                text = corrected
             lines.append(f"> {text}")
             if i + 1 < len(messages) and messages[i + 1][0] == "assistant":
                 lines.append(messages[i + 1][1])
