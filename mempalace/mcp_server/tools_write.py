@@ -646,18 +646,24 @@ def _purge_revisions(drawer_ids=(), source_file=None):
     """Drop the saved prior text of drawers that were just deleted.
 
     Runs after the drawer delete commits, so a failed delete keeps them. The
-    drawers are already gone, so a failure here is logged, not raised.
-    Returns the number removed, or ``None`` when the purge failed.
+    drawers are already gone, so a failure here is logged and reported in the
+    result, not raised. Returns the fields to merge into the delete result.
     """
     from ..revisions import purge_drawer_revisions
 
+    if not drawer_ids and source_file is None:
+        return {"revisions_deleted": 0}
     try:
-        return purge_drawer_revisions(
+        removed = purge_drawer_revisions(
             _config.palace_path, drawer_ids=drawer_ids, source_file=source_file
         )
-    except OSError:
+    except Exception as exc:
         logger.exception("Revision purge failed after a drawer delete")
-        return None
+        return {
+            "revisions_deleted": None,
+            "revisions_error": f"revision purge failed: {type(exc).__name__}",
+        }
+    return {"revisions_deleted": removed}
 
 
 def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
@@ -702,7 +708,7 @@ def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
     }
     # A batch purges once for every id it deleted (tool_delete_drawers).
     if not bulk:
-        outcome["revisions_deleted"] = _purge_revisions([drawer_id, *record["ids"]])
+        outcome.update(_purge_revisions([drawer_id, *record["ids"]]))
     return outcome
 
 
@@ -1194,7 +1200,7 @@ def tool_delete_by_source(source_file: str, dry_run: bool = True):
             "source_file": source_file,
             "deleted": match_count,
             "closets_deleted": closets_deleted,
-            "revisions_deleted": _purge_revisions(source_file=source_file),
+            **_purge_revisions(source_file=source_file),
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1590,7 +1596,8 @@ def tool_delete_drawers(drawer_ids: list):
     ``errors``; later ids are still deleted.
 
     A list of 1 to 500 ids returns
-    ``{"results", "count", "deleted", "errors", "revisions_deleted"}``.
+    ``{"results", "count", "deleted", "errors", "revisions_deleted"}`` (plus
+    ``revisions_error`` when the revision purge failed).
     A non-list, an empty list, or more than 500 ids returns ``{"error"}``
     and deletes nothing.
     """
@@ -1647,5 +1654,5 @@ def tool_delete_drawers(drawer_ids: list):
         "count": len(results),
         "deleted": deleted,
         "errors": errors,
-        "revisions_deleted": _purge_revisions(deleted_ids) if deleted_ids else 0,
+        **_purge_revisions(deleted_ids),
     }

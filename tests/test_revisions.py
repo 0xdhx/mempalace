@@ -1,3 +1,6 @@
+import threading
+from pathlib import Path
+
 from mempalace.revisions import (
     append_drawer_revision,
     load_drawer_revisions,
@@ -54,6 +57,33 @@ def test_purge_without_a_match_leaves_the_file_alone(tmp_path):
     assert purge_drawer_revisions(palace, ["other"]) == 0
     assert revisions_path(palace).read_bytes() == before
     assert purge_drawer_revisions(str(tmp_path / "missing"), ["d1"]) == 0
+
+
+def test_an_append_during_a_purge_survives(tmp_path, monkeypatch):
+    """An update that appends while a purge is rewriting must not be lost."""
+    palace = str(tmp_path)
+    append_drawer_revision(palace, "gone", "old")
+    append_drawer_revision(palace, "kept", "kept")
+    path = revisions_path(palace)
+    real_read = Path.read_bytes
+    racer = {}
+
+    def read_then_race(self):
+        data = real_read(self)
+        if self == path and "thread" not in racer:
+            racer["thread"] = threading.Thread(
+                target=append_drawer_revision, args=(palace, "late", "appended mid-purge")
+            )
+            racer["thread"].start()
+            racer["thread"].join(timeout=0.5)  # the purge holds the lock, so it waits
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", read_then_race)
+
+    assert purge_drawer_revisions(palace, ["gone"]) == 1
+    racer["thread"].join(timeout=15)
+    assert not racer["thread"].is_alive()
+    assert [r["drawer_id"] for r in load_drawer_revisions(palace)] == ["kept", "late"]
 
 
 def test_purge_removes_the_file_when_nothing_is_left(tmp_path):

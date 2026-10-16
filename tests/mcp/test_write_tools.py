@@ -1837,5 +1837,24 @@ class TestDeletePurgesRevisions:
         assert mcp_server.tool_delete_by_source("auth.py", dry_run=False)["success"] is False
         assert self._revised_ids(palace_path) == {"drawer_proj_backend_aaa"}
 
+    def test_a_failed_purge_keeps_the_delete_and_says_so(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        from mempalace import mcp_server, revisions
+
+        self._revise(monkeypatch, config, kg, "drawer_proj_backend_aaa")
+
+        def _locked(*_args, **_kwargs):
+            raise PermissionError("revisions file is held open")
+
+        monkeypatch.setattr(revisions, "purge_drawer_revisions", _locked)
+
+        result = mcp_server.tool_delete_drawer("drawer_proj_backend_aaa")
+
+        assert result["success"] is True
+        assert result["revisions_deleted"] is None
+        assert result["revisions_error"] == "revision purge failed: PermissionError"
+        assert self._revised_ids(palace_path) == {"drawer_proj_backend_aaa"}
+
 
 # ── KG Tools ────────────────────────────────────────────────────────────

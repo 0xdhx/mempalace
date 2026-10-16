@@ -153,7 +153,7 @@ Delete a drawer by ID. Irreversible. The drawer's earlier revisions in `drawer_r
 |-----------|------|----------|-------------|
 | `drawer_id` | string | **Yes** | ID of the drawer to delete |
 
-**Returns:** `{ success, drawer_id, deleted_ids, chunks_deleted, closets_deleted, revisions_deleted }`. `revisions_deleted` is `null` when the drawer was deleted but its revisions could not be removed.
+**Returns:** `{ success, drawer_id, deleted_ids, chunks_deleted, closets_deleted, revisions_deleted, revisions_error? }`. When the drawer was deleted but its revisions could not be removed, `revisions_deleted` is `null` and `revisions_error` says so.
 
 ---
 
@@ -165,7 +165,7 @@ Delete many drawers by ID in one call. Irreversible. Each ID is removed the same
 |-----------|------|----------|-------------|
 | `drawer_ids` | array of strings | **Yes** | Drawer IDs to delete (1 to 500) |
 
-**Returns:** `{ results, count, deleted, errors, revisions_deleted }` for an accepted call. Each result is `{ drawer_id, deleted_ids, chunks_deleted, closets_deleted }` or `{ drawer_id, error }`. A rejected call returns `{ error }`.
+**Returns:** `{ results, count, deleted, errors, revisions_deleted, revisions_error? }` for an accepted call. Each result is `{ drawer_id, deleted_ids, chunks_deleted, closets_deleted }` or `{ drawer_id, error }`. A rejected call returns `{ error }`.
 
 ---
 
@@ -208,7 +208,7 @@ Bulk-delete every drawer mined from one `source_file` (exact match). Use this to
 | `dry_run` | boolean | No | Preview the match count without deleting; default `true`. Pass `false` to actually delete |
 
 **Returns (dry run):** `{ success, dry_run, source_file, match_count, sample, hint }`
-**Returns (commit):** `{ success, dry_run, source_file, deleted, closets_deleted, revisions_deleted }`
+**Returns (commit):** `{ success, dry_run, source_file, deleted, closets_deleted, revisions_deleted, revisions_error? }`
 
 ---
 

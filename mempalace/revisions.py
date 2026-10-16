@@ -46,16 +46,28 @@ def append_drawer_revision(
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
     line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
-    if _ends_mid_line(path):
-        line = "\n" + line  # a crash tore the last append; start a fresh line
-    flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
-    fd = os.open(str(path), flags, 0o600)
-    try:
-        os.write(fd, line.encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    with _revisions_lock(path):
+        if _ends_mid_line(path):
+            line = "\n" + line  # a crash tore the last append; start a fresh line
+        flags = os.O_WRONLY | os.O_APPEND | os.O_CREAT | getattr(os, "O_BINARY", 0)
+        fd = os.open(str(path), flags, 0o600)
+        try:
+            os.write(fd, line.encode("utf-8"))
+            os.fsync(fd)
+        finally:
+            os.close(fd)
     return revision_id
+
+
+def _revisions_lock(path: Path):
+    """The cross-process lock every append and purge of ``path`` holds.
+
+    A purge rewrites the whole file, so an append landing between its read and
+    its ``os.replace`` would be lost without it.
+    """
+    from .palace import mine_lock
+
+    return mine_lock(os.path.abspath(str(path)))
 
 
 def _ends_mid_line(path: Path) -> bool:
@@ -103,11 +115,17 @@ def purge_drawer_revisions(
     if not palace_path:
         return 0
     path = revisions_path(palace_path)
+    if not path.exists():
+        return 0
+    with _revisions_lock(path):
+        return _purge_locked(path, set(drawer_ids), source_file)
+
+
+def _purge_locked(path: Path, ids: set, source_file: str | None) -> int:
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
         return 0
-    ids = set(drawer_ids)
     kept: list[bytes] = []
     removed = 0
     for line in raw.splitlines():
