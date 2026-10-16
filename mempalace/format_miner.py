@@ -603,13 +603,15 @@ def _register_file(
     }
     if source_mtime is not None:
         meta["source_mtime"] = source_mtime
-    write_file_drawers(
-        collection,
-        source_file,
-        [(sentinel_id, "[empty]", meta)],
-        extract_mode="format",
-        prune=empty,
-    )
+    # Replacing the file's drawers takes the same lock a real re-mine does.
+    with mine_lock(source_file) if empty else contextlib.nullcontext():
+        write_file_drawers(
+            collection,
+            source_file,
+            [(sentinel_id, "[empty]", meta)],
+            extract_mode="format",
+            prune=empty,
+        )
 
 
 def _file_chunks_locked(

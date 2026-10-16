@@ -44,6 +44,23 @@ def _source_file_delete_ids(collection, source_file: str, extract_mode: Optional
     return ids
 
 
+def _clear_dropped_keys(collection, batch: list) -> list:
+    """Send a key a re-filed drawer no longer has as ``None``, which removes it.
+
+    Chroma keeps the metadata keys an upsert omits, so without this a drawer
+    re-mined over its old id would keep, say, entities its new text dropped.
+    Backends that replace the metadata need nothing.
+    """
+    if getattr(collection, "upsert_merges_metadata", False) is not True:
+        return batch
+    existing = collection.get(ids=[drawer_id for drawer_id, _, _ in batch], include=["metadatas"])
+    old = dict(zip(existing.get("ids") or [], existing.get("metadatas") or []))
+    return [
+        (drawer_id, doc, {**dict.fromkeys(set(old.get(drawer_id) or {}) - set(meta)), **meta})
+        for drawer_id, doc, meta in batch
+    ]
+
+
 def write_file_drawers(
     collection,
     source_file: str,
@@ -70,25 +87,25 @@ def write_file_drawers(
     a skip marker that must not take the last good text with it.
 
     Returns the number of drawers written. Raises
-    :class:`StaleDrawerPurgeFailed` when the stale drawers could not be removed.
+    :class:`StaleDrawerPurgeFailed` when the stale drawers could not be
+    removed; an error in :data:`MINE_ABORTS` (a dead backend) propagates as is.
     """
     if prune:
         total = len(drawers)
         drawers = [(i, doc, {**meta, "chunk_total": total + 1}) for i, doc, meta in drawers]
-    written = 0
+    written = []
     for start in range(0, len(drawers), DRAWER_UPSERT_BATCH_SIZE):
         batch = drawers[start : start + DRAWER_UPSERT_BATCH_SIZE]
-        ids = [drawer_id for drawer_id, _, _ in batch]
-        metas = [meta for _, _, meta in batch]
-        assert_no_collisions(list(zip(ids, metas)), collection)
-        try:
-            collection.upsert(ids=ids, documents=[doc for _, doc, _ in batch], metadatas=metas)
-            written += len(batch)
-        except Exception as exc:
-            if "already exists" not in str(exc).lower():
-                raise
+        assert_no_collisions([(drawer_id, meta) for drawer_id, _, meta in batch], collection)
+        batch = _clear_dropped_keys(collection, batch)
+        collection.upsert(
+            ids=[drawer_id for drawer_id, _, _ in batch],
+            documents=[doc for _, doc, _ in batch],
+            metadatas=[meta for _, _, meta in batch],
+        )
+        written += batch
     if not prune:
-        return written
+        return len(written)
 
     fresh = {drawer_id for drawer_id, _, _ in drawers}
     try:
@@ -99,15 +116,17 @@ def write_file_drawers(
         ]
         if stale:
             collection.delete(ids=stale)
+    except MINE_ABORTS:
+        raise
     except Exception as exc:
         raise StaleDrawerPurgeFailed(
             f"stale-drawer purge failed for {source_file!r} ({exc!r}); the new drawers "
             "stay marked unfinished and the next mine retries"
         ) from exc
-    for start in range(0, len(drawers), DRAWER_UPSERT_BATCH_SIZE):
-        batch = drawers[start : start + DRAWER_UPSERT_BATCH_SIZE]
+    for start in range(0, len(written), DRAWER_UPSERT_BATCH_SIZE):
+        batch = written[start : start + DRAWER_UPSERT_BATCH_SIZE]
         collection.update(
             ids=[drawer_id for drawer_id, _, _ in batch],
             metadatas=[{**meta, "chunk_total": total} for _, _, meta in batch],
         )
-    return written
+    return len(written)

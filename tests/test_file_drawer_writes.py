@@ -283,3 +283,112 @@ def test_convo_failed_stale_delete_keeps_text_and_converges(tmp_path, monkeypatc
     rows = convo.rows()
     assert len(rows) == 1
     assert "question 0" in rows[0][0]
+
+
+def test_project_remine_drops_metadata_the_new_text_no_longer_earns(tmp_path):
+    """Chroma merges upserted metadata; a re-mine must not keep stale keys."""
+    project = _Project(tmp_path)
+    project.write(("We changed MemoryStack in rag/foo.py via do_thing_now(). " * 3 + "\n") * 4)
+    project.mine()
+    assert any(meta.get("entities") for _, meta in project.rows())
+
+    project.write(_paragraphs("plain lowercase words only", 1))
+    _touch(project.doc)
+    project.mine()
+
+    rows = project.rows()
+    assert len(rows) == 1
+    assert "entities" not in rows[0][1], rows[0][1]
+
+
+# -- write_file_drawers on each backend ---------------------------------------
+
+
+def _backend_collection(name, tmp_path):
+    """The collection a miner holds: the backend's, behind the embedding wrapper."""
+    from mempalace.backends import PalaceRef, get_backend
+    from mempalace.backends.embedding_wrapper import EmbeddingCollection
+
+    return EmbeddingCollection(
+        get_backend(name).get_collection(
+            palace=PalaceRef(id=str(tmp_path), local_path=str(tmp_path)),
+            collection_name="mempalace_drawers",
+            create=True,
+        )
+    )
+
+
+def _drawer(meta_extra=None):
+    meta = {"source_file": "/src/notes.md", "chunk_index": 0, "wing": "w", "room": "r"}
+    meta.update(meta_extra or {})
+    return ("drawer_0", "verbatim text", meta)
+
+
+@pytest.mark.parametrize("backend", ["chroma", "sqlite_exact"])
+def test_refiling_a_drawer_removes_keys_its_new_metadata_omits(tmp_path, backend):
+    from mempalace.palace import write_file_drawers
+
+    col = _backend_collection(backend, tmp_path)
+    extra = {"entities": "Alice;Bob", "transforms": "spellcheck_user", "line_start": 3}
+    write_file_drawers(col, "/src/notes.md", [_drawer(extra)])
+    write_file_drawers(col, "/src/notes.md", [_drawer()])
+
+    meta = col.get(ids=["drawer_0"], include=["metadatas"])["metadatas"][0]
+    assert not set(extra) & set(meta), meta
+    assert meta["chunk_total"] == 1
+
+
+def test_a_failed_upsert_is_never_treated_as_written(tmp_path):
+    from mempalace.palace import write_file_drawers
+
+    col = _backend_collection("chroma", tmp_path)
+    write_file_drawers(col, "/src/notes.md", [_drawer()])
+
+    def fail(*args, **kwargs):
+        raise ValueError("ID already exists")
+
+    col.upsert = fail
+    stale = ("drawer_1", "new text", {**_drawer()[2], "chunk_index": 1})
+    with pytest.raises(ValueError, match="already exists"):
+        write_file_drawers(col, "/src/notes.md", [stale])
+    assert col.get(ids=["drawer_0"], include=["metadatas"])["ids"] == ["drawer_0"]
+
+
+def test_a_dead_backend_during_the_prune_aborts_instead_of_failing_one_file(tmp_path, monkeypatch):
+    from mempalace import palace
+    from mempalace.backends import BackendError
+
+    col = _backend_collection("chroma", tmp_path)
+
+    def dead(*args, **kwargs):
+        raise BackendError("backend closed")
+
+    monkeypatch.setattr(palace, "_source_file_delete_ids", dead)
+    with pytest.raises(BackendError):
+        palace.write_file_drawers(col, "/src/notes.md", [_drawer()])
+
+
+def test_format_emptied_file_sentinel_replaces_drawers_under_the_file_lock(tmp_path, monkeypatch):
+    import contextlib
+
+    from mempalace import format_miner
+
+    locked = []
+
+    @contextlib.contextmanager
+    def record_lock(source_file):
+        locked.append(source_file)
+        yield
+
+    calls = []
+    monkeypatch.setattr(format_miner, "mine_lock", record_lock)
+    monkeypatch.setattr(
+        format_miner,
+        "write_file_drawers",
+        lambda *args, **kwargs: calls.append((list(locked), kwargs["prune"])),
+    )
+
+    format_miner._register_file(None, "/src/a.docx", "w", "agent", empty=True)
+    format_miner._register_file(None, "/src/b.docx", "w", "agent", empty=False)
+
+    assert calls == [(["/src/a.docx"], True), (["/src/a.docx"], False)]
