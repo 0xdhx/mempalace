@@ -120,20 +120,13 @@ def _neighbor_context(indexed: list, matched: int) -> str:
     return context
 
 
-def _enrich_closet_hits(
-    hits: list,
-    drawers_col,
-    query: str,
-    stop_words: frozenset = frozenset(),
-) -> list:
+def _enrich_closet_hits(hits: list, drawers_col) -> list:
     """Keep each closet hit's own drawer text and attach neighbor context.
 
     ``text`` is the matched drawer, verbatim. Chunks beside that drawer's
     own chunk index go in ``context``. Closets boost ranking; they do not
-    replace the drawer they pointed at. ``query`` and ``stop_words`` stay
-    in the signature so existing callers do not change.
+    replace the drawer they pointed at.
     """
-    del query, stop_words
     source_cache: dict = {}
 
     for hit in hits:
@@ -162,19 +155,21 @@ def _enrich_closet_hits(
 
 
 def _dedupe_rendered_hits(hits: list) -> list:
-    """Drop a later hit only when its drawer_id was already returned.
+    """Drop a later hit only when it is the same stored chunk again.
 
-    Distinct drawers stay, even when their text is identical. A hit with no
-    drawer_id is kept.
+    The key is the drawer id, chunk index and text. Chunks of one logical
+    drawer share its id, so the id alone would drop distinct chunk hits.
+    A hit with no drawer_id is kept.
     """
     unique = []
-    seen_ids = set()
+    seen = set()
     for hit in hits:
         drawer_id = hit.get("drawer_id")
         if drawer_id:
-            if drawer_id in seen_ids:
+            key = (drawer_id, hit.get("_chunk_index"), hit.get("text"))
+            if key in seen:
                 continue
-            seen_ids.add(drawer_id)
+            seen.add(key)
         unique.append(hit)
     return unique
 

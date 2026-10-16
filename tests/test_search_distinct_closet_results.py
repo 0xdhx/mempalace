@@ -125,11 +125,7 @@ def test_closet_enrichment_memoises_by_source_and_parent_group():
         },
     ]
 
-    _enrich_closet_hits(
-        hits,
-        drawers_col,
-        "token",
-    )
+    _enrich_closet_hits(hits, drawers_col)
 
     assert drawers_col.get.call_count == 2
     assert hits[0]["text"] == "raw a0"
@@ -449,7 +445,7 @@ def test_two_closet_drawers_come_back_as_themselves_not_chunk_one():
         },
     ]
 
-    enriched = _enrich_closet_hits(hits, drawers_col, "alpha beta")
+    enriched = _enrich_closet_hits(hits, drawers_col)
 
     assert enriched[0]["text"] == chunks[2]
     assert enriched[1]["text"] == chunks[4]
@@ -464,6 +460,18 @@ def test_two_closet_drawers_come_back_as_themselves_not_chunk_one():
     assert "chunk 1 alpha beta" in enriched[0]["context"]
     assert enriched[0]["text"] not in enriched[0]["context"]
     assert [hit["drawer_id"] for hit in _dedupe_rendered_hits(enriched)] == ["d7", "d4"]
+
+
+def test_dedupe_keeps_distinct_chunks_of_one_logical_drawer():
+    """Chunk hits report their parent's drawer_id; only a repeat of the same
+    chunk is dropped."""
+    hits = [
+        {"drawer_id": "parent", "_chunk_index": 0, "text": "first part"},
+        {"drawer_id": "parent", "_chunk_index": 1, "text": "second part"},
+        {"drawer_id": "parent", "_chunk_index": 0, "text": "first part"},
+    ]
+
+    assert [hit["text"] for hit in _dedupe_rendered_hits(hits)] == ["first part", "second part"]
 
 
 def test_candidate_pool_limits_widen_only_default_vector_strategy():
