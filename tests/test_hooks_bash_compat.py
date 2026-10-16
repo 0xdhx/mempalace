@@ -1,8 +1,9 @@
-"""Shell-wrapper regressions for the legacy Stop and PreCompact hooks.
+"""Shell-wrapper regressions for the legacy hooks under ``hooks/``.
 
-The scripts are thin ``exec`` wrappers around ``mempalace hook run``.
-They must stay bash 3.2-safe (no ``mapfile`` / ``readarray``) and must
-not reimplement mining. SessionEnd coverage in this file is unchanged.
+Stop, PreCompact and SessionEnd are thin wrappers around
+``mempalace hook run``, and ``mempal_hook_run.sh`` picks the interpreter
+for all three. They must stay bash 3.2-safe (no ``mapfile`` /
+``readarray``) and must not reimplement mining.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SAVE_HOOK = REPO_ROOT / "hooks" / "mempal_save_hook.sh"
 PRECOMPACT_HOOK = REPO_ROOT / "hooks" / "mempal_precompact_hook.sh"
 SESSION_END_HOOK = REPO_ROOT / "hooks" / "mempal_session_end_hook.sh"
+HOOK_RUN = REPO_ROOT / "hooks" / "mempal_hook_run.sh"
 PLUGIN_SESSION_END_HOOK = REPO_ROOT / ".claude-plugin" / "hooks" / "mempal-session-end-hook.sh"
 
 _SESSION_END_HOOKS = pytest.mark.parametrize(
@@ -32,6 +34,11 @@ _BOTH_HOOKS = pytest.mark.parametrize(
     "hook",
     [SAVE_HOOK, PRECOMPACT_HOOK],
     ids=["save_hook", "precompact_hook"],
+)
+_ALL_LEGACY_SCRIPTS = pytest.mark.parametrize(
+    "hook",
+    [SAVE_HOOK, PRECOMPACT_HOOK, SESSION_END_HOOK, HOOK_RUN],
+    ids=["save_hook", "precompact_hook", "session_end_hook", "hook_run"],
 )
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="bash hook scripts are POSIX-only")
@@ -92,7 +99,7 @@ def _run_hook(
 class TestNoBash4OnlyBuiltins:
     """Source-level regression: bash 4.0 array-read builtins are unavailable on macOS bash 3.2."""
 
-    @_BOTH_HOOKS
+    @_ALL_LEGACY_SCRIPTS
     def test_no_mapfile(self, hook):
         code = _hook_src_no_comments(hook)
         assert "mapfile" not in code, (
@@ -102,7 +109,7 @@ class TestNoBash4OnlyBuiltins:
             f"{hook.name} uses readarray, unavailable on macOS /bin/bash 3.2 (#1440)"
         )
 
-    @_BOTH_HOOKS
+    @_ALL_LEGACY_SCRIPTS
     def test_bash_syntax_clean(self, hook):
         p = subprocess.run(
             ["bash", "-n", str(hook)],
@@ -112,8 +119,27 @@ class TestNoBash4OnlyBuiltins:
         assert p.returncode == 0, f"{hook.name} syntax error: {p.stderr}"
 
 
+def _shim(path: Path, recorded: Path, copied: Path, *, importable: bool = True) -> Path:
+    """A fake interpreter that records its argv and stdin.
+
+    ``-c`` is the resolver's import check: it answers with ``importable``
+    and touches nothing, so only the real ``hook run`` call is recorded.
+    """
+    import_rc = 0 if importable else 1
+    path.write_text(
+        "#!/bin/bash\n"
+        f'if [ "${{1:-}}" = "-c" ]; then exit {import_rc}; fi\n'
+        f'printf \'%s\\n\' "$@" > "{recorded}"\n'
+        f'cat > "{copied}"\n'
+        "printf '{}'\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+    return path
+
+
 class TestLegacyWrappersDelegate:
-    """Stop and PreCompact wrappers exec hook run and do not mine."""
+    """Stop and PreCompact go through the shared resolver and do not mine."""
 
     _HOOK_NAME = {
         "mempal_save_hook.sh": "stop",
@@ -121,32 +147,22 @@ class TestLegacyWrappersDelegate:
     }
 
     @_BOTH_HOOKS
-    def test_source_is_a_strict_wrapper(self, hook):
+    def test_source_is_a_thin_wrapper(self, hook):
         code = _hook_src_no_comments(hook)
         hook_name = self._HOOK_NAME[hook.name]
-        assert "set -euo pipefail" in code
-        assert f"hook run --hook {hook_name} --harness claude-code" in code
-        assert 'exec "${python_bin}"' in code
-        assert '"${MEMPAL_PYTHON:-}"' in code
+        assert f'mempal_hook_run.sh" --hook {hook_name} --harness claude-code' in code
         assert "mempalace mine" not in code
-        assert "dirname" not in code
-        assert 'MEMPAL_DIR=""' not in code
-        assert "mapfile" not in code
+
+    def test_resolver_does_not_mine(self):
+        code = _hook_src_no_comments(HOOK_RUN)
+        assert "mempalace mine" not in code
+        assert "hook run" in code
 
     @_BOTH_HOOKS
     def test_forwards_stdin_to_hook_run(self, hook, tmp_path):
         recorded = tmp_path / "argv"
         copied = tmp_path / "stdin"
-        shim = tmp_path / "python-shim"
-        shim.write_text(
-            "#!/bin/bash\n"
-            "set -euo pipefail\n"
-            f'printf \'%s\\n\' "$@" > "{recorded}"\n'
-            f'cat > "{copied}"\n'
-            "printf '{}'\n",
-            encoding="utf-8",
-        )
-        shim.chmod(0o755)
+        shim = _shim(tmp_path / "python-shim", recorded, copied)
         payload = '{"session_id":"abc12345","transcript_path":"/tmp/t.jsonl"}'
         out, _err = _run_hook(
             hook,
@@ -169,6 +185,39 @@ class TestLegacyWrappersDelegate:
         ]
         assert copied.read_text(encoding="utf-8") == payload
 
+    def test_falls_through_to_python3_that_imports_mempalace(self, tmp_path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        recorded = tmp_path / "argv"
+        copied = tmp_path / "stdin"
+        broken = _shim(
+            tmp_path / "broken", tmp_path / "unused", tmp_path / "unused2", importable=False
+        )
+        _shim(bin_dir / "python3", recorded, copied)
+        out, _err = _run_hook(
+            SAVE_HOOK,
+            "{}",
+            tmp_path,
+            extra_env={"MEMPAL_PYTHON": str(broken), "PATH": f"{bin_dir}:/usr/bin:/bin"},
+        )
+        assert out == "{}"
+        assert recorded.read_text(encoding="utf-8").splitlines()[:2] == ["-m", "mempalace"]
+
+    def test_no_usable_interpreter_replies_empty_and_exits_zero(self, tmp_path):
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        for name in ("python3", "python"):
+            _shim(bin_dir / name, tmp_path / "argv", tmp_path / "stdin", importable=False)
+        out, err = _run_hook(
+            SAVE_HOOK,
+            '{"session_id":"s"}',
+            tmp_path,
+            extra_env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
+        )
+        assert out == "{}"
+        assert "MEMPAL_PYTHON" in err
+        assert not (tmp_path / "argv").exists()
+
 
 class TestSessionEndWrappers:
     """The SessionEnd wrappers must background their work — so the foreground
@@ -183,13 +232,15 @@ class TestSessionEndWrappers:
     @_SESSION_END_HOOKS
     def test_dispatches_session_end_through_cli(self, hook):
         src = _hook_src_no_comments(hook)
-        # The dispatcher runs ``mempalace hook run "$@"`` in run_mempalace_hook,
-        # and the bottom call supplies the ``--hook session-end --harness`` args
-        # — so the two halves are asserted separately, not as one contiguous string.
-        assert "hook run" in src
+        # The plugin dispatches ``mempalace hook run "$@"`` itself; the legacy
+        # hook hands the same arguments to the shared resolver.
+        if hook == SESSION_END_HOOK:
+            assert "mempal_hook_run.sh" in src
+        else:
+            assert "hook run" in src
+            assert "MEMPAL_PYTHON" in src
         assert "--hook session-end --harness" in src
         assert "MEMPALACE_HOOK_HARNESS" in src
-        assert "MEMPAL_PYTHON" in src
 
     @_SESSION_END_HOOKS
     def test_backgrounds_then_returns_empty(self, hook):

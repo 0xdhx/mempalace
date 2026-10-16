@@ -15,10 +15,11 @@ It covers hook wiring, JSONL backup, and one-time backfill.
 
 The supported Claude Code install is the plugin in
 [`.claude-plugin/`](../.claude-plugin/README.md) (`claude plugin install`).
-`mempal_save_hook.sh` and `mempal_precompact_hook.sh` are legacy wrappers:
-they `exec` `python -m mempalace hook run` and do not mine a transcript
-directory themselves. Counting, the per-file PID guard, write-routing, and
-silent-save all live in that command.
+`mempal_save_hook.sh`, `mempal_precompact_hook.sh`, and
+`mempal_session_end_hook.sh` are legacy wrappers around
+`mempalace hook run`, which owns counting, the per-file PID guard,
+write-routing, and silent-save. They share `mempal_hook_run.sh` to pick
+the interpreter, so keep the four scripts together.
 
 ## What They Do
 
@@ -71,7 +72,7 @@ mining in the foreground.
 
 Make them executable:
 ```bash
-chmod +x hooks/mempal_save_hook.sh hooks/mempal_session_end_hook.sh hooks/mempal_precompact_hook.sh
+chmod +x hooks/mempal_save_hook.sh hooks/mempal_session_end_hook.sh hooks/mempal_precompact_hook.sh hooks/mempal_hook_run.sh
 ```
 
 ## Install — Antigravity (Google)
@@ -125,7 +126,8 @@ behavior. `mempalace hook run` owns that:
 
 - **Save interval** — `SAVE_INTERVAL` in `mempalace/hooks_cli.py` (15 human messages).
 - **`MEMPAL_DIR`** — Optional project directory. When set in the environment, the Python hook mines it with `--mode projects` in addition to the transcript. The wrappers do not set this variable.
-- **`MEMPAL_PYTHON`** — Interpreter used by the legacy wrappers. Resolution: `$MEMPAL_PYTHON` if it is executable, otherwise `python3` on `PATH`. That interpreter must be able to run `python -m mempalace`.
+- **`MEMPAL_PYTHON`** — Interpreter used by the legacy wrappers. Resolution (`mempal_hook_run.sh`): `$MEMPAL_PYTHON`, then `mempalace` on `PATH`, then `python3`, then `python`, taking the first that can import mempalace. When none can, the hook prints `{}` and exits 0.
+- **`MEMPAL_VERBOSE`** — No longer read by the legacy Stop wrapper. To have the Stop hook block and ask the AI to save instead of saving silently, set `hooks.silent_save` to `false` in `~/.mempalace/config.json`.
 
 ### Disabling Auto-Save (Silent Mode)
 
@@ -156,12 +158,13 @@ mempalace mine <dir>               # Mine all files in a directory
 mempalace mine <dir> --mode convos # Mine conversation transcripts only
 ```
 
-The hooks resolve the repo root automatically from their own path, so they work regardless of where you install the repo.
+The legacy wrappers find `mempal_hook_run.sh` next to themselves, so they work wherever the repo lives as long as the scripts stay in one directory.
 
 ## How It Works (Technical)
 
 `mempal_save_hook.sh` and `mempal_precompact_hook.sh` forward the harness
-JSON on stdin to `mempalace hook run --hook stop` or `--hook precompact`.
+JSON on stdin to `mempalace hook run --hook stop` or `--hook precompact`
+through `mempal_hook_run.sh`.
 The Python command counts messages, mines the transcript file (not its
 parent directory) behind a per-file PID guard, and applies write-routing.
 Prefer the plugin in `.claude-plugin/`, which calls the same command.
@@ -191,7 +194,7 @@ Example output:
 export MEMPAL_PYTHON="$HOME/.venvs/mempalace/bin/python"
 ```
 
-Resolution: `$MEMPAL_PYTHON` if that path is executable, otherwise `python3` on `PATH`. The plugin wrappers in `.claude-plugin/hooks/` resolve the interpreter the same way.
+Resolution: `$MEMPAL_PYTHON`, then `mempalace` on `PATH`, then `python3`, then `python`, taking the first that can import mempalace. The plugin wrappers in `.claude-plugin/hooks/` try `mempalace` on `PATH` first and do not read `MEMPAL_PYTHON` for Stop and PreCompact.
 
 ## Backfill Past Conversations
 
