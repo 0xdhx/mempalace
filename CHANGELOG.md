@@ -54,6 +54,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   not the first draft of every regenerated or edited turn.
 - A Slack message with `"user": null` is filed under `unknown` instead of
   failing the whole export.
+- `mempalace search` no longer hands a search to the running hub when the
+  hub would ignore one of your settings. Hybrid-rank weights, the pgvector
+  shared namespace and the EmbeddingGemma 2 dimension, modalities and
+  revision now keep the search local when set in the environment, and a
+  change to them in `config.json` no longer reuses a hub started with the
+  old values.
 
 ---
 

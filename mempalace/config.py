@@ -618,7 +618,7 @@ class MempalaceConfig:
         back to the direct path instead of querying stale Hub state.
 
         Hash only resolved settings that affect the currently selected search
-        backend.  This detects relevant file edits and Hub-start environment
+        backend, as listed in ``hub_client.SEARCH_SETTINGS``.  This detects relevant file edits and Hub-start environment
         overrides without treating hook/UI settings or inactive-backend values
         as stale search state.  The digest keeps secrets out of the registry.
         """
@@ -645,62 +645,24 @@ class MempalaceConfig:
             # report the misspelled model.
             embedding_model = self._configured_embedding_model()
             embedding_model_error = f"{type(exc).__name__}: {exc}"
-        effective = {
-            "backend": backend,
-            "collection_name": self.collection_name,
-            "embedding_model": embedding_model,
-            "lang_explicit": self.lang_explicit,
-        }
+        from .hub_client import SEARCH_SETTINGS, search_setting_in_scope
+
+        effective = {"backend": backend, "embedding_model": embedding_model}
         if backend_resolution_error is not None:
             effective["backend_resolution_error"] = backend_resolution_error
         if embedding_model_error is not None:
             effective["embedding_model_error"] = embedding_model_error
-        if embedding_model == "openai-compat":
-            effective.update(
-                embedding_api_key=self.embedding_api_key,
-                embedding_api_model=self.embedding_api_model,
-                embedding_api_url=self.embedding_api_url,
-            )
-        elif embedding_model == "embeddinggemma2":
-            effective.update(
-                embeddinggemma2_dimension=self.embeddinggemma2_dimension,
-                embeddinggemma2_modalities=self.embeddinggemma2_modalities,
-                embeddinggemma2_revision=self.embeddinggemma2_revision,
-                embedding_device=self.embedding_device,
-                embedding_threads=self.embedding_threads,
-            )
-        else:
-            effective.update(
-                embedding_device=self.embedding_device,
-                embedding_threads=self.embedding_threads,
-            )
-        try:
-            if backend == "qdrant":
-                effective.update(
-                    qdrant_api_key=self.qdrant_api_key,
-                    qdrant_namespace=self.qdrant_namespace,
-                    qdrant_timeout=self.qdrant_timeout,
-                    qdrant_url=self.qdrant_url,
-                )
-            elif backend == "milvus":
-                effective.update(
-                    milvus_consistency_level=self.milvus_consistency_level,
-                    milvus_db_name=self.milvus_db_name,
-                    milvus_namespace=self.milvus_namespace,
-                    milvus_token=self.milvus_token,
-                    milvus_uri=self.milvus_uri,
-                )
-            elif backend == "pgvector":
-                effective.update(
-                    pgvector_dsn=self.pgvector_dsn,
-                    pgvector_namespace=self.pgvector_namespace,
-                )
-        except (TypeError, ValueError) as exc:
-            # Invalid active-backend settings still need a stable digest. The
-            # backend will report their validation error if search reaches it;
-            # fingerprinting must never turn an unrelated config edit into a
-            # CLI crash before the direct-path fallback can be selected.
-            effective["backend_config_error"] = f"{type(exc).__name__}: {exc}"
+        for attr, _env_names, scope in SEARCH_SETTINGS:
+            if not search_setting_in_scope(scope, backend, embedding_model):
+                continue
+            try:
+                effective[attr] = getattr(self, attr)
+            except (TypeError, ValueError) as exc:
+                # An invalid value still needs a stable digest; the backend or
+                # embedder reports it if the search reaches them, and the
+                # fingerprint must never crash the CLI before the direct-path
+                # fallback is chosen.
+                effective[f"{attr}_error"] = f"{type(exc).__name__}: {exc}"
         payload = json.dumps(
             effective, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
