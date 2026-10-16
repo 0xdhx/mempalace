@@ -20,18 +20,21 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Optional
 
-import numpy as np
-
 from ..config import (
     DEFAULT_MILVUS_CONSISTENCY_LEVEL,
     normalize_milvus_consistency_level,
     strip_lone_surrogates,
 )
+from ._remote_common import (
+    RemoteMarkerMixin,
+    as_vector_array,
+    jsonable_metadata,
+    normalize_vectors,
+)
 from ._sidecar import EMBEDDER_SIDECAR_FILENAME, read_embedder_sidecar, write_embedder_sidecar
 from .base import (
     BackendClosedError,
     BackendError,
-    BackendMismatchError,
     BaseBackend,
     BaseCollection,
     CollectionNotInitializedError,
@@ -206,25 +209,6 @@ def _combine_filter(*filters: str) -> str:
     return "(" + ") and (".join(present) + ")"
 
 
-def _as_vector_array(vector: list[float]) -> np.ndarray:
-    arr = np.asarray(vector, dtype=np.float32)
-    if arr.ndim != 1 or arr.size == 0:
-        raise ValueError("embedding must be a non-empty 1D vector")
-    return arr
-
-
-def _normalize_vectors(embeddings: list[list[float]]) -> tuple[list[list[float]], int]:
-    vectors = []
-    dims = set()
-    for embedding in embeddings:
-        arr = _as_vector_array(embedding)
-        vectors.append(arr.astype(float).tolist())
-        dims.add(int(arr.size))
-    if len(dims) > 1:
-        raise DimensionMismatchError(f"milvus batch cannot mix embedding dimensions {sorted(dims)}")
-    return vectors, dims.pop() if dims else 0
-
-
 def _clean_text(value: Any) -> str:
     text = "" if value is None else str(value)
     return strip_lone_surrogates(text).replace("\x00", "")
@@ -232,19 +216,6 @@ def _clean_text(value: Any) -> str:
 
 def _utf8_len(value: str) -> int:
     return len(value.encode("utf-8"))
-
-
-def _jsonable_metadata(meta: dict | None) -> dict:
-    cleaned = {}
-    for key, value in (meta or {}).items():
-        if key in RESERVED_FIELDS:
-            raise ValueError(f"metadata key {key!r} clashes with a reserved Milvus field")
-        try:
-            json.dumps(value, ensure_ascii=False)
-        except (TypeError, ValueError):
-            value = str(value)
-        cleaned[str(key)] = value
-    return cleaned
 
 
 def _slug(value: str, fallback: str = "collection") -> str:
@@ -497,7 +468,7 @@ class MilvusCollection(BaseCollection):
             raise ValueError(
                 f"embeddings length {len(embeddings)} does not match ids length {len(ids)}"
             )
-        vectors, dimension = _normalize_vectors(embeddings)
+        vectors, dimension = normalize_vectors(embeddings, "milvus")
         metadatas = metadatas or [{} for _ in ids]
         rows = []
         for idx, (doc_id, document, metadata, vector) in enumerate(
@@ -520,7 +491,7 @@ class MilvusCollection(BaseCollection):
             row = {
                 FIELD_ID: doc_id,
                 FIELD_DOCUMENT: document,
-                FIELD_METADATA: _jsonable_metadata(metadata),
+                FIELD_METADATA: jsonable_metadata(metadata, reserved=RESERVED_FIELDS),
                 FIELD_VECTOR: vector,
             }
             row.update(row[FIELD_METADATA])
@@ -640,7 +611,7 @@ class MilvusCollection(BaseCollection):
         outer_dists: list[list[float]] = []
         outer_embeddings: list[list[list[float]]] = []
         for query_vector in query_embeddings:
-            q = _as_vector_array(query_vector)
+            q = as_vector_array(query_vector)
             if self._known_dimension is None:
                 self._known_dimension = self._remote_dimension()
             if self._known_dimension is not None and int(q.size) != self._known_dimension:
@@ -902,8 +873,10 @@ class MilvusCollection(BaseCollection):
         return HealthStatus.healthy()
 
 
-class MilvusBackend(BaseBackend):
+class MilvusBackend(RemoteMarkerMixin, BaseBackend):
     name = "milvus"
+    marker_filename = _MARKER_FILENAME
+    marker_hint = "keep MEMPALACE_MILVUS_URI and Milvus database/namespace settings consistent"
     capabilities = frozenset(
         {
             "requires_explicit_embeddings",
@@ -922,10 +895,6 @@ class MilvusBackend(BaseBackend):
         self._collections_by_palace: dict[str, list[MilvusCollection]] = {}
         self._lock = threading.RLock()
         self._closed = False
-
-    @staticmethod
-    def _marker_path(palace_path: str) -> str:
-        return os.path.join(palace_path, _MARKER_FILENAME)
 
     @staticmethod
     def _palace_hash(palace: PalaceRef) -> str:
@@ -983,65 +952,6 @@ class MilvusBackend(BaseBackend):
             return _slug(collection_name)
         prefix = self._remote_collection_prefix(palace=palace, config=config)
         return f"{prefix}_{_slug(collection_name)}"
-
-    def _marker_exists(self, palace: PalaceRef) -> bool:
-        return bool(palace.local_path and os.path.isfile(self._marker_path(palace.local_path)))
-
-    def _read_marker(self, palace: PalaceRef) -> Optional[dict]:
-        if not palace.local_path:
-            return None
-        marker_path = self._marker_path(palace.local_path)
-        if not os.path.isfile(marker_path):
-            return None
-        try:
-            with open(marker_path, encoding="utf-8") as f:
-                marker = json.load(f)
-        except (OSError, json.JSONDecodeError) as exc:
-            raise BackendMismatchError(f"milvus marker is unreadable: {marker_path}") from exc
-        return marker if isinstance(marker, dict) else {}
-
-    def _validate_marker_target(self, palace: PalaceRef, config: _MilvusConfig) -> None:
-        marker = self._read_marker(palace)
-        if marker is None:
-            return
-        if marker.get("backend") != self.name:
-            raise BackendMismatchError("milvus marker does not identify the milvus backend")
-        expected = self._marker_target(palace, config)
-        actual = marker.get("milvus")
-        if not isinstance(actual, dict):
-            raise BackendMismatchError("milvus marker is missing target metadata")
-        mismatched = [
-            key for key, expected_value in expected.items() if actual.get(key) != expected_value
-        ]
-        if mismatched:
-            raise BackendMismatchError(
-                "milvus marker target does not match current configuration "
-                f"({', '.join(mismatched)}); keep MEMPALACE_MILVUS_URI and "
-                "Milvus database/namespace settings consistent or use a fresh palace directory"
-            )
-
-    def _write_marker(self, palace: PalaceRef, config: _MilvusConfig) -> None:
-        if not palace.local_path:
-            return
-        os.makedirs(palace.local_path, exist_ok=True)
-        try:
-            os.chmod(palace.local_path, 0o700)
-        except (OSError, NotImplementedError):
-            pass
-        marker = {
-            "backend": self.name,
-            "schema_version": 1,
-            "created_at": _utcnow(),
-            "palace_id": palace.id,
-            "milvus": self._marker_target(palace, config),
-        }
-        marker_path = self._marker_path(palace.local_path)
-        with open(marker_path, "w", encoding="utf-8") as f:
-            json.dump(marker, f, indent=2, ensure_ascii=False)
-        try:
-            os.chmod(marker_path, 0o600)
-        except (OSError, NotImplementedError):
-            pass
 
     @staticmethod
     def _embedder_sidecar_path(palace: PalaceRef) -> Optional[str]:
