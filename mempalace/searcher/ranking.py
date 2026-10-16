@@ -265,6 +265,10 @@ def _hybrid_rank(
       themselves. Since the absolute scale is unbounded, BM25 is min-max
       normalized within the candidate set so weights are commensurable.
 
+    * A ``closet_boost`` on a candidate is added to its vector similarity,
+      the same lift its ``effective_distance`` had in the vector pass, so
+      re-scoring from the raw ``distance`` doesn't drop it.
+
     Candidates with ``distance=None`` are treated as vector-unknown
     (no vector signal available) and scored on BM25 contribution alone.
     Used by candidate-union mode to merge BM25-only candidates that the
@@ -284,6 +288,7 @@ def _hybrid_rank(
     scored = []
     for r, raw, norm in zip(results, bm25_raw, bm25_norm):
         vec_sim = _distance_to_similarity(r.get("distance"), metric)
+        vec_sim += r.get("closet_boost") or 0.0
         r["bm25_score"] = round(raw, 3)
         scored.append((vector_weight * vec_sim + bm25_weight * norm, r))
 
