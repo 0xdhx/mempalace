@@ -44,6 +44,7 @@ from ..palace import (
     resolve_backend_name,
 )
 from ..search_util import (
+    _cosine_scale_distance,
     _distance_to_similarity,
     _first_or_empty,
     _metric_for_collection,
