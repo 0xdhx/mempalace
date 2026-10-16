@@ -141,6 +141,18 @@ def test_windows_signalled_process_is_dead(monkeypatch):
     assert kernel.closed is True
 
 
+def test_windows_failed_wait_is_alive(monkeypatch):
+    kernel = _install_kernel(monkeypatch, _Kernel(handle=5, wait_result=0xFFFFFFFF), last_error=0)
+    assert _pid_alive_windows(77) is True
+    assert kernel.closed is True
+
+
+def test_windows_pid_beyond_dword_is_dead(monkeypatch):
+    kernel = _install_kernel(monkeypatch, _Kernel(handle=5, wait_result=0x00000102), last_error=0)
+    assert _pid_alive_windows(2**32 + 77) is False
+    assert kernel.opened_pid is None
+
+
 def test_windows_path_uses_wait_helper(monkeypatch):
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setattr("mempalace._proc._pid_alive_windows", lambda pid: pid == 5)

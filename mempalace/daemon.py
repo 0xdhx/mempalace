@@ -28,6 +28,7 @@ from urllib import error as urlerror
 from urllib import request as urlrequest
 from urllib.parse import parse_qs, urlparse
 
+from ._proc import kernel32 as _kernel32
 from ._proc import pid_alive as _pid_alive
 from .config import MempalaceConfig
 from .palace import (
@@ -1218,9 +1219,7 @@ def _process_start_time_windows(pid: int) -> float | None:
     from ctypes import wintypes
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel32 = _kernel32()
     filetime_p = ctypes.POINTER(wintypes.FILETIME)
     kernel32.GetProcessTimes.restype = wintypes.BOOL
     kernel32.GetProcessTimes.argtypes = (
@@ -1230,7 +1229,6 @@ def _process_start_time_windows(pid: int) -> float | None:
         filetime_p,
         filetime_p,
     )
-    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
 
     handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
     if not handle:

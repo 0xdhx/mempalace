@@ -20,8 +20,21 @@ from __future__ import annotations
 import os
 
 _WIN_SYNCHRONIZE = 0x00100000
-_WIN_WAIT_TIMEOUT = 0x00000102
+_WIN_WAIT_OBJECT_0 = 0x00000000
 _WIN_ERROR_ACCESS_DENIED = 5
+_WIN_MAX_PID = 0xFFFFFFFF
+
+
+def kernel32():
+    """``kernel32`` with the process-handle calls typed for 64-bit handles."""
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    return k32
 
 
 def _pid_alive_windows(pid: int) -> bool:
@@ -29,24 +42,23 @@ def _pid_alive_windows(pid: int) -> bool:
     import ctypes
     from ctypes import wintypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.OpenProcess.restype = wintypes.HANDLE
-    kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    kernel32.WaitForSingleObject.restype = wintypes.DWORD
-    kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
-    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    if pid > _WIN_MAX_PID:
+        return False
+    k32 = kernel32()
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
 
-    handle = kernel32.OpenProcess(_WIN_SYNCHRONIZE, False, int(pid))
+    handle = k32.OpenProcess(_WIN_SYNCHRONIZE, False, pid)
     if not handle:
         # Access denied: the process exists but isn't ours to open.
         # Any other error (invalid parameter / not found) means it's gone.
         return ctypes.get_last_error() == _WIN_ERROR_ACCESS_DENIED
     try:
-        # A live process is not signalled, so a zero-timeout wait returns
-        # WAIT_TIMEOUT. An exited process is signalled and returns WAIT_OBJECT_0.
-        return kernel32.WaitForSingleObject(handle, 0) == _WIN_WAIT_TIMEOUT
+        # Only an exited process is signalled. WAIT_TIMEOUT means running, and
+        # WAIT_FAILED is a failed probe, which counts as alive.
+        return k32.WaitForSingleObject(handle, 0) != _WIN_WAIT_OBJECT_0
     finally:
-        kernel32.CloseHandle(handle)
+        k32.CloseHandle(handle)
 
 
 def pid_alive(pid: int) -> bool:
