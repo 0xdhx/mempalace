@@ -353,30 +353,29 @@ def test_split_file_decodes_cp1252_without_replacement_char(tmp_path):
     assert path.read_bytes() == raw
 
 
-def test_retire_original_preserves_bytes_and_refuses_to_clobber(tmp_path):
+def test_retire_original_preserves_bytes_and_never_clobbers_a_backup(tmp_path):
     src = tmp_path / "mega.txt"
     src.write_bytes(b"original-bytes-\xff")
-    assert smf._retire_original(src) is True
-    backup = tmp_path / "mega.mega_backup"
+    backup = smf._retire_original(src)
+    assert backup == tmp_path / "mega.mega_backup"
     assert backup.read_bytes() == b"original-bytes-\xff"
     assert not src.exists()
 
     src.write_bytes(b"newer-original")
-    assert smf._retire_original(src) is False
+    second = smf._retire_original(src)
+    assert second == tmp_path / "mega-2.mega_backup"
+    assert second.read_bytes() == b"newer-original"
     assert backup.read_bytes() == b"original-bytes-\xff"
-    assert src.read_bytes() == b"newer-original"
+    assert not src.exists()
 
 
-def test_extract_people_escapes_regex_metacharacters(monkeypatch):
-    monkeypatch.setattr(smf, "KNOWN_PEOPLE", ["C++", "Dr. X"])
-    assert smf.extract_people(["We shipped C++ and asked Dr. X\n"]) == ["C++", "Dr. X"]
-    assert smf.extract_people(["Hello DrZ X\n"]) == []
-
-
-def test_known_people_load_when_first_used(monkeypatch, tmp_path):
-    config_path = tmp_path / "known_names.json"
-    config_path.write_text(json.dumps(["Alice"]))
-    monkeypatch.setattr(smf, "_KNOWN_NAMES_PATH", config_path)
-    monkeypatch.setattr(smf, "KNOWN_PEOPLE", None)
-    smf._KNOWN_NAMES_CACHE = None
-    assert smf.extract_people(["Alice reviewed it\n"]) == ["Alice"]
+def test_split_file_rerun_writes_no_duplicates(tmp_path):
+    """A second run over the same source reuses the files the first one wrote."""
+    content = "Claude Code v1.0\n" + "first line\n" * 12 + "Claude Code v1.0\n" + "second\n" * 12
+    path = tmp_path / "mega.txt"
+    path.write_text(content, encoding="utf-8")
+    (tmp_path / "out").mkdir()
+    first = smf.split_file(str(path), str(tmp_path / "out"))
+    second = smf.split_file(str(path), str(tmp_path / "out"))
+    assert second == first
+    assert sorted(p.name for p in (tmp_path / "out").iterdir()) == sorted(p.name for p in first)

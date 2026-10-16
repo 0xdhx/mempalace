@@ -69,15 +69,7 @@ def _load_known_people() -> list:
     return []
 
 
-# Loaded on first use so importing this module does not read the home directory.
-KNOWN_PEOPLE = None
-
-
-def _active_known_people() -> list:
-    global KNOWN_PEOPLE
-    if KNOWN_PEOPLE is None:
-        KNOWN_PEOPLE = _load_known_people()
-    return KNOWN_PEOPLE
+KNOWN_PEOPLE = _load_known_people()
 
 
 def _load_username_map() -> dict:
@@ -148,10 +140,8 @@ def extract_people(lines):
     text = "".join(lines[:100])
 
     # Speaker tags: "Alice:", "Ben:", etc.
-    for person in _active_known_people():
-        # Lookarounds, not \\b: a name like ``C++`` ends on a non-word
-        # character, so a trailing word-boundary never matches it.
-        if re.search(rf"(?<!\w){re.escape(person)}(?!\w)", text, re.IGNORECASE):
+    for person in KNOWN_PEOPLE:
+        if re.search(rf"\b{person}\b", text, re.IGNORECASE):
             found.add(person)
 
     # Working directory username hint — map to known people if configured
@@ -186,26 +176,19 @@ def extract_subject(lines):
     return "session"
 
 
-def _decode_source_bytes(raw: bytes) -> str:
-    """Decode transcript bytes without the locale codec or ``errors='replace'``.
-
-    UTF-8 first, so valid UTF-8 stays verbatim. Otherwise cp1252, then
-    latin-1, which maps every byte and does not invent U+FFFD.
-    """
-    if not raw:
-        return ""
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    try:
-        return raw.decode("cp1252")
-    except UnicodeDecodeError:
-        return raw.decode("latin-1")
-
-
 def _read_lines(path: Path) -> list[str]:
-    return _decode_source_bytes(path.read_bytes()).splitlines(keepends=True)
+    """Lines of ``path`` with their endings, never through ``errors='replace'``.
+
+    UTF-8 when it decodes, otherwise cp1252, then latin-1, which maps every
+    byte, so no byte turns into U+FFFD.
+    """
+    raw = path.read_bytes()
+    for codec in ("utf-8", "cp1252"):
+        try:
+            return raw.decode(codec).splitlines(keepends=True)
+        except UnicodeDecodeError:
+            pass
+    return raw.decode("latin-1").splitlines(keepends=True)
 
 
 def _session_segments(lines: list[str], boundaries: list[int]) -> list[tuple[list[str], bool, int]]:
@@ -248,49 +231,64 @@ def _output_name(path: Path, chunk: list[str], is_preamble: bool, index: int) ->
     return re.sub(r"_+", "_", name)
 
 
-def _claim_output_path(out_dir: Path, base_name: str, reserved: set, dry_run: bool):
-    """Return a path that does not collide, opening it with ``O_EXCL`` when writing."""
+def _holds(path: Path, data: bytes) -> bool:
+    """True when ``path`` is a regular file (not a link) whose bytes are ``data``."""
+    st = os.lstat(path)
+    if not stat.S_ISREG(st.st_mode) or st.st_size != len(data):
+        return False
+    return path.read_bytes() == data
+
+
+def _write_chunk(out_dir: Path, base_name: str, data: bytes, reserved: set, dry_run: bool):
+    """Write ``data`` under ``base_name`` or the first free ``-2``, ``-3``, ... name.
+
+    A regular file that already holds exactly ``data`` is reused, so a re-run
+    writes nothing new. Anything else at a name (another session, a symlink,
+    a FIFO) is left untouched and the next name is tried; ``O_EXCL`` never
+    follows a link or opens a pipe. Returns ``(path, newly_written)``.
+    """
     for name in _suffixed_names(base_name):
         candidate = out_dir / name
-        if candidate in reserved or os.path.lexists(candidate):
+        if candidate in reserved:
             continue
-        if dry_run:
-            reserved.add(candidate)
-            return candidate, None
-        try:
-            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
-        except FileExistsError:
+        if os.path.lexists(candidate):
+            if _holds(candidate, data):
+                reserved.add(candidate)
+                return candidate, False
             continue
         reserved.add(candidate)
-        return candidate, fd
-    raise RuntimeError(f"could not allocate an output name for {base_name}")
+        if dry_run:
+            return candidate, True
+        try:
+            flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0)
+            fd = os.open(candidate, flags, 0o644)
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+        except BaseException:
+            candidate.unlink(missing_ok=True)
+            raise
+        return candidate, True
 
 
-def _write_exclusive(out_path: Path, fd: int, text: str) -> None:
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
-            handle.write(text)
-    except Exception:
-        out_path.unlink(missing_ok=True)
-        raise
-
-
-def split_file(filepath, output_dir, dry_run=False, lines=None):
+def split_file(filepath, output_dir, dry_run=False):
     """
     Split a single mega-file into per-session files.
     Returns list of output paths written (or would be written if dry_run).
 
     Text before the first session and sessions under 10 lines are written
     too. Two sessions that generate the same filename get ``-2``, ``-3``, ...
-    instead of overwriting each other.
+    instead of overwriting each other, and a session already split out by
+    an earlier run is not written again.
     """
     path = Path(filepath)
     max_size = 500 * 1024 * 1024  # 500 MB safety limit
-    if lines is None:
-        if path.stat().st_size > max_size:
-            print(f"  SKIP: {path.name} exceeds {max_size // (1024 * 1024)} MB limit")
-            return []
-        lines = _read_lines(path)
+    if path.stat().st_size > max_size:
+        print(f"  SKIP: {path.name} exceeds {max_size // (1024 * 1024)} MB limit")
+        return []
+    lines = _read_lines(path)
 
     boundaries = find_session_boundaries(lines)
     if len(boundaries) < 2:
@@ -303,30 +301,31 @@ def split_file(filepath, output_dir, dry_run=False, lines=None):
 
     for position, (chunk, is_preamble, index) in enumerate(segments, 1):
         name = _output_name(path, chunk, is_preamble, index)
-        out_path, fd = _claim_output_path(out_dir, name, reserved, dry_run)
+        data = "".join(chunk).encode("utf-8")
+        out_path, new = _write_chunk(out_dir, name, data, reserved, dry_run)
         if dry_run:
             print(f"  [{position}/{len(segments)}] {out_path.name}  ({len(chunk)} lines)")
-        else:
-            _write_exclusive(out_path, fd, "".join(chunk))
+        elif new:
             print(f"  + {out_path.name}  ({len(chunk)} lines)")
+        else:
+            print(f"  = {out_path.name}  (already split)")
         written.append(out_path)
 
     return written
 
 
-def _retire_original(path: Path) -> bool:
-    """Rename ``path`` to ``.mega_backup`` without replacing an existing backup.
+def _retire_original(path: Path) -> Path:
+    """Rename ``path`` to the first free ``.mega_backup`` name and return it.
 
-    The rename is how the original bytes stay recoverable. If that name is
-    already taken, the source file is left where it is.
+    The rename is how the original bytes stay recoverable, so an existing
+    backup is never replaced: a later one becomes ``-2.mega_backup``.
     """
-    backup = path.with_suffix(".mega_backup")
-    if os.path.lexists(backup):
-        print(f"  ! leaving {path.name} in place; {backup.name} already exists")
-        return False
-    path.rename(backup)
-    print(f"  -> Original renamed to {backup.name}\n")
-    return True
+    for name in _suffixed_names(path.with_suffix(".mega_backup").name):
+        backup = path.with_name(name)
+        if not os.path.lexists(backup):
+            path.rename(backup)
+            print(f"  -> Original renamed to {backup.name}\n")
+            return backup
 
 
 def main():
@@ -383,7 +382,7 @@ def main():
         lines = _read_lines(f)
         boundaries = find_session_boundaries(lines)
         if len(boundaries) >= args.min_sessions:
-            mega_files.append((f, len(boundaries), lines))
+            mega_files.append((f, len(boundaries)))
 
     if not mega_files:
         print(f"No mega-files found in {src_dir} (min {args.min_sessions} sessions).")
@@ -398,9 +397,9 @@ def main():
     print(f"{'-' * 60}\n")
 
     total_written = 0
-    for f, n_sessions, lines in mega_files:
+    for f, n_sessions in mega_files:
         print(f"  {f.name}  ({n_sessions} sessions, {f.stat().st_size // 1024}KB)")
-        written = split_file(f, output_dir, dry_run=args.dry_run, lines=lines)
+        written = split_file(f, output_dir, dry_run=args.dry_run)
         total_written += len(written)
 
         if not args.dry_run and written:
