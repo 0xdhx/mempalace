@@ -25,7 +25,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   and ask the AI to save instead of saving silently, set `hooks.silent_save` to
   `false` in `~/.mempalace/config.json`. When no interpreter can import
   mempalace, the hooks print `{}` and exit 0 as before.
-
 - **Conversation mining no longer spell-corrects your messages by default.**
   When the optional `autocorrect` package was installed, chat imports rewrote
   user turns before filing them. Turns are now stored as written. To keep the
