@@ -29,14 +29,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `transforms`, a conversation is filed under every file that holds it (files
   once skipped as duplicates get their own drawers), and non-UTF-8 sources
   keep their exact bytes.
-- **The HTTP MCP server requires a bearer token on every bind, loopback
-  included.** With no `--token` or `MEMPALACE_MCP_HTTP_TOKEN`, `mempalace serve`
-  and `mempalace-mcp --transport http` reuse or create the palace's token at
-  `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace` clients
-  already look, so the CLI, hooks and stdio proxy keep working unchanged. Anything
-  else that calls a loopback `/mcp` directly now needs `Authorization: Bearer
-  <token>`, or start the server with `--no-token` (loopback only). The token is
-  no longer printed at startup; the path is.
 - **A loopback HTTP MCP server needs no token; anything reachable from another
   machine does.** `mempalace serve` and `mempalace-mcp --transport http` on
   `127.0.0.1`, `::1` or `localhost` serve local clients with no header, as
@@ -46,10 +38,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   own exact address, and DNS-rebound `Host` names. `POST /mcp` now needs
   `Content-Type: application/json` on every hub, so a page cannot post to it
   without a CORS preflight. Pass `--token` or set `MEMPALACE_MCP_HTTP_TOKEN` to
-  require a token on loopback too. A network bind, or a loopback bind fronted by a proxy
-  (`MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` set), reuses or creates the palace's token
-  at `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace` clients
-  already look; remote clients send `Authorization: Bearer <token>`.
+  require a token on loopback too. A network bind, or a loopback bind fronted by
+  a proxy (`MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` set), reuses or creates the
+  palace's token at `~/.mempalace/server/<key>/token` (`0600`), where local
+  `mempalace` clients already look; remote clients send `Authorization: Bearer
+  <token>`.
   `--no-token` is accepted and does nothing on a plain loopback bind. The token
   is never printed at startup; its path is.
 - **MCP tool arguments are checked against the tool's schema before the tool
