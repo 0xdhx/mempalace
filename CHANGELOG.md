@@ -64,6 +64,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   new. Files an older palace registered as duplicates are mined again once the
   conversation parsing version changes.
 
+- **`mempalace init` writes only what you chose into a new `config.json`.**
+  It used to copy the palace path, collection name, topic wings and hall
+  keywords into the file, which froze those defaults against later releases
+  and froze a `MEMPALACE_PALACE_PATH` from your shell into the config. A new
+  file now holds only `--palace`, `--lang` and `--backend`; the defaults keep
+  applying from the code and the default palace keeps following the config
+  directory. `--palace` together with `--lang` now records both (`--lang` used
+  to create the file first, so the palace path was lost). Existing
+  `config.json` files are not touched. If you rely on `MEMPALACE_PALACE_PATH`
+  for processes started without it, pass `--palace` to `init` or set
+  `palace_path` in `config.json`.
+
 ### Bug Fixes
 
 - **Embedding a single string gives one vector.** The MiniLM and
@@ -76,6 +88,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   a later identity record, such as the one a repair writes, kept no dimension.
   Only a successful probe is cached now, and the first failure for a model is
   logged as a warning.
+- MemPalace's own project files are handled under every name the miner
+  reads. A project using `mempalace.yml` or the legacy `mempal.yaml` no longer
+  has that file sampled by entity and corpus-origin detection on a re-run of
+  `init`, and `init` adds the config file the project actually uses to
+  `.gitignore` instead of always `mempalace.yaml`. The skip lists now come
+  from one place. `init` also no longer overwrites an `entities.json` that
+  holds AAAK entity codes for `mempalace compress`.
 - **A re-mine no longer loses a file's drawers when it fails part-way.** The
   project and conversation miners deleted a changed file's drawers before
   writing the new ones, so a crash or backend error during the write left the
@@ -117,6 +136,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   now read distances on the cosine scale, so palaces using `l2` or `ip` rank and
   report the same way as cosine ones. Search responses name the raw distance's
   scale in `distance_metric`.
+- **`mempalace compress` no longer writes into the closets that search reads.**
+  Its lossy AAAK summaries were stored alongside closet pointers, so they
+  boosted search results like real closets. They now go to their own
+  `mempalace_aaak` collection, one row per drawer with `kind="aaak"`, and
+  repair and migrate carry it over. Deleting or rewriting a drawer (by any
+  delete tool, `sync`, or a re-mine) deletes its summary too. Search already
+  ignores summaries an older `compress` left in the closets; the next
+  `compress`, `repair --mode from-sqlite` or `migrate` moves them out.
 
 ---
 

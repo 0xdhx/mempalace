@@ -38,6 +38,7 @@ from .palace import (
     mine_lock,
     mine_palace_lock,
     mine_yield_point,
+    open_aaak_collection,
     palace_write_serial,
     prefetch_complete_mtimes,
     print_files_failed,
@@ -55,7 +56,11 @@ from .hallways import compute_hallways_for_wing
 from .ids import ID_RECIPE, make_drawer_id_from_chunk
 
 # Re-exported: callers and tests import these from the miner (#2676).
-from .project_config import PROJECT_CONFIG_FILENAMES, find_project_config  # noqa: F401
+from .project_config import (  # noqa: F401
+    MEMPALACE_PROJECT_FILES,
+    PROJECT_CONFIG_FILENAMES,
+    find_project_config,
+)
 from .source_identity import source_directory_identity
 
 logger = logging.getLogger("mempalace_mcp")
@@ -194,11 +199,7 @@ READABLE_EXTENSIONS = {
 } | PHP_EXTENSIONS
 
 SKIP_FILENAMES = {
-    "entities.json",
-    "mempalace.yaml",
-    "mempalace.yml",
-    "mempal.yaml",
-    "mempal.yml",
+    *MEMPALACE_PROJECT_FILES,
     ".gitignore",
     "package-lock.json",
     "pnpm-lock.yaml",
@@ -1879,6 +1880,7 @@ def process_file(
     min_chunk_size: int = None,
     max_chunks_per_file: Optional[int] = None,
     mined_mtimes: Optional[dict] = None,
+    aaak_col=None,
 ) -> tuple:
     """Read, chunk, route, and file one file.
 
@@ -1999,7 +2001,7 @@ def process_file(
         # Every drawer for this path is replaced, whichever miner filed it.
         # A failed stale-drawer purge is an error the mine counts, not a skip.
         try:
-            drawers_added = write_file_drawers(collection, source_file, drawers)
+            drawers_added = write_file_drawers(collection, source_file, drawers, aaak_col=aaak_col)
         except StaleDrawerPurgeFailed as exc:
             print(f"  ! [error] {filepath.name[:50]:50} {exc}", file=sys.stderr)
             return 0, room, "purge_failed"
@@ -2298,6 +2300,7 @@ def _mine_impl(
     if not dry_run:
         collection = get_collection(palace_path)
         closets_col = get_closets_collection(palace_path)
+        aaak_col = open_aaak_collection(palace_path)
         # One sqlite pass instead of one get(where=source_file) per file,
         # which costs ~0.1 s each on a 1M-drawer palace (#2684). None on
         # other backends: every file then takes the per-file check.
@@ -2305,6 +2308,7 @@ def _mine_impl(
     else:
         collection = None
         closets_col = None
+        aaak_col = None
         mined_mtimes = None
 
     total_drawers = 0
@@ -2330,6 +2334,7 @@ def _mine_impl(
                     agent=agent,
                     dry_run=dry_run,
                     closets_col=closets_col,
+                    aaak_col=aaak_col,
                     chunk_size=cfg_chunk_size,
                     chunk_overlap=cfg_chunk_overlap,
                     min_chunk_size=cfg_min_chunk_size,

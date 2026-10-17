@@ -1709,8 +1709,15 @@ class MempalaceConfig:
         self._file_config["hooks"][key] = value
         self._persist_file_config()
 
-    def init(self):
-        """Create config directory and write default config.json if it doesn't exist."""
+    def init(self, palace_path=None):
+        """Create the config directory, and ``config.json`` if it doesn't exist.
+
+        A new file records only what was chosen explicitly: ``palace_path``
+        (or the constructor's ``palace_path``). Defaults are left out, so a
+        later release's defaults and the environment keep applying (env, then
+        file, then default), and the default palace keeps following the
+        config directory. An existing file is never rewritten.
+        """
         self._config_dir.mkdir(parents=True, exist_ok=True)
         # Restrict directory permissions to owner only (Unix)
         try:
@@ -1718,22 +1725,13 @@ class MempalaceConfig:
         except (OSError, NotImplementedError):
             pass  # Windows doesn't support Unix permissions
         if not self._config_file.exists():
-            # Chunking parameters (chunk_size, chunk_overlap, min_chunk_size)
-            # are intentionally NOT written here — convo_miner.py distinguishes
-            # "user has tuned this" from "user is on defaults" by checking
-            # ``_file_config.get("min_chunk_size") is None``. Writing the
-            # miner.py defaults (50) into config.json breaks that detection
-            # and silently overrides convo_miner's stricter 30-char floor,
-            # dropping legitimate short conversation exchanges. Module-level
-            # defaults already apply correctly when these keys are absent.
-            default_config = {
-                "palace_path": self.palace_path,
-                "collection_name": DEFAULT_COLLECTION_NAME,
-                "topic_wings": DEFAULT_TOPIC_WINGS,
-                "hall_keywords": DEFAULT_HALL_KEYWORDS,
-            }
-            with open(self._config_file, "w", encoding="utf-8") as f:
-                json.dump(default_config, f, indent=2)
+            chosen = {}
+            explicit_palace = palace_path if palace_path is not None else self._palace_path_override
+            if explicit_palace is not None:
+                chosen["palace_path"] = os.path.abspath(os.path.expanduser(str(explicit_palace)))
+            fsio.atomic_write_json(self._config_file, chosen)
+            self._file_config = dict(chosen)
+            self._file_config_state = "read"
             # Restrict config file to owner read/write only
             try:
                 self._config_file.chmod(0o600)
