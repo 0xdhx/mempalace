@@ -35,7 +35,7 @@ def _mine_lock_path(source_file: str) -> str:
 
 # Windows refuses to open a file whose delete is still pending (another
 # process's cleanup removed it while a handle was open), for a moment.
-_WINDOWS_OPEN_RETRY_SECONDS = 5.0
+_WINDOWS_OPEN_RETRY_SECONDS = 1.0
 # What msvcrt.locking raises while another process holds the byte.
 _WINDOWS_LOCK_BUSY_ERRNOS = (13, 36)  # EACCES, EDEADLOCK
 
@@ -50,10 +50,22 @@ def _open_mine_lock_file(lock_path: str, *, create: bool):
             fd = os.open(lock_path, flags, 0o600)
             break
         except PermissionError:
-            if os.name != "nt" or time.monotonic() >= deadline:
+            if (
+                os.name != "nt"
+                or time.monotonic() >= deadline
+                or _permission_error_is_lasting(lock_path)
+            ):
                 raise
             time.sleep(0.01)
     return os.fdopen(fd, "r+b")
+
+
+def _permission_error_is_lasting(lock_path: str) -> bool:
+    # A directory or a read-only file at the lock path will not settle; only a
+    # pending delete (the name may already be gone) is worth waiting out.
+    if os.path.isdir(lock_path):
+        return True
+    return os.path.exists(lock_path) and not os.access(lock_path, os.W_OK)
 
 
 def _lock_mine_lock_file(lock_file, *, blocking: bool) -> bool:
