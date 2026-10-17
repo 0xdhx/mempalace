@@ -2,6 +2,7 @@
 
 import argparse
 import errno
+import json
 import os
 import shlex
 import socket
@@ -201,6 +202,64 @@ def test_cmd_init_no_entities(mock_config_cls, tmp_path):
         cmd_init(args)
         mock_rooms.assert_called_once_with(project_dir=str(tmp_path), yes=True)
         mock_config_cls.return_value.init.assert_called_once()
+
+
+def _init_with_real_config(tmp_path, monkeypatch, *, backend=None):
+    from mempalace.config import MempalaceConfig as RealConfig
+
+    config_dir = tmp_path / "config"
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        "mempalace.cli.MempalaceConfig", lambda: RealConfig(config_dir=str(config_dir))
+    )
+    args = argparse.Namespace(dir=str(project), yes=True, backend=backend, global_backend=None)
+    with (
+        patch("mempalace.entity_detector.scan_for_detection", return_value=[]),
+        patch("mempalace.room_detector_local.detect_rooms_local"),
+        patch("mempalace.cli._run_pass_zero", return_value=None),
+        patch("mempalace.cli._maybe_run_mine_after_init"),
+    ):
+        cmd_init(args)
+    return config_dir
+
+
+def test_cmd_init_records_a_backend_chosen_through_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMPALACE_BACKEND", "sqlite_exact")
+    config_dir = _init_with_real_config(tmp_path, monkeypatch)
+
+    monkeypatch.delenv("MEMPALACE_BACKEND")
+    from mempalace.config import MempalaceConfig as RealConfig
+
+    assert RealConfig(config_dir=str(config_dir)).backend == "sqlite_exact"
+
+
+def test_cmd_init_keeps_a_backend_config_json_already_names(tmp_path, monkeypatch):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text('{"backend": "chroma"}', encoding="utf-8")
+    monkeypatch.setenv("MEMPALACE_BACKEND", "sqlite_exact")
+    _init_with_real_config(tmp_path, monkeypatch)
+
+    saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+    assert saved["backend"] == "chroma"
+
+
+def test_cmd_init_records_no_backend_when_none_was_chosen(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEMPALACE_BACKEND", raising=False)
+    config_dir = _init_with_real_config(tmp_path, monkeypatch)
+
+    saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+    assert "backend" not in saved
+
+
+def test_cmd_init_warns_and_skips_an_unknown_env_backend(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("MEMPALACE_BACKEND", "no-such-backend")
+    config_dir = _init_with_real_config(tmp_path, monkeypatch)
+
+    saved = json.loads((config_dir / "config.json").read_text(encoding="utf-8"))
+    assert "backend" not in saved
+    assert "MEMPALACE_BACKEND not recorded" in capsys.readouterr().err
 
 
 @patch("mempalace.cli.MempalaceConfig")
