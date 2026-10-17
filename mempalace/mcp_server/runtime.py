@@ -225,24 +225,8 @@ def _writer_wait_seconds() -> float:
     behaviour of refusing immediately. A value that is not a finite,
     non-negative number falls back to the default with a warning.
     """
-    import math
-
-    raw = os.environ.get(_MCP_WRITER_WAIT_SECONDS_ENV, "").strip()
-    if not raw:
-        return _MCP_WRITER_WAIT_SECONDS_DEFAULT
-    try:
-        seconds = float(raw)
-    except ValueError:
-        seconds = -1.0
-    if not math.isfinite(seconds) or seconds < 0:
-        logger.warning(
-            "Invalid %s=%r; using default %.0f s",
-            _MCP_WRITER_WAIT_SECONDS_ENV,
-            raw,
-            _MCP_WRITER_WAIT_SECONDS_DEFAULT,
-        )
-        return _MCP_WRITER_WAIT_SECONDS_DEFAULT
-    return seconds
+    seconds = env_float(_MCP_WRITER_WAIT_SECONDS_ENV, _MCP_WRITER_WAIT_SECONDS_DEFAULT)
+    return seconds if seconds >= 0 else _MCP_WRITER_WAIT_SECONDS_DEFAULT
 
 
 def _acquire_writer_lease_for_http_startup() -> tuple[bool, str]:
@@ -322,8 +306,7 @@ def _run_http_loop() -> None:
         _start_idle_exit_watchdog()
         _start_write_stall_watchdog()
 
-        raw_warmup = os.environ.get("MEMPALACE_EAGER_WARMUP", "").strip().lower()
-        if raw_warmup in _WARMUP_TRUTHY:
+        if env_bool("MEMPALACE_EAGER_WARMUP", False):
 
             def _warmup_with_lock():
                 with _HTTP_REQUEST_LOCK:
@@ -334,9 +317,6 @@ def _run_http_loop() -> None:
                 name="mcp-http-eager-warmup",
                 daemon=True,
             ).start()
-        elif raw_warmup and raw_warmup not in _WARMUP_FALSY:
-            # Keep the same warning behavior as stdio mode for typo values.
-            _maybe_eager_warmup_embedder()
 
         _serve_http(_args.host, _args.port)
     finally:

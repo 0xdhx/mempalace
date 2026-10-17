@@ -10,6 +10,7 @@ import urllib.error
 import urllib.request
 from typing import Mapping
 
+from ._env import env_bool, env_str
 from .stored_text import EXACT_WIRE_HEADER, dumps_internal
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,7 @@ def search_settings_overridden(backend: str | None = None) -> bool:
     """
     if backend:
         return True
-    return any(os.environ.get(name, "").strip() for name in SEARCH_OVERRIDE_ENV_VARS)
+    return any(env_str(name) for name in SEARCH_OVERRIDE_ENV_VARS)
 
 
 def search_fingerprint_matches(info: Mapping, palace_path: str) -> bool:
@@ -121,12 +122,7 @@ def search_setting_in_scope(scope, backend: str, embedding_model: str) -> bool:
 
 def forwarding_disabled() -> bool:
     """Whether ``MEMPALACE_HUB_FORWARD`` turns hub forwarding off."""
-    return os.environ.get(HUB_FORWARD_ENV, "").strip().lower() in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
+    return not env_bool(HUB_FORWARD_ENV, True)
 
 
 def hub_request_headers() -> dict[str, str]:

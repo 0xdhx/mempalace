@@ -182,10 +182,8 @@ def _resolve_tls_paths() -> tuple:
     Both must be given together; one without the other is a configuration error
     (raised here, before any bind, so it fails loudly at startup).
     """
-    cert = (
-        getattr(_args, "tls_cert", None) or os.environ.get("MEMPALACE_MCP_TLS_CERT", "")
-    ).strip()
-    key = (getattr(_args, "tls_key", None) or os.environ.get("MEMPALACE_MCP_TLS_KEY", "")).strip()
+    cert = (getattr(_args, "tls_cert", None) or env_str("MEMPALACE_MCP_TLS_CERT", "")).strip()
+    key = (getattr(_args, "tls_key", None) or env_str("MEMPALACE_MCP_TLS_KEY", "")).strip()
     if bool(cert) != bool(key):
         raise ValueError("TLS requires both --tls-cert and --tls-key (or the matching env vars)")
     if not cert:
@@ -237,10 +235,8 @@ def _http_allowed_host_values(bind_host: str, port: int) -> set:
     for name in names:
         values.add(name)
         values.add(f"{name}:{port}")
-    for raw in os.environ.get(_HTTP_EXTRA_ALLOWED_HOSTS_ENV, "").split(","):
-        entry = raw.strip().lower()
-        if not entry:
-            continue
+    for raw in env_list(_HTTP_EXTRA_ALLOWED_HOSTS_ENV):
+        entry = raw.lower()
         values.add(entry)
         if ":" not in entry:
             values.add(f"{entry}:{port}")
@@ -458,10 +454,7 @@ def _http_request_rejected(handler, require_auth: bool) -> bool:
 
 
 def _sse_max_clients() -> int:
-    try:
-        return max(0, int(os.environ.get(_SSE_MAX_CLIENTS_ENV, "") or _SSE_MAX_CLIENTS_DEFAULT))
-    except ValueError:
-        return _SSE_MAX_CLIENTS_DEFAULT
+    return max(0, env_int(_SSE_MAX_CLIENTS_ENV, _SSE_MAX_CLIENTS_DEFAULT))
 
 
 @contextlib.contextmanager
@@ -1024,10 +1017,7 @@ _peer_sync_stop_event: Optional[threading.Event] = None
 
 
 def _peer_sync_interval_s() -> float:
-    try:
-        return float(os.environ.get("MEMPALACE_SYNC_INTERVAL", "") or 15)
-    except ValueError:
-        return 15.0
+    return env_float("MEMPALACE_SYNC_INTERVAL", 15.0)
 
 
 def _stop_peer_sync_thread(timeout: float = 5.0) -> bool:
@@ -1248,7 +1238,7 @@ def _http_local_only(host: str) -> bool:
     ``MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS`` names the public host a proxy such as
     ``tailscale serve`` forwards under, so such a hub is treated as remote.
     """
-    return _http_is_loopback(host) and not os.environ.get(_HTTP_EXTRA_ALLOWED_HOSTS_ENV, "").strip()
+    return _http_is_loopback(host) and not env_str(_HTTP_EXTRA_ALLOWED_HOSTS_ENV)
 
 
 def _http_resolve_token(host: str) -> str:
@@ -1260,8 +1250,8 @@ def _http_resolve_token(host: str) -> str:
     from the same place, unless ``MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN``
     (``mempalace serve --allow-insecure``) says a trusted proxy guards it.
     """
-    token = os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "").strip()
-    if token or _http_local_only(host) or _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV):
+    token = env_str("MEMPALACE_MCP_HTTP_TOKEN", "")
+    if token or _http_local_only(host) or env_bool(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV, False):
         return token
     if not _config.palace_path:
         raise ValueError(
