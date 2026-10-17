@@ -5,7 +5,7 @@ a name collision and retries ``TMP_MAX`` times (hundreds of thousands, and on
 older Pythons ``os.TMP_MAX``), which reads as a hang. Callers that need the
 permission error — a directory that will take no new name — never see it.
 The opener below retries only ``FileExistsError``, and only
-``TEMP_NAME_ATTEMPTS`` times. (#2530, #2531)
+``TEMP_NAME_ATTEMPTS`` times.
 
 A publish writes a temporary file in the destination directory, fsyncs it,
 then ``os.replace``s it into place and fsyncs the directory. An exception
@@ -504,7 +504,7 @@ def read_source_text(path: PathLike, *, max_bytes: int) -> Tuple[str, str, float
     """Read a source file whole: ``(text, encoding, mtime)``.
 
     The mtime comes from the ``fstat`` taken before the read, so a caller
-    never stamps text with the mtime of a later append (#22). Newlines are
+    never stamps text with the mtime of a later append. Newlines are
     read as in text mode; see ``decode_source`` for the decoding. Raises
     ``OSError`` for a symlink, a non-regular file, or more than ``max_bytes``.
     """
