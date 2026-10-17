@@ -204,6 +204,8 @@ def cmd_init(args):
     backend = _backend_arg(args)
     if backend:
         cfg.set_backend(backend)
+    elif not cfg.recorded_backend:
+        _record_env_backend(cfg)
 
     # Pass 3: protect git repos from accidentally committing per-project files
     _ensure_mempalace_files_gitignored(args.dir)
@@ -214,6 +216,24 @@ def cmd_init(args):
     # `--auto-mine` skips the prompt and mines automatically; `--yes` is
     # SCOPED to entity auto-accept and does NOT imply mining.
     _maybe_run_mine_after_init(args, cfg)
+
+
+def _record_env_backend(cfg) -> None:
+    """Record a backend chosen with ``MEMPALACE_BACKEND`` for init.
+
+    The backend is read from config.json before the environment, and the palace
+    init points at has nothing on disk yet to detect it from, so without this
+    the first mine run without the variable would use the default backend.
+    """
+    backend = (os.environ.get("MEMPALACE_BACKEND") or "").strip().lower()
+    if not backend:
+        return
+    from ..backends.registry import BackendUnavailableError
+
+    try:
+        cfg.set_backend(backend)
+    except BackendUnavailableError as exc:
+        print(f"  WARNING: MEMPALACE_BACKEND not recorded: {exc}", file=sys.stderr)
 
 
 def _is_dialect_entity_config(path) -> bool:
