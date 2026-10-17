@@ -64,6 +64,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **`mempalace repair --mode max-seq-id` no longer runs alongside a writer.**
+  The repair rewrote Chroma's `max_seq_id` rows without the palace lease, so a
+  mine or an MCP write could land in the middle of it. It now takes the lease,
+  works out the repair again once it holds it, and exits with code 2 without
+  changing anything when another writer holds the palace. Its backup is taken
+  through SQLite's backup API, so writes still in the WAL are part of it. The
+  same applies to the max_seq_id check that runs before a repair rebuild.
 - **Embedding a single string gives one vector.** The MiniLM and
   OpenAI-compatible embedding functions treated a bare string as a list of
   characters and returned one vector per character. Every embedding function
