@@ -78,6 +78,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **A failed dimension probe no longer erases a recorded embedder dimension.**
+  `mempalace palace set-embedder` and repair record the embedder in the palace
+  sidecar. When the model's dimension probe failed, they wrote a dimension of 0
+  over the one already recorded. A failed probe now keeps the recorded dimension
+  for the same model, and records a new model as unknown with a warning.
 - **`mempalace repair --mode max-seq-id` no longer runs alongside a writer.**
   The repair rewrote Chroma's `max_seq_id` rows without the palace lease, so a
   mine or an MCP write could land in the middle of it. It now takes the lease,
