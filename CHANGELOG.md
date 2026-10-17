@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **`python -m mempalace.dedup` is gone.** It deleted near-duplicate drawers
+  and also any drawer shorter than 20 characters, so it could remove real
+  memories. Nothing else in MemPalace called it. A re-mine already replaces a
+  file's own drawers without duplicating them, and search folds identical text
+  from different files at read time.
 - **`python -m mempalace.onboarding` is gone.** `mempalace init` does project
   setup, and the one choice only onboarding offered, the embedding model, is
   now `mempalace init --embedding-model embeddinggemma` (or `minilm`,

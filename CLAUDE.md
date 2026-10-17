@@ -81,7 +81,6 @@ mempalace/
 ├── entity_registry.py   # Entity storage and disambiguation
 ├── layers.py            # L0-L3 memory wake-up stack
 ├── repair.py            # Palace repair and consistency checks
-├── dedup.py             # Deduplication
 ├── migrate.py           # ChromaDB version migration
 ├── spellcheck.py        # Auto-correct user messages
 ├── exporter.py          # Palace data export
