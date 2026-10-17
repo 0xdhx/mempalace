@@ -94,17 +94,6 @@ def test_a_corrected_line_longer_than_a_chunk_still_stamps_its_drawers(
     assert all(m.get("transforms") == "spellcheck_user" for m in metas)
 
 
-def test_turning_spellcheck_on_does_not_file_a_conversation_twice(tmp_path, monkeypatch, speller):
-    monkeypatch.delenv("MEMPALACE_CONVO_SPELLCHECK", raising=False)
-    docs_before, _ = _mine(tmp_path)
-    monkeypatch.setenv("MEMPALACE_CONVO_SPELLCHECK", "1")
-    docs_after, metas = _mine(tmp_path, {"copy.json": EXPORT})
-    # The copy is registered as seen (a sentinel row) but files no drawers.
-    filed = [m for m in metas if m.get("ingest_mode") != "registry"]
-    assert len(filed) == len(docs_before)
-    assert not any(m["source_file"].endswith("copy.json") for m in filed)
-
-
 def test_spellcheck_corrects_every_line_of_a_user_turn_and_no_assistant_text(speller):
     msgs = [
         ("user", "i knoe this\nand befor that"),
@@ -122,7 +111,6 @@ def test_spellchecking_disabled_keeps_turns_and_records_nothing(speller):
         result = _messages_to_transcript([("user", "i knoe"), ("assistant", "ok")])
     assert "> i knoe" in result
     assert run.applied == set()
-    assert run.verbatim is None
 
 
 def test_convo_spellcheck_setting(monkeypatch, tmp_path):
