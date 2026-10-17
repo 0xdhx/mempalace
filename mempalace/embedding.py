@@ -68,6 +68,20 @@ from .version import __version__
 
 logger = logging.getLogger(__name__)
 
+
+def as_text_batch(input) -> list:  # noqa: A002 — mirrors the ChromaDB EF argument
+    """Return an embedding function's ``input`` as a list of documents.
+
+    A bare ``str`` is one document. Iterating it would embed each character
+    as its own document and hand back one vector per character.
+    """
+    if input is None:
+        return []
+    if isinstance(input, str):
+        return [input]
+    return input if isinstance(input, list) else list(input)
+
+
 # Optional per-thread hook around embedding inference. The HTTP transport
 # installs a context manager that releases its request lock only for the
 # model call, so embedding latency does not stall unrelated requests.
@@ -295,6 +309,9 @@ def _build_ef_class():
         @staticmethod
         def name() -> str:
             return "default"
+
+        def __call__(self, input):  # noqa: A002 — ChromaDB EF protocol; embed_query routes here
+            return super().__call__(as_text_batch(input))
 
         def _forward(self, documents, batch_size=32):
             # Every upstream embed path (__call__, embed_query) runs the
@@ -692,14 +709,9 @@ class EmbeddinggemmaONNX:
         than characters per token do. The sort is stable, so equal-size
         documents keep arrival order and the split stays reproducible.
         """
-        if isinstance(input, str):
-            # A bare string would be iterated character by character below,
-            # silently producing one garbage vector per character.
-            input = [input]
-        if input is None or len(input) == 0:
-            # None or zero docs: nothing to embed; skip the lazy model
-            # download. len() over truthiness so an array-like documents
-            # sequence is not rejected by ambiguous-truth-value semantics.
+        input = as_text_batch(input)
+        if not input:
+            # Zero docs: nothing to embed; skip the lazy model download.
             return []
         self._lazy_load()
         np = self._np
@@ -845,7 +857,7 @@ class OpenAICompatEmbeddingFunction:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
         out: list = []
-        texts = list(input)
+        texts = as_text_batch(input)
         for start in range(0, len(texts), _EF_API_BATCH):
             batch = texts[start : start + _EF_API_BATCH]
             # encoding_format=float is explicit so a server that defaults to
@@ -1441,9 +1453,11 @@ def describe_device(device: Optional[str] = None, model: Optional[str] = None) -
     return effective
 
 
-# Probed vector widths, keyed by resolved model name. Populated once per
-# process the first time an identity is resolved for a model.
+# Probed vector widths, keyed by resolved model name. Populated the first
+# time a probe succeeds for a model; failures are never stored.
 _DIM_CACHE: dict = {}
+# Models whose failed probe was already logged at warning level.
+_DIM_PROBE_WARNED: set = set()
 
 
 def current_model_name(model: Optional[str] = None) -> str:
@@ -1470,9 +1484,11 @@ def probe_dimension(device: Optional[str] = None, model: Optional[str] = None) -
     """Return the embedder's output dimension by embedding a short probe.
 
     Model-agnostic — works for any model without a hardcoded table — and
-    cached per resolved model name so the probe is paid at most once per
-    process. Returns ``0`` if the probe fails (treated as "dimension unknown"
-    by the identity check, so a probe failure never blocks normal operation).
+    cached per resolved model name so a successful probe is paid at most once
+    per process. Returns ``0`` if the probe fails (treated as "dimension
+    unknown" by the identity check, so a probe failure never blocks normal
+    operation). A failure is not cached: an embedder that was down when the
+    process started is probed again on the next call.
     """
     name = current_model_name(model)
     if name.startswith("embeddinggemma2:"):
@@ -1484,10 +1500,18 @@ def probe_dimension(device: Optional[str] = None, model: Optional[str] = None) -
         ef = get_embedding_function(device=device, model=model)
         vectors = ef(input=["probe"])
         dim = len(vectors[0]) if vectors and vectors[0] is not None else 0
-    except Exception:
-        logger.debug("Embedding dimension probe failed for model=%s", name, exc_info=True)
-        dim = 0
-    _DIM_CACHE[name] = dim
+    except Exception as exc:
+        log = logger.debug if name in _DIM_PROBE_WARNED else logger.warning
+        _DIM_PROBE_WARNED.add(name)
+        log(
+            "Embedding dimension probe failed for model=%s (%s); will retry",
+            name,
+            type(exc).__name__,
+            exc_info=True,
+        )
+        return 0
+    if dim > 0:
+        _DIM_CACHE[name] = dim
     return dim
 
 
