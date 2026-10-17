@@ -3,14 +3,15 @@ if __name__ != "mempalace.mcp_server":
     raise ImportError(f"{__name__} is an implementation fragment; import mempalace.mcp_server")
 
 
-def _internal_tool_error(req_id, tool_name: str, exc: BaseException = None) -> dict:
+def _internal_tool_error(
+    req_id, tool_name: str, exc: BaseException = None, include_message: bool = True
+) -> dict:
     logger.exception(f"Tool error in {tool_name}")
     error: dict = {"code": -32000, "message": "Internal tool error"}
     if exc is not None:
-        error["data"] = {
-            "error_class": type(exc).__name__,
-            "message": str(exc),
-        }
+        error["data"] = {"error_class": type(exc).__name__}
+        if include_message:
+            error["data"]["message"] = str(exc)
     return {
         "jsonrpc": "2.0",
         "id": req_id,
@@ -736,13 +737,136 @@ def _tool_catalog_entry(name: str, tool: dict) -> dict:
     return entry
 
 
-def call_tool(req_id, params: dict):
+class ToolArgumentError(ValueError):
+    """An argument does not fit the tool's input schema."""
+
+
+_BOOL_WORDS = {"true": True, "yes": True, "on": True, "1": True}
+_BOOL_WORDS.update({"false": False, "no": False, "off": False, "0": False})
+_INT_TEXT = re.compile(r"[+-]?\d+")
+
+
+def _as_integer(value, schema, where):
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
+    elif isinstance(value, str) and _INT_TEXT.fullmatch(value.strip()):
+        value = int(value.strip())
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ToolArgumentError(f"'{where}' must be an integer")
+    return value
+
+
+def _as_number(value, schema, where):
+    if isinstance(value, str):
+        try:
+            value = float(value.strip())
+        except ValueError:
+            raise ToolArgumentError(f"'{where}' must be a number") from None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ToolArgumentError(f"'{where}' must be a number")
+    if value != value or value in (float("inf"), float("-inf")):
+        raise ToolArgumentError(f"'{where}' must be a finite number")
+    return value
+
+
+def _as_boolean(value, schema, where):
+    # A truthy "false" must never reach a handler as True.
+    if isinstance(value, str) and value.strip().lower() in _BOOL_WORDS:
+        value = _BOOL_WORDS[value.strip().lower()]
+    elif type(value) is int and value in (0, 1):
+        value = bool(value)
+    if not isinstance(value, bool):
+        raise ToolArgumentError(f"'{where}' must be true or false")
+    return value
+
+
+def _as_string(value, schema, where):
+    if type(value) is int:
+        value = str(value)
+    if not isinstance(value, str):
+        raise ToolArgumentError(f"'{where}' must be a string")
+    return value
+
+
+def _as_container(value, schema, where):
+    expected = schema["type"]
+    container = list if expected == "array" else dict
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, container):
+            value = parsed
+    if not isinstance(value, container):
+        raise ToolArgumentError(f"'{where}' must be an {expected}")
+    items = schema.get("items")
+    if expected == "array" and isinstance(items, dict) and items.get("type"):
+        value = [_coerce_argument(v, items, f"{where}[{i}]") for i, v in enumerate(value)]
+    return value
+
+
+_COERCERS = {
+    "integer": _as_integer,
+    "number": _as_number,
+    "boolean": _as_boolean,
+    "string": _as_string,
+    "array": _as_container,
+    "object": _as_container,
+}
+
+
+def _coerce_argument(value, schema: dict, where: str):
+    """Return ``value`` as the type ``schema`` declares, or raise ToolArgumentError.
+
+    JSON clients send integers as floats or strings and booleans as "false".
+    """
+    coerce = _COERCERS.get(schema.get("type"))
+    if coerce is not None:
+        value = coerce(value, schema, where)
+    if "enum" in schema and value not in schema["enum"]:
+        allowed = ", ".join(repr(v) for v in schema["enum"])
+        raise ToolArgumentError(f"'{where}' must be one of {allowed}")
+    if coerce in (_as_integer, _as_number):
+        if "minimum" in schema and value < schema["minimum"]:
+            raise ToolArgumentError(f"'{where}' must be at least {schema['minimum']}")
+        if "maximum" in schema and value > schema["maximum"]:
+            raise ToolArgumentError(f"'{where}' must be at most {schema['maximum']}")
+    if coerce is _as_string and len(value) > schema.get("maxLength", len(value)):
+        raise ToolArgumentError(f"'{where}' must be at most {schema['maxLength']} characters")
+    return value
+
+
+def validate_tool_arguments(tool_name: str, arguments: dict) -> dict:
+    """Coerce and check ``arguments`` against the tool's input schema.
+
+    Shared by every entry point that runs a tool handler (stdio, HTTP, the
+    daemon and the light server), so a value is judged the same way whichever
+    door it came through. A JSON null means "not supplied": the handler's
+    default applies. Keys the schema does not declare pass through untouched;
+    filtering them is the caller's job.
+    """
+    props = TOOLS[tool_name]["input_schema"].get("properties", {})
+    checked = {}
+    for key, value in arguments.items():
+        if value is None:
+            continue
+        schema = props.get(key)
+        checked[key] = value if schema is None else _coerce_argument(value, schema, key)
+    return checked
+
+
+def call_tool(req_id, params: dict, internal: bool = False):
     """Validate, gate, and run one tools/call.
 
     Returns ``(error_response, None)`` when the call is refused or fails, and
     ``(None, result)`` with the handler's raw result otherwise. The stdio and
     HTTP transports wrap the result as MCP text content; the daemon keeps the
     dict as its job result.
+
+    A handler exception reaches a client as its class only, never ``str(exc)``,
+    except a ValueError, which tools raise to refuse an input. ``internal``
+    callers (the daemon's job record) keep every message.
     """
     if not isinstance(params, dict) or "name" not in params:
         return _json_rpc_error(
@@ -790,19 +914,10 @@ def call_tool(req_id, params: dict):
                 req_id, -32602, f"Unknown {word} {quoted} for tool {tool_name}"
             ), None
         tool_args = {k: v for k, v in tool_args.items() if k in schema_props}
-    # Coerce argument types based on input_schema.
-    # MCP JSON transport may deliver integers as floats or strings;
-    # ChromaDB and Python slicing require native int.
-    for key, value in list(tool_args.items()):
-        prop_schema = schema_props.get(key, {})
-        declared_type = prop_schema.get("type")
-        try:
-            if declared_type == "integer" and not isinstance(value, int):
-                tool_args[key] = int(value)
-            elif declared_type == "number" and not isinstance(value, (int, float)):
-                tool_args[key] = float(value)
-        except (ValueError, TypeError):
-            return _json_rpc_error(req_id, -32602, f"Invalid value for parameter '{key}'"), None
+    try:
+        tool_args = validate_tool_arguments(tool_name, tool_args)
+    except ToolArgumentError as e:
+        return _json_rpc_error(req_id, -32602, f"Invalid params for tool {tool_name}: {e}"), None
     tool_args.pop("wait_for_previous", None)
     preflight_error = _mcp_tool_preflight_refusal(req_id, tool_name)
     if preflight_error is not None:
@@ -846,9 +961,10 @@ def call_tool(req_id, params: dict):
                 return _json_rpc_error(
                     req_id, -32602, f"Missing required {word} {quoted} for tool {tool_name}"
                 ), None
-        return _internal_tool_error(req_id, tool_name, e), None
+        return _internal_tool_error(req_id, tool_name, e, include_message=internal), None
     except Exception as exc:
-        return _internal_tool_error(req_id, tool_name, exc), None
+        expose = internal or isinstance(exc, ValueError)
+        return _internal_tool_error(req_id, tool_name, exc, include_message=expose), None
 
 
 def handle_request(request):

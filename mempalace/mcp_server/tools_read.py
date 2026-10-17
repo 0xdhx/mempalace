@@ -610,14 +610,6 @@ def tool_search(
     # since/before are validated inside search_memories (shared
     # parse_window), which returns the same {"error": ...} shape.
     candidate_strategy = candidate_strategy or "vector"
-    if not isinstance(candidate_strategy, str) or candidate_strategy not in {"vector", "union"}:
-        return {"error": "candidate_strategy must be one of ('vector', 'union')"}
-    if (
-        not isinstance(include_media, bool)
-        or not isinstance(query_task, str)
-        or query_task not in {"search", "code"}
-    ):
-        return {"error": "include_media must be boolean and query_task must be 'search' or 'code'"}
     if cli_compatible and (include_media or query_task != "search"):
         return {"error": "cli_compatible cannot be combined with media/code task search"}
     experimental = {
@@ -943,11 +935,6 @@ def tool_list_hallways(wing: str = None, limit: int = 100, offset: int = 0):
         wing = _sanitize_optional_name(wing, "wing")
     except ValueError as e:
         return {"error": str(e)}
-    try:
-        limit = max(1, min(int(limit), 500))
-        offset = max(0, int(offset))
-    except (TypeError, ValueError):
-        return {"error": "limit and offset must be integers"}
     rows = sorted(list_hallways(wing), key=lambda h: -int(h.get("co_occurrence_count") or 0))
     page = rows[offset : offset + limit]
     return {

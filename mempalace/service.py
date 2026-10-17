@@ -597,7 +597,7 @@ def run_mcp_tool(payload: dict[str, Any]) -> dict[str, Any]:
     if name not in mcp_server.TOOLS:
         return {"success": False, "error": f"unknown MCP tool: {name}", "exit_code": 2}
     refusal, result = mcp_server.call_tool(
-        "daemon-mcp-tool", {"name": name, "arguments": arguments}
+        "daemon-mcp-tool", {"name": name, "arguments": arguments}, internal=True
     )
     if refusal is not None:
         return _daemon_result_from_mcp_refusal(refusal["error"])

@@ -1471,9 +1471,9 @@ class TestStructuredErrors:
 
         original = mcp_server._internal_tool_error
 
-        def spy_error(req_id, tool_name, exc=None):
+        def spy_error(req_id, tool_name, exc=None, **kwargs):
             captured["exc"] = exc
-            return original(req_id, tool_name, exc)
+            return original(req_id, tool_name, exc, **kwargs)
 
         monkeypatch.setattr(mcp_server, "_internal_tool_error", spy_error)
 
@@ -1488,6 +1488,48 @@ class TestStructuredErrors:
         assert isinstance(captured.get("exc"), OSError)
         assert "data" in resp["error"]
         assert resp["error"]["data"]["error_class"] == "OSError"
+        # The exception text (paths, internals) stays in the log.
+        assert "message" not in resp["error"]["data"]
+        assert "fake disk error" not in json.dumps(resp)
+
+    def test_tool_value_error_message_reaches_the_client(self, monkeypatch):
+        """A ValueError is how a tool refuses an input; its message is the answer."""
+        from mempalace import mcp_server
+
+        def refuses(**kwargs):
+            raise ValueError("valid_from is after valid_to")
+
+        monkeypatch.setattr(
+            mcp_server,
+            "TOOLS",
+            {"mempalace_fake": {"handler": refuses, "input_schema": {"type": "object"}}},
+        )
+        resp = mcp_server.handle_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "mempalace_fake"},
+            }
+        )
+        assert resp["error"]["data"] == {
+            "error_class": "ValueError",
+            "message": "valid_from is after valid_to",
+        }
+
+    def test_daemon_calls_keep_the_exception_message(self, monkeypatch):
+        from mempalace import mcp_server
+
+        def fails(**kwargs):
+            raise OSError("fake disk error")
+
+        monkeypatch.setattr(
+            mcp_server,
+            "TOOLS",
+            {"mempalace_fake": {"handler": fails, "input_schema": {"type": "object"}}},
+        )
+        refusal, _ = mcp_server.call_tool("job", {"name": "mempalace_fake"}, internal=True)
+        assert refusal["error"]["data"]["message"] == "fake disk error"
 
     def test_tool_sync_mine_already_running_returns_error_class(self, monkeypatch, tmp_path):
         """tool_sync MineAlreadyRunning path returns error_class: LockHeldByOtherProcess."""
