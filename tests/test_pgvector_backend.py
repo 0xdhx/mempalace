@@ -10,6 +10,7 @@ from _backend_conformance import (
     assert_partition_isolation,
     assert_update_skips_missing_ids,
     assert_where_filters_conform,
+    assert_write_batch_validated,
 )
 
 from mempalace.backends import (
@@ -397,6 +398,13 @@ def test_pgvector_where_filters_conformance(tmp_path, fake_pgvector):
     ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
     col = backend.get_collection(palace=ref, collection_name="drawers", create=True)
     assert_where_filters_conform(backend, col, embedding=[1.0, 0.0])
+
+
+def test_pgvector_write_batch_validated_conformance(tmp_path, fake_pgvector):
+    backend = PgVectorBackend()
+    ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    col = backend.get_collection(palace=ref, collection_name="drawers", create=True)
+    assert_write_batch_validated(backend, col, embedding=[1.0, 0.0], add_refuses_duplicates=True)
 
 
 def test_pgvector_namespace_isolation_conformance(tmp_path, fake_pgvector):

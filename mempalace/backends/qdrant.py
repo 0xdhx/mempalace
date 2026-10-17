@@ -49,6 +49,7 @@ from .base import (
     QueryResult,
     UnsupportedCapabilityError,
     _IncludeSpec,
+    validate_write_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -76,22 +77,6 @@ _SCROLL_PAGE_SIZE = 4096
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _validate_write_batch(
-    *,
-    documents: list[str],
-    ids: list[str],
-    metadatas: Optional[list[dict]],
-    embeddings: Optional[list[list[float]]],
-) -> None:
-    n = len(ids)
-    if len(documents) != n:
-        raise ValueError(f"documents length {len(documents)} does not match ids length {n}")
-    if metadatas is not None and len(metadatas) != n:
-        raise ValueError(f"metadatas length {len(metadatas)} does not match ids length {n}")
-    if embeddings is not None and len(embeddings) != n:
-        raise ValueError(f"embeddings length {len(embeddings)} does not match ids length {n}")
 
 
 def _point_id(doc_id: str) -> str:
@@ -663,28 +648,22 @@ class QdrantCollection(BaseCollection):
         ]
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
-        _validate_write_batch(
+        validate_write_batch(
+            ids,
+            unique_ids=True,
             documents=documents,
-            ids=ids,
             metadatas=metadatas,
             embeddings=embeddings,
         )
         if embeddings is None:
             raise ValueError("qdrant requires explicit embeddings")
-        if len(set(ids)) != len(ids):
-            raise ValueError("add ids must be unique")
         existing = self.get(ids=list(ids), include=[])
         if existing.ids:
             raise ValueError(f"ids already exist in qdrant collection: {existing.ids}")
         self.upsert(documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings)
 
     def upsert(self, *, documents, ids, metadatas=None, embeddings=None):
-        _validate_write_batch(
-            documents=documents,
-            ids=ids,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        )
+        validate_write_batch(ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
         if embeddings is None:
             raise ValueError("qdrant requires explicit embeddings")
         vectors, dimension = normalize_vectors(embeddings, "qdrant")

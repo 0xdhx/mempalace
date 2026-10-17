@@ -75,6 +75,7 @@ from .base import (
     UnsupportedCapabilityError,
     UnsupportedFilterError,
     _IncludeSpec,
+    validate_write_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -154,22 +155,6 @@ def _requires_local_filter(where: Optional[dict], where_document: Optional[dict]
             elif isinstance(value, list):
                 stack.extend(item for item in value if isinstance(item, dict))
     return False
-
-
-def _validate_write_batch(
-    *,
-    documents: list[str],
-    ids: list[str],
-    metadatas: Optional[list[dict]],
-    embeddings: Optional[list[list[float]]],
-) -> None:
-    n = len(ids)
-    if len(documents) != n:
-        raise ValueError(f"documents length {len(documents)} does not match ids length {n}")
-    if metadatas is not None and len(metadatas) != n:
-        raise ValueError(f"metadatas length {len(metadatas)} does not match ids length {n}")
-    if embeddings is not None and len(embeddings) != n:
-        raise ValueError(f"embeddings length {len(embeddings)} does not match ids length {n}")
 
 
 def _vector_distance(query: np.ndarray, vector: list[float] | None) -> Optional[float]:
@@ -997,22 +982,22 @@ class PgVectorCollection(BaseCollection):
         ]
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
-        _validate_write_batch(
-            documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings
+        validate_write_batch(
+            ids,
+            unique_ids=True,
+            documents=documents,
+            metadatas=metadatas,
+            embeddings=embeddings,
         )
         if embeddings is None:
             raise ValueError("pgvector requires explicit embeddings")
-        if len(set(ids)) != len(ids):
-            raise ValueError("add ids must be unique")
         existing = self.get(ids=list(ids), include=[])
         if existing.ids:
             raise ValueError(f"ids already exist in pgvector collection: {existing.ids}")
         self.upsert(documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings)
 
     def upsert(self, *, documents, ids, metadatas=None, embeddings=None):
-        _validate_write_batch(
-            documents=documents, ids=ids, metadatas=metadatas, embeddings=embeddings
-        )
+        validate_write_batch(ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
         if embeddings is None:
             raise ValueError("pgvector requires explicit embeddings")
         vectors, dimension = normalize_vectors(embeddings, "pgvector")
