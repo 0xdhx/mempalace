@@ -118,6 +118,8 @@ def _closet_boosts(closets_col, *, query: str, n_results: int, where: dict) -> d
         hits = getattr(result, "hits", None) or []
         for rank, hit in enumerate(hits):
             meta = hit.metadata or {}
+            if is_aaak_row(meta):
+                continue
             source = meta.get("source_file", "")
             if source and source not in boosts:
                 preview = (hit.document or "")[:200]
@@ -141,6 +143,8 @@ def _closet_boosts(closets_col, *, query: str, n_results: int, where: dict) -> d
         )
     ):
         cmeta = cmeta or {}
+        if is_aaak_row(cmeta):
+            continue
         source = cmeta.get("source_file", "")
         if source and source not in boosts:
             boosts[source] = (

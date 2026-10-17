@@ -2173,7 +2173,7 @@ def test_cmd_compress_with_config(mock_config_cls, tmp_path, capsys):
 
 @patch("mempalace.cli.MempalaceConfig")
 def test_cmd_compress_stores_results(mock_config_cls, capsys):
-    """Non-dry-run compress stores to mempalace_closets collection (#1244)."""
+    """Non-dry-run compress stores to the mempalace_aaak collection."""
     mock_config_cls.return_value.palace_path = "/fake/palace"
     args = argparse.Namespace(palace=None, wing=None, dry_run=False, config=None)
     mock_col = MagicMock()
@@ -2204,7 +2204,8 @@ def test_cmd_compress_stores_results(mock_config_cls, capsys):
 
     with (
         patch("mempalace.palace._open_collection_or_explain", return_value=mock_col),
-        patch("mempalace.palace.get_closets_collection", return_value=mock_comp_col),
+        patch("mempalace.palace.get_aaak_collection", return_value=mock_comp_col),
+        patch("mempalace.palace.move_aaak_out_of_closets", return_value=0),
         patch.dict("sys.modules", {"mempalace.dialect": mock_dialect_mod}),
     ):
         cmd_compress(args)
@@ -2212,14 +2213,16 @@ def test_cmd_compress_stores_results(mock_config_cls, capsys):
     assert "Stored" in out
     assert "Total:" in out
     mock_comp_col.upsert.assert_called_once()
-    assert "mempalace_closets" in out
+    assert mock_comp_col.upsert.call_args.kwargs["metadatas"][0]["kind"] == "aaak"
+    assert "mempalace_aaak" in out
 
 
-def test_cmd_compress_output_readable_via_get_closets_collection(tmp_path, capsys):
-    """End-to-end: cmd_compress output must be readable via the same code
-    path palace.py uses (`get_closets_collection`). Regression for #1244."""
+def test_cmd_compress_output_lands_in_the_aaak_collection(tmp_path, capsys):
+    """End-to-end: cmd_compress output is readable through
+    ``get_aaak_collection`` and never lands in the closets search reads."""
+    from mempalace.backends import CollectionNotInitializedError
     from mempalace.backends.chroma import ChromaBackend
-    from mempalace.palace import get_closets_collection, get_collection
+    from mempalace.palace import get_aaak_collection, get_closets_collection, get_collection
 
     palace_path = str(tmp_path / "palace")
 
@@ -2242,17 +2245,20 @@ def test_cmd_compress_output_readable_via_get_closets_collection(tmp_path, capsy
     out = capsys.readouterr().out
     assert "Stored" in out
 
-    # Now read via the *same* code path palace.py / searcher uses.
-    closets = get_closets_collection(palace_path, create=False)
-    got = closets.get(ids=["drawer-1"], include=["documents", "metadatas"])
-    assert got["ids"] == ["drawer-1"], (
-        "compressed drawer not found in mempalace_closets — "
-        "cmd_compress wrote to the wrong collection (#1244)"
-    )
+    aaak = get_aaak_collection(palace_path, create=False)
+    got = aaak.get(ids=["drawer-1"], include=["documents", "metadatas"])
+    assert got["ids"] == ["drawer-1"]
     assert got["documents"] and got["documents"][0], "empty compressed doc"
     meta = got["metadatas"][0]
     assert meta.get("wing") == "test"
+    assert meta.get("kind") == "aaak"
     assert "compression_ratio" in meta
+
+    try:
+        closets = get_closets_collection(palace_path, create=False)
+    except CollectionNotInitializedError:
+        return
+    assert closets.get(ids=["drawer-1"])["ids"] == []
 
 
 def test_cmd_repair_trailing_slash_does_not_recurse():

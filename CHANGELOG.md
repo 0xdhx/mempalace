@@ -85,6 +85,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   now read distances on the cosine scale, so palaces using `l2` or `ip` rank and
   report the same way as cosine ones. Search responses name the raw distance's
   scale in `distance_metric`.
+- **`mempalace compress` no longer writes into the closets that search reads.**
+  Its lossy AAAK summaries were stored alongside closet pointers, so they
+  boosted search results like real closets. They now go to their own
+  `mempalace_aaak` collection, one row per drawer with `kind="aaak"`, and
+  repair and migrate carry it over. Search already ignores summaries an older
+  `compress` left in the closets, and the next `compress` moves them out.
 
 ---
 
