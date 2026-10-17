@@ -10,6 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **`mempalace init` records a backend chosen with `MEMPALACE_BACKEND`.** The
+  backend is read from `config.json` before the environment, and a palace init
+  has not created yet has nothing on disk to detect it from, so the first
+  `mine` run without the variable used the default backend. When `config.json`
+  names no backend, init now writes the one `MEMPALACE_BACKEND` selects. This is
+  the one setting init takes from the environment; it never replaces a backend
+  `config.json` already names, and an unknown name is reported and skipped.
 - **The next mine re-reads every source once.** The drawer normalization
   version moves to 3, so each mined file reads as stale and is filed again
   through the write-then-prune path. Drawers whose text comes out the same
@@ -89,6 +96,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **A failed dimension probe no longer erases a recorded embedder dimension.**
+  `mempalace palace set-embedder` and repair record the embedder in the palace
+  sidecar. When the model's dimension probe failed, they wrote a dimension of 0
+  over the one already recorded. A failed probe now keeps the recorded dimension
+  for the same model, and records a new model as unknown with a warning.
 - **`mempalace repair --mode max-seq-id` no longer runs alongside a writer.**
   The repair rewrote Chroma's `max_seq_id` rows without the palace lease, so a
   mine or an MCP write could land in the middle of it. It now takes the lease,

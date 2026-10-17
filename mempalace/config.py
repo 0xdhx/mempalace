@@ -778,6 +778,12 @@ class MempalaceConfig:
         return DEFAULT_BACKEND
 
     @property
+    def recorded_backend(self):
+        """The backend ``config.json`` names, or ``None`` when it names none."""
+        cfg_val = self._file_config.get("backend")
+        return str(cfg_val).strip().lower() if cfg_val else None
+
+    @property
     def qdrant_url(self):
         """Qdrant endpoint for the opt-in ``qdrant`` backend.
 
