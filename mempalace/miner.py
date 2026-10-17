@@ -23,6 +23,7 @@ from collections import defaultdict
 from typing import Optional
 
 from .entity_detector import _apply_known_systems_prepass, _get_coca_filter
+from .fsio import encoding_metadata, read_source_text
 from .palace import (
     NORMALIZE_VERSION,
     SKIP_DIRS,
@@ -74,53 +75,20 @@ def _path_within_root(path: Path, root: Path) -> bool:
         return False
 
 
-def _read_text_no_follow(filepath: Path, root: Path) -> Optional[tuple[str, float]]:
-    """Read ``filepath`` and return ``(content, mtime)`` from the SAME
-    ``fstat()`` call that validated the file, so callers never need a
-    separate, later ``os.path.getmtime()`` that could observe a file
-    modified in between (see #22: a stale re-stat lets appended content
-    be silently and permanently skipped)."""
+def _read_text_no_follow(filepath: Path, root: Path) -> Optional[tuple[str, float, str]]:
+    """``(content, mtime, encoding)`` for a regular file under ``root``, else None.
+
+    The mtime is from the same ``fstat`` that validated the file, so callers
+    never need a later ``os.path.getmtime()`` that could observe an append
+    (#22). See ``fsio.read_source_text`` for how the bytes are decoded.
+    """
     if not _path_within_root(filepath, root):
         return None
-    # O_NONBLOCK is what makes the S_ISREG check below reachable. Opening a
-    # FIFO for reading parks in the kernel until a writer shows up, so
-    # without it the fstat never runs and a named pipe carrying a
-    # READABLE_EXTENSIONS suffix wedges the mine forever. With it the open
-    # returns immediately and the *file type* decides — no errno guesswork,
-    # and a FIFO that does have a live writer is rejected just the same.
-    # Linux open(2): "this flag has no effect for regular files and block
-    # devices". POSIX leaves it unspecified outside FIFOs and special files,
-    # and one Linux case is not a no-op — see the EAGAIN branch below.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    fd = -1
     try:
-        try:
-            fd = os.open(filepath, flags)
-        except OSError as exc:
-            # A reader that breaks a write lease gets EAGAIN when it passes
-            # O_NONBLOCK, where a blocking open waits out lease-break-time
-            # and succeeds. The kernel grants leases on regular files only
-            # (F_SETLEASE on a pipe fails EINVAL), so re-check the type and
-            # then read it the way this code did before the flag existed;
-            # dropping it would silently lose a file that used to be mined.
-            if exc.errno != errno.EAGAIN or not stat.S_ISREG(os.lstat(filepath).st_mode):
-                raise
-            fd = os.open(filepath, flags & ~getattr(os, "O_NONBLOCK", 0))
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_FILE_SIZE:
-            return None
-        mtime = st.st_mtime
-        with os.fdopen(fd, "r", encoding="utf-8", errors="replace") as f:
-            fd = -1
-            return f.read(), mtime
+        content, encoding, mtime = read_source_text(filepath, max_bytes=MAX_FILE_SIZE)
     except OSError:
         return None
-    finally:
-        if fd != -1:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+    return content, mtime, encoding
 
 
 PHP_EXTENSIONS = {
@@ -1750,6 +1718,7 @@ def _build_drawer_metadata(
     content_date: Optional[str] = None,
     content_date_source: Optional[str] = None,
     source_dir_ino: Optional[str] = None,
+    source_encoding: str = "utf-8",
 ) -> dict:
     """Build the metadata dict for one drawer without upserting.
 
@@ -1778,6 +1747,9 @@ def _build_drawer_metadata(
     and the key is then absent, which leaves that drawer exactly where it
     was.
 
+    ``source_encoding`` is the codec the file decoded with; it is stamped
+    only when it is not UTF-8.
+
     ``chunk_total`` (see #21) is stamped by ``write_file_drawers``, not here.
     """
     metadata = {
@@ -1801,6 +1773,7 @@ def _build_drawer_metadata(
         metadata["content_date_source"] = content_date_source or "unknown"
     if source_dir_ino:
         metadata["source_dir_ino"] = source_dir_ino
+    metadata.update(encoding_metadata(source_encoding))
     metadata["hall"] = detect_hall(content)
     entities = _extract_entities_for_metadata(content)
     if entities:
@@ -1911,7 +1884,7 @@ def process_file(
     read_result = _read_text_no_follow(filepath, project_path)
     if read_result is None:
         return 0, "general", None
-    content, read_mtime = read_result
+    content, read_mtime, source_encoding = read_result
 
     content = content.strip()
     if len(content) < effective_min:
@@ -1994,6 +1967,7 @@ def process_file(
                     content_date=file_content_date,
                     content_date_source=file_content_date_source,
                     source_dir_ino=source_dir_ino,
+                    source_encoding=source_encoding,
                 ),
             )
             for chunk in chunks

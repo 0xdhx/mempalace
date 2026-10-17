@@ -69,50 +69,18 @@ def _server_is_loopback(host: str) -> bool:
     return (host or "").strip().lower() in _SERVER_LOOPBACK_HOSTS
 
 
-def _server_token_path(palace_path: str) -> Path:
-    """Per-palace location for the auto-generated server bearer token.
-
-    Distinct from the daemon's token dir; keyed by the canonical palace path so
-    one server per palace reuses a stable token across restarts. Delegates to
-    ``server_registry`` so the token and the hub serverinfo record share one
-    directory convention.
-    """
-    from ..server_registry import server_token_path
-
-    return server_token_path(palace_path)
-
-
-def _load_or_create_server_token(palace_path: str) -> tuple[str, bool]:
-    """Return (token, created). Reuse an existing 0600 token or mint a new one."""
-    import secrets
-
-    token_path = _server_token_path(palace_path)
-    if token_path.exists():
-        existing = token_path.read_text(encoding="utf-8").strip()
-        if existing:
-            return existing, False
-    token = secrets.token_urlsafe(32)
-    token_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(str(token_path.parent), 0o700)
-    except OSError:
-        pass
-    # O_CREAT with 0600 so the token is never briefly world-readable on disk.
-    fd = os.open(str(token_path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(token + "\n")
-    return token, True
-
-
 def cmd_serve(args):
     """Run a secure remote HTTP MCP server for a team to share one palace (#1877).
 
     A turnkey wrapper over ``mempalace-mcp --transport http``: it resolves a
-    bearer token (auto-generating a strong one for non-loopback binds), prints a
+    bearer token (reusing or auto-generating the palace's stored one), prints a
     ready-to-paste client config, then execs the real server in the foreground so
     Docker/systemd own the process lifecycle. The token is passed via the
-    environment, never argv, so it can't leak through ``ps``.
+    environment, never argv, so it can't leak through ``ps``, and is never
+    printed: a token in a terminal or a service log is a leaked token.
     """
+    from ..server_registry import load_or_create_server_token, server_token_path
+
     host = args.host
     port = int(args.port)
     loopback = _server_is_loopback(host)
@@ -134,11 +102,22 @@ def cmd_serve(args):
             sys.exit(2)
     scheme = "https" if tls_cert else "http"
 
-    # Token resolution. Explicit flag > existing env > (non-loopback) auto-generated.
+    no_token = bool(getattr(args, "no_token", False))
+    if no_token and not loopback:
+        print(
+            "mempalace: --no-token is only allowed on a loopback bind; a network-exposed "
+            "server needs a token (or --allow-insecure behind a trusted proxy)",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    # Token resolution. Explicit flag > existing env > the palace's stored token.
     token = (args.token or os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "")).strip()
     token_created = False
-    if not token and not loopback and not args.allow_insecure:
-        token, token_created = _load_or_create_server_token(palace_path)
+    tokenless = no_token or args.allow_insecure
+    if not token and not tokenless:
+        token, token_created = load_or_create_server_token(palace_path)
+    token_path = server_token_path(palace_path)
 
     # Build the child environment. Token rides in the env (never argv) so it
     # stays out of the process table.
@@ -148,7 +127,7 @@ def cmd_serve(args):
         env["MEMPALACE_BACKEND"] = str(backend).strip().lower()
     if token:
         env["MEMPALACE_MCP_HTTP_TOKEN"] = token
-    if args.allow_insecure:
+    if not token and tokenless:
         env["MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN"] = "1"
 
     child = [
@@ -181,16 +160,16 @@ def cmd_serve(args):
     print(f"  bind     : {host}:{port}  ({'loopback' if loopback else 'network-exposed'})")
     print(f"  tls      : {'on' if tls_cert else 'off (plaintext -- terminate TLS at a proxy)'}")
     print(f"  read-only: {'yes' if args.read_only else 'no'}")
-    if token_created:
-        print("\n  A new bearer token was generated and stored 0600 at:")
-        print(f"    {_server_token_path(palace_path)}")
-        print("  Store it securely -- clients need it to connect:")
-        print(f"    {token}")
+    if token and not args.token and not os.environ.get("MEMPALACE_MCP_HTTP_TOKEN"):
+        state = "new, " if token_created else ""
+        print(f"  token    : {token_path}  ({state}0600; local mempalace clients read it)")
+    elif not token:
+        print("  token    : none (--no-token / --allow-insecure)")
     print("\nConnect a client:")
     if token:
         print(
             f"  claude mcp add --transport http mempalace {url} "
-            f'--header "Authorization: Bearer {token if token_created else "$MEMPALACE_MCP_HTTP_TOKEN"}"'
+            '--header "Authorization: Bearer <token>"'
         )
     else:
         print(f"  claude mcp add --transport http mempalace {url}")

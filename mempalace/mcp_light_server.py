@@ -117,11 +117,13 @@ def _unwrap_wrapper_input(arguments: Any) -> Any:
     return arguments
 
 
-def _call_handler_safe(handler, params: Dict[str, Any]) -> Dict[str, Any]:
-    """Invoke handler safely by filtering extra kwargs that the handler doesn't accept."""
-    if not callable(handler):
-        return {"success": False, "error": f"Handler {handler} is not callable"}
-    mapped = _alias_args_for_handler(handler, params)
+def _call_handler_safe(name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    """Run tool ``name`` with the kwargs its handler accepts, checked like any tools/call."""
+    handler = mcp_server.TOOLS[name]["handler"]
+    try:
+        mapped = mcp_server.validate_tool_arguments(name, _alias_args_for_handler(handler, params))
+    except mcp_server.ToolArgumentError as e:
+        return {"success": False, "error": f"Invalid params for tool {name}: {e}"}
     return handler(**mapped)
 
 
@@ -248,7 +250,7 @@ def tool_palace_query(arguments: Dict[str, Any] | str) -> Dict[str, Any]:
     name = _allowlisted_tool(_QUERY_TARGET_TO_TOOL, target)
     if name is None:
         return {"success": False, "error": f"Unknown palace_query target: '{target}'"}
-    res = _call_handler_safe(mcp_server.TOOLS[name]["handler"], _query_arguments(name, params))
+    res = _call_handler_safe(name, _query_arguments(name, params))
     if name == "mempalace_search":
         return _enrich_search_results(res)
     if name == "mempalace_get_taxonomy" and params.get("wing") and isinstance(res, dict):
@@ -271,7 +273,7 @@ def tool_palace_exec(arguments: Dict[str, Any] | str) -> Dict[str, Any]:
     name = _allowlisted_tool(_EXEC_ACTION_TO_TOOL, action)
     if name is None:
         return {"success": False, "error": f"Unknown palace_exec action: '{action}'"}
-    return _call_handler_safe(mcp_server.TOOLS[name]["handler"], params)
+    return _call_handler_safe(name, params)
 
 
 def tool_palace_coordinate(arguments: Dict[str, Any] | str) -> Dict[str, Any]:
@@ -286,7 +288,7 @@ def tool_palace_coordinate(arguments: Dict[str, Any] | str) -> Dict[str, Any]:
     name = _allowlisted_tool(_COORD_ACTION_TO_TOOL, action)
     if name is None:
         return {"success": False, "error": f"Unknown palace_coordinate action: '{action}'"}
-    return _call_handler_safe(mcp_server.TOOLS[name]["handler"], params)
+    return _call_handler_safe(name, params)
 
 
 # ==================== LIGHTWEIGHT MCP TOOL DEFINITIONS ====================
@@ -826,7 +828,9 @@ def handle_light_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 },
             }
         except Exception as e:
-            return mcp_server._internal_tool_error(req_id, tool_name, e)
+            return mcp_server._internal_tool_error(
+                req_id, tool_name, e, include_message=isinstance(e, ValueError)
+            )
 
     if req_id is None:
         return None
@@ -989,7 +993,9 @@ def dispatch_light_stdio_request(request: Dict[str, Any]) -> Optional[Dict[str, 
             try:
                 resp = mcp_server._dispatch_stdio_request(forwarded)
             except Exception as exc:
-                return mcp_server._internal_tool_error(request.get("id"), underlying, exc)
+                return mcp_server._internal_tool_error(
+                    request.get("id"), underlying, exc, include_message=isinstance(exc, ValueError)
+                )
             return _postprocess_light_response(rewritten, resp)
     return handle_light_request(request)
 

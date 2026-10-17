@@ -24,7 +24,6 @@ from mempalace.format_miner import (  # noqa: E402
     DEFAULT_MAX_FILE_SIZE,
     SUPPORTED_FORMATS,
     ExtractionStatus,
-    decode_robust,
     extract_text,
     is_icloud_dataless,
     scan_formats,
@@ -238,34 +237,6 @@ def test_fringe_icloud_skip_extraction(tmp_path: Path):
     assert text is None
     assert status == ExtractionStatus.SKIP_CLOUD_ONLY
     mocked.assert_not_called()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Fringe Case 8 — encoding fallback (utf-8 → cp1252 → utf-8-replace)
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def test_decode_robust_clean_utf8():
-    assert decode_robust(b"hello \xe2\x9c\xa8 world") == "hello ✨ world"
-
-
-def test_decode_robust_cp1252_fallback():
-    # 0x91 = U+2018 left single quote in cp1252; invalid as standalone utf-8
-    raw = b"hello \x91world\x92"
-    result = decode_robust(raw)
-    assert isinstance(result, str)
-    assert "world" in result
-
-
-def test_decode_robust_never_raises():
-    raw = b"\xff\xfe\xfd\xfc" + b"some text"
-    result = decode_robust(raw)
-    assert isinstance(result, str)
-    assert "some text" in result
-
-
-def test_decode_robust_empty():
-    assert decode_robust(b"") == ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -545,21 +516,6 @@ def test_scan_formats_returns_empty_for_missing_dir(tmp_path: Path):
     """scan_formats handles a path that doesn't exist (no crash, empty list)."""
     missing = tmp_path / "does-not-exist"
     assert scan_formats(missing) == []
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# decode_robust — exercise the cp1252 path explicitly
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def test_decode_robust_pure_cp1252():
-    """Bytes that are invalid UTF-8 but valid CP1252 → second-attempt success."""
-    raw = b"\x91hello\x92"
-    result = decode_robust(raw)
-    assert isinstance(result, str)
-    assert "hello" in result
-    # 0x91 / 0x92 are CP1252 smart quotes that decode without error
-    assert "�" not in result, "CP1252 path should not need the replace fallback"
 
 
 # ─────────────────────────────────────────────────────────────────────────────

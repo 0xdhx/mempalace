@@ -10,6 +10,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **`mempalace init` records a backend chosen with `MEMPALACE_BACKEND`.** The
+  backend is read from `config.json` before the environment, and a palace init
+  has not created yet has nothing on disk to detect it from, so the first
+  `mine` run without the variable used the default backend. When `config.json`
+  names no backend, init now writes the one `MEMPALACE_BACKEND` selects. This is
+  the one setting init takes from the environment; it never replaces a backend
+  `config.json` already names, and an unknown name is reported and skipped.
+- **The HTTP MCP server requires a bearer token on every bind, loopback
+  included.** With no `--token` or `MEMPALACE_MCP_HTTP_TOKEN`, `mempalace serve`
+  and `mempalace-mcp --transport http` reuse or create the palace's token at
+  `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace` clients
+  already look, so the CLI, hooks and stdio proxy keep working unchanged. Anything
+  else that calls a loopback `/mcp` directly now needs `Authorization: Bearer
+  <token>`, or start the server with `--no-token` (loopback only). The token is
+  no longer printed at startup; the path is.
+- **MCP tool arguments are checked against the tool's schema before the tool
+  runs.** Wrong types, out-of-range limits, unknown enum values and over-long
+  strings return `-32602` with the parameter named, instead of reaching the tool
+  (`"false"` used to arrive as a truthy string). Numeric and boolean strings
+  (`"5"`, `"false"`) are still accepted and converted. An internal tool error
+  reports its error class without the exception text.
 - **`closet_llm` reads `MEMPALACE_LLM_ENDPOINT`, `MEMPALACE_LLM_MODEL` and
   `MEMPALACE_LLM_KEY` instead of the generic `LLM_ENDPOINT`, `LLM_MODEL` and
   `LLM_KEY`.** Generic names are often set for other tools, and reading them
@@ -64,6 +85,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **A failed dimension probe no longer erases a recorded embedder dimension.**
+  `mempalace palace set-embedder` and repair record the embedder in the palace
+  sidecar. When the model's dimension probe failed, they wrote a dimension of 0
+  over the one already recorded. A failed probe now keeps the recorded dimension
+  for the same model, and records a new model as unknown with a warning.
+- **`mempalace repair --mode max-seq-id` no longer runs alongside a writer.**
+  The repair rewrote Chroma's `max_seq_id` rows without the palace lease, so a
+  mine or an MCP write could land in the middle of it. It now takes the lease,
+  works out the repair again once it holds it, and exits with code 2 without
+  changing anything when another writer holds the palace. Its backup is taken
+  through SQLite's backup API, so writes still in the WAL are part of it. The
+  same applies to the max_seq_id check that runs before a repair rebuild.
 - **Graph tools no longer report an unreadable palace as an empty one.**
   `traverse`, `find_tunnels` and explicit `create_tunnel` used to treat any
   failure to open the palace (a lock, a corrupt index) as "no rooms", and an
@@ -102,6 +135,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `.gitignore` instead of always `mempalace.yaml`. The skip lists now come
   from one place. `init` also no longer overwrites an `entities.json` that
   holds AAAK entity codes for `mempalace compress`.
+- **Mining no longer turns bytes that are not UTF-8 into U+FFFD.** Project,
+  conversation, diary and sweep ingest decoded files as UTF-8 and replaced
+  anything else with the replacement character, so a cp1252 file lost its
+  smart quotes and accented letters for good. Now a UTF-8 file with a few
+  stray bytes (its valid UTF-8 characters outnumber them) keeps its text
+  exactly, with only the stray bytes held as lone surrogates, so `café` stays
+  searchable. Any other file decodes as windows-1252, with every byte mapped.
+  The palace stores every byte exactly. MCP responses show a stray byte as
+  U+FFFD, because some clients' JSON parsers reject the escape that would
+  carry it; `mempalace_get_drawer` with `include_source_bytes: true` returns
+  the drawer's exact source bytes as base64. Exports write the original
+  bytes, and MemPalace processes talking to each other (proxy and hub, the
+  daemon, peer sync) pass them exactly. `mempalace_update_drawer` with new
+  content drops `source_encoding` and `transforms`, since that text did not
+  come from the source file. A drawer whose source was not plain UTF-8 carries
+  `source_encoding` (`utf-8-sig`, `utf-8+surrogateescape`,
+  `utf-8-sig+surrogateescape` or `windows-1252`), and
+  `fsio.encode_source(text, source_encoding)` gives the source bytes back.
+  The encoding-repair script (`scripts/mempalace_repair_encoding.py`) leaves
+  those drawers alone. Drawers filed before this release keep their
+  replacement characters until their file is mined again.
 - **A re-mine no longer loses a file's drawers when it fails part-way.** The
   project and conversation miners deleted a changed file's drawers before
   writing the new ones, so a crash or backend error during the write left the

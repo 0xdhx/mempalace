@@ -105,7 +105,8 @@ class TestServerRegistry:
     def test_shares_directory_with_server_token(self, isolated_home):
         palace = str(isolated_home / "palace")
         assert (
-            server_registry.serverinfo_path(palace).parent == cli._server_token_path(palace).parent
+            server_registry.serverinfo_path(palace).parent
+            == server_registry.server_token_path(palace).parent
         )
 
     def test_dead_pid_record_is_ignored(self, isolated_home):
@@ -746,7 +747,9 @@ class TestForwardSearchToHub:
         ],
     )
     def test_per_invocation_search_override_is_not_forwardable(self, monkeypatch, env_name):
-        for name in cli._SEARCH_OVERRIDE_ENV_VARS:
+        from mempalace.hub_client import SEARCH_OVERRIDE_ENV_VARS
+
+        for name in SEARCH_OVERRIDE_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv(env_name, "en")
         assert cli._search_args_forwardable(_search_args()) is False

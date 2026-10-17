@@ -190,6 +190,23 @@ def _release_palace_anchors():
         inproc.release_all()
 
 
+def _realign_default_backend(palace_module):
+    """Make ``palace._DEFAULT_BACKEND`` the registry's chroma instance again.
+
+    In production the two are the same object. ``reset_backends()`` (called by
+    several test modules) closes that instance and empties the registry, so the
+    next ``get_backend("chroma")`` builds a second one while ``_DEFAULT_BACKEND``
+    keeps pointing at the closed original. Later tests then patch one object
+    and the code under test uses the other.
+    """
+    from mempalace.backends import registry
+    from mempalace.backends.chroma import ChromaBackend
+
+    current = registry.get_backend("chroma")
+    if isinstance(current, ChromaBackend) and current is not palace_module._DEFAULT_BACKEND:
+        palace_module._DEFAULT_BACKEND = current
+
+
 @pytest.fixture(autouse=True)
 def _reset_mcp_cache(monkeypatch):
     """Reset cached MCP state between tests without importing mcp_server.
@@ -289,6 +306,7 @@ def _reset_mcp_cache(monkeypatch):
         try:
             from mempalace import palace as _palace
 
+            _realign_default_backend(_palace)
             backend = getattr(_palace, "_DEFAULT_BACKEND", None)
             clients = getattr(backend, "_clients", None)
             if clients:
@@ -320,6 +338,17 @@ def _isolate_home():
         else:
             os.environ[var] = orig
     shutil.rmtree(_session_tmp, ignore_errors=True)
+
+
+@pytest.fixture
+def tokenless_http_hub(monkeypatch):
+    """Serve MCP HTTP without a bearer token, as ``mempalace serve --no-token`` does.
+
+    The transport requires a token by default; suites that drive a loopback
+    hub with raw HTTP requests opt out with this rather than carry a token.
+    """
+    monkeypatch.delenv("MEMPALACE_MCP_HTTP_TOKEN", raising=False)
+    monkeypatch.setenv("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN", "1")
 
 
 @pytest.fixture

@@ -19,15 +19,15 @@ Supported:
 No API key. No internet. Everything local.
 """
 
-import errno
 import json
 import os
 import re
-import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Optional, Tuple
+
+from .fsio import read_source_text
 
 
 class UnparsedCodexTranscriptError(ValueError):
@@ -141,6 +141,9 @@ def strip_noise(text: str) -> str:
     return text.strip()
 
 
+_MAX_TRANSCRIPT_BYTES = 500 * 1024 * 1024  # 500 MB safety limit
+
+
 def _read_transcript_file(filepath: str) -> str:
     """Read a transcript source file with the same safety checks normalize()
     and normalize_conversations() both need: no symlinks, regular files only,
@@ -153,41 +156,18 @@ def _read_transcript_file_with_mtime(filepath: str) -> Tuple[str, float]:
     """``_read_transcript_file`` plus the mtime from the ``fstat`` taken
     before the read. A stat after the read can record an mtime for bytes
     the read never saw, and the next mine then skips the appended tail.
+
+    Inside ``recording_transforms`` the codec the bytes decoded with is kept
+    on the run as ``encoding``.
     """
-    # O_NONBLOCK keeps the "not a regular file" check below reachable: a
-    # blocking open of a FIFO waits in the kernel for a writer, so the
-    # S_ISREG test never runs. See ``miner._read_text_no_follow``, including
-    # why the EAGAIN branch re-checks the type and retries without the flag.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    if os.path.islink(filepath):
-        raise IOError(f"Could not read {filepath}: symlinked files are skipped")
-    fd = -1
     try:
-        try:
-            fd = os.open(filepath, flags)
-        except OSError as exc:
-            if exc.errno != errno.EAGAIN or not stat.S_ISREG(os.lstat(filepath).st_mode):
-                raise
-            fd = os.open(filepath, flags & ~getattr(os, "O_NONBLOCK", 0))
-        file_stat = os.fstat(fd)
-        if not stat.S_ISREG(file_stat.st_mode):
-            # Text stays prefix-free: this raise is inside the ``try``, so the
-            # ``except OSError`` below composes "Could not read <path>: ...".
-            raise IOError("not a regular file")
-        if file_stat.st_size > 500 * 1024 * 1024:  # 500 MB safety limit
-            # Prefix-free for the same reason as the branch above.
-            raise IOError(f"file too large ({file_stat.st_size // (1024 * 1024)} MB)")
-        with os.fdopen(fd, "r", encoding="utf-8-sig", errors="replace") as f:
-            fd = -1
-            return f.read(), file_stat.st_mtime
+        text, encoding, mtime = read_source_text(filepath, max_bytes=_MAX_TRANSCRIPT_BYTES)
     except OSError as e:
         raise IOError(f"Could not read {filepath}: {e}") from e
-    finally:
-        if fd != -1:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+    run = _NORMALIZE_RUN.get()
+    if run is not None:
+        run.encoding = encoding
+    return text, mtime
 
 
 def normalize(filepath: str) -> str:
@@ -1170,12 +1150,14 @@ def _format_tool_result(content, tool_name: str) -> str:
 
 
 class NormalizeRun:
-    """The RFC 002 transformations one file's parse inside
-    ``recording_transforms`` applied (``applied``)."""
+    """What one file's parse inside ``recording_transforms`` did: the RFC 002
+    transformations it applied (``applied``) and the codec its bytes decoded
+    with (``encoding``)."""
 
     def __init__(self, spellcheck: bool):
         self.spellcheck = spellcheck
         self.applied: set = set()
+        self.encoding = "utf-8"
 
     @property
     def transforms(self) -> str:

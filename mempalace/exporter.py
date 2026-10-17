@@ -48,6 +48,9 @@ def _safe_open_for_write(path: str, mode: str, encoding: str = "utf-8"):
     a symlink — closing the TOCTOU window between an islink check and the open.
     On platforms without O_NOFOLLOW (Windows), pre-checks ``os.path.islink``,
     which is narrower than no check at all.
+
+    Writes with ``surrogateescape``: a stray source byte, held in drawer text
+    as a lone surrogate, goes back out as the byte it was.
     """
     o_nofollow = getattr(os, "O_NOFOLLOW", 0)
     if o_nofollow:
@@ -59,10 +62,10 @@ def _safe_open_for_write(path: str, mode: str, encoding: str = "utf-8"):
             if e.errno == errno.ELOOP:
                 raise ValueError(f"refusing to write: {path!r} is a symbolic link.") from None
             raise
-        return os.fdopen(fd, mode, encoding=encoding)
+        return os.fdopen(fd, mode, encoding=encoding, errors="surrogateescape")
     if os.path.islink(path):
         raise ValueError(f"refusing to write: {path!r} is a symbolic link.")
-    return open(path, mode, encoding=encoding)
+    return open(path, mode, encoding=encoding, errors="surrogateescape")
 
 
 def export_palace(palace_path: str, output_dir: str, format: str = "markdown") -> dict:
