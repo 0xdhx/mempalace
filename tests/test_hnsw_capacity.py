@@ -655,6 +655,25 @@ def test_tool_status_via_sqlite_returns_breakdown(palace_with_drawers, monkeypat
     assert out["wings"].get("design") == 1
 
 
+def test_tool_status_via_sqlite_logs_an_unreadable_database(tmp_path, monkeypatch, caplog):
+    from mempalace import mcp_server
+
+    (tmp_path / "chroma.sqlite3").write_bytes(b"not a database")
+
+    class _Cfg:
+        palace_path = str(tmp_path)
+        collection_name = "mempalace_drawers"
+
+    monkeypatch.setattr(mcp_server, "_config", _Cfg())
+    monkeypatch.setattr(mcp_server, "_vector_disabled", True)
+    monkeypatch.setattr(mcp_server, "_vector_disabled_reason", "test divergence")
+
+    with caplog.at_level("ERROR"):
+        out = mcp_server._tool_status_via_sqlite()
+    assert out["total_drawers"] == 0 and out["wings"] == {}
+    assert "tool_status sqlite fallback read failed" in caplog.text
+
+
 def test_capacity_status_flags_small_gap_with_explicit_low_sync_threshold(tmp_path):
     """New palaces use a low explicit sync threshold, so 57 missing rows is unsafe."""
     seg = "seg-1816-explicit-low-sync"

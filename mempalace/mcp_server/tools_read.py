@@ -20,6 +20,8 @@ def _tool_status_via_sqlite() -> dict:
     if not os.path.isfile(os.path.join(_config.palace_path, "chroma.sqlite3")):
         return _no_palace()
     counts = _sqlite_wing_room_counts(_config.palace_path, _config.collection_name)
+    if counts is None:
+        logger.error("tool_status sqlite fallback read failed")
     total, wing_rooms = counts or (0, {})
     # "?" is the tally's placeholder for a drawer without that key.
     wings: dict = {}
