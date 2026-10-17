@@ -923,15 +923,27 @@ def test_rejects_cross_origin(http_server):
     assert status == 403
 
 
-def test_allows_loopback_origin(http_server):
-    port, _ = http_server
-    status, _ = _post(
-        port,
-        "/mcp",
-        {"jsonrpc": "2.0", "id": 1, "method": "ping"},
-        headers={"Origin": "http://localhost:5173"},
+def test_a_token_hub_allows_any_loopback_origin(monkeypatch):
+    """With a token the bearer check guards the hub, so a local dev page on
+    another port may call it; a tokenless hub accepts only its own origin."""
+    monkeypatch.setenv("MEMPALACE_MCP_HTTP_TOKEN", "s3cret")
+    httpd = mcp._build_http_server("127.0.0.1", 0)
+    port = httpd.server_address[1]
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
     )
-    assert status == 200
+    thread.start()
+    try:
+        status, _ = _post(
+            port,
+            "/mcp",
+            {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+            headers={"Origin": "http://localhost:5173", "Authorization": "Bearer s3cret"},
+        )
+        assert status == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
 
 
 def test_bearer_token_enforced_when_configured(monkeypatch):
@@ -1009,6 +1021,64 @@ def test_tokenless_loopback_hub_still_refuses_other_hosts_and_origins(monkeypatc
         assert _post(port, "/mcp", ping, host_header=f"evil.example:{port}")[0] == 403
         assert _post(port, "/mcp", ping, headers={"Origin": "https://evil.example"})[0] == 403
         assert _post(port, "/mcp", ping, headers={"Origin": f"http://127.0.0.1:{port}"})[0] == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_tokenless_loopback_hub_refuses_proxied_requests(monkeypatch, tmp_path):
+    """A local proxy relaying outside traffic must not reach a hub with no token."""
+    httpd, _palace = _tokenless_loopback_hub(monkeypatch, tmp_path)
+    port = httpd.server_address[1]
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    try:
+        for header in (
+            {"X-Forwarded-For": "203.0.113.7"},
+            {"X-Forwarded-Host": "box.example.ts.net"},
+            {"X-Real-IP": "203.0.113.7"},
+            {"Forwarded": "for=203.0.113.7"},
+            {"Tailscale-User-Login": "someone@example.com"},
+        ):
+            status, body = _post(port, "/mcp", ping, headers=header)
+            assert status == 403, header
+            assert b"token" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_tokenless_loopback_hub_accepts_only_its_own_origin(monkeypatch, tmp_path):
+    httpd, _palace = _tokenless_loopback_hub(monkeypatch, tmp_path)
+    port = httpd.server_address[1]
+    ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+    try:
+        assert _post(port, "/mcp", ping)[0] == 200
+        assert _post(port, "/mcp", ping, headers={"Origin": f"http://localhost:{port}"})[0] == 200
+        other = port + 1 if port < 65535 else port - 1
+        assert _post(port, "/mcp", ping, headers={"Origin": f"http://localhost:{other}"})[0] == 403
+        assert _post(port, "/mcp", ping, headers={"Origin": "http://127.0.0.1"})[0] == 403
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_post_mcp_requires_a_json_content_type(monkeypatch, tmp_path):
+    """text/plain is what a browser can send cross-origin without a preflight."""
+    httpd, _palace = _tokenless_loopback_hub(monkeypatch, tmp_path)
+    port = httpd.server_address[1]
+    raw = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode("utf-8")
+    try:
+        for content_type, expected in (
+            ("text/plain", 415),
+            ("application/x-www-form-urlencoded", 415),
+            ("application/json; charset=utf-8", 200),
+        ):
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+            try:
+                conn.request("POST", "/mcp", body=raw, headers={"Content-Type": content_type})
+                assert conn.getresponse().status == expected, content_type
+            finally:
+                conn.close()
     finally:
         httpd.shutdown()
         httpd.server_close()

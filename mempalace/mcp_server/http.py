@@ -264,6 +264,26 @@ def _http_origin_allowed(origin: str) -> bool:
     return host in ("127.0.0.1", "localhost", "::1")
 
 
+def _http_same_origins(scheme: str, port: int) -> set:
+    """The exact origins of a loopback server's own pages, one per host spelling."""
+    hosts = ("127.0.0.1", "localhost", "[::1]")
+    return {f"{scheme}://{host}:{port}" for host in hosts}
+
+
+# A local proxy (tailscale serve, nginx, cloudflared) adds these when it relays
+# traffic from elsewhere; a hub serving without a token must not be reachable
+# that way.
+_HTTP_PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded")
+
+
+def _http_proxied(headers) -> bool:
+    for name in headers.keys():
+        lowered = name.lower()
+        if lowered in _HTTP_PROXY_HEADERS or lowered.startswith("tailscale-"):
+            return True
+    return False
+
+
 def _http_client_identity(handler) -> tuple[str, dict]:
     headers = handler.headers
     peer = handler.client_address[0] if handler.client_address else ""
@@ -394,7 +414,17 @@ def _http_request_rejected(handler, require_auth: bool) -> bool:
             handler.send_error(403, "Forbidden")
             return True
     origin = handler.headers.get("Origin")
-    if origin and not _http_origin_allowed(origin):
+    if getattr(srv, "local_only_tokenless", False):
+        if _http_proxied(handler.headers):
+            logger.warning("HTTP request rejected: proxied request to a hub without a token")
+            handler.send_error(
+                403, "Forbidden", "Proxied access needs a token: set MEMPALACE_MCP_HTTP_TOKEN"
+            )
+            return True
+        allowed = origin is None or origin.strip().lower().rstrip("/") in srv.same_origins
+    else:
+        allowed = not origin or _http_origin_allowed(origin)
+    if not allowed:
         logger.warning("HTTP request rejected: cross-origin %r", origin)
         handler.send_error(403, "Forbidden")
         return True
@@ -1315,6 +1345,12 @@ def _build_http_server(host: str, port: int):
             if path != "/mcp":
                 self.send_error(404, "Not Found")
                 return
+            # A browser can send text/plain cross-origin without a CORS preflight;
+            # it cannot send application/json, so only JSON reaches the dispatcher.
+            media_type = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+            if media_type.strip().lower() != "application/json":
+                self.send_error(415, "Unsupported Media Type", "POST /mcp needs application/json")
+                return
 
             try:
                 content_length = int(self.headers.get("Content-Length", "0") or "0")
@@ -1403,6 +1439,8 @@ def _build_http_server(host: str, port: int):
     if tls_cert:
         httpd.socket = _wrap_tls(httpd.socket, tls_cert, tls_key)
         httpd.scheme = "https"
+    httpd.local_only_tokenless = not auth_token and _http_local_only(host)
+    httpd.same_origins = _http_same_origins(httpd.scheme, bound_port)
     return httpd
 
 

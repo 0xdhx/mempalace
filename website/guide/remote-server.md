@@ -249,7 +249,11 @@ messages between machines.
   bearer token. `MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` (comma-separated `host`
   or `host:port` values) is required because proxies preserve the public
   name in the `Host` header, which the loopback bind's DNS-rebinding pin
-  would otherwise reject.
+  would otherwise reject. Setting it also marks the hub as reachable from
+  other machines, so it requires a token like a network bind. A loopback hub
+  serving without a token refuses any request carrying proxy headers
+  (`X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Forwarded`,
+  `Tailscale-*`): configure a token for proxied access.
 - **Backups** are now your storage backend's responsibility (Milvus / Zilliz
   Cloud backups, Qdrant snapshots, or Postgres backups) rather than a single
   laptop's palace directory.

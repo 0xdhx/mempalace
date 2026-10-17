@@ -20,9 +20,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **A loopback HTTP MCP server needs no token; anything reachable from another
   machine does.** `mempalace serve` and `mempalace-mcp --transport http` on
   `127.0.0.1`, `::1` or `localhost` serve local clients with no header, as
-  before, and the Host pin and Origin check still refuse browser pages and
-  DNS-rebinding. Pass `--token` or set `MEMPALACE_MCP_HTTP_TOKEN` to require one
-  there anyway. A network bind, or a loopback bind fronted by a proxy
+  before. Without a token the hub refuses what could come from elsewhere:
+  requests a local proxy relayed (`X-Forwarded-For`, `X-Forwarded-Host`,
+  `X-Real-IP`, `Forwarded`, `Tailscale-*`), any browser `Origin` other than its
+  own exact address, and DNS-rebound `Host` names. `POST /mcp` now needs
+  `Content-Type: application/json` on every hub, so a page cannot post to it
+  without a CORS preflight. Pass `--token` or set `MEMPALACE_MCP_HTTP_TOKEN` to
+  require a token on loopback too. A network bind, or a loopback bind fronted by a proxy
   (`MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` set), reuses or creates the palace's token
   at `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace` clients
   already look; remote clients send `Authorization: Bearer <token>`.
