@@ -8,7 +8,6 @@ Normalizes format, chunks by exchange pair (Q+A = one unit), files to palace.
 Same palace as project mining. Different ingest strategy.
 """
 
-import errno
 import os
 import sys
 import json
@@ -34,6 +33,7 @@ from .normalize import (
 )
 from .source_identity import identity_metadata, source_directory_identity
 from .entities import entities_metadata
+from .fsio import encoding_metadata, open_source_file
 from .palace import (
     CHUNKER_VERSIONS,
     CONVO_CHUNKER_VERSION,
@@ -202,30 +202,12 @@ def _path_within_root(path: Path, root: Path) -> bool:
 def _is_regular_source_file(filepath: Path, root: Path) -> bool:
     if not _path_within_root(filepath, root):
         return False
-    # O_NONBLOCK keeps the S_ISREG verdict below reachable: a blocking open
-    # of a FIFO waits in the kernel for a writer, so a named pipe called
-    # ``session.jsonl`` would hang this check instead of failing it. See the
-    # matching comment in ``miner._read_text_no_follow``, including why the
-    # EAGAIN branch re-checks the type and then opens without the flag.
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-    fd = -1
     try:
-        try:
-            fd = os.open(filepath, flags)
-        except OSError as exc:
-            if exc.errno != errno.EAGAIN or not stat.S_ISREG(os.lstat(filepath).st_mode):
-                raise
-            fd = os.open(filepath, flags & ~getattr(os, "O_NONBLOCK", 0))
-        st = os.fstat(fd)
-        return stat.S_ISREG(st.st_mode) and st.st_size <= MAX_FILE_SIZE
+        fd, st = open_source_file(filepath)
     except OSError:
         return False
-    finally:
-        if fd != -1:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+    os.close(fd)
+    return st.st_size <= MAX_FILE_SIZE
 
 
 def _register_file(
@@ -669,6 +651,7 @@ def _file_chunks_locked(
     source_dir_ino=None,
     source_mtime: Optional[float] = None,
     transforms: str = "",
+    source_encoding: str = "utf-8",
 ):
     """Lock the source file and replace its drawers in this extraction mode.
 
@@ -729,6 +712,7 @@ def _file_chunks_locked(
                 # Every drawer of a file whose parse changed its text: the
                 # RFC 002 transformations it applied.
                 meta["transforms"] = transforms
+            meta.update(encoding_metadata(source_encoding))
             if source_dir_ino:
                 # Which directory this transcript was read from, so ``sync``
                 # can tell a neighbour in the same directory from one on a
@@ -1243,6 +1227,7 @@ def _mine_convos_impl(
                 source_dir_ino=source_directory_identity(filepath),
                 source_mtime=source_mtime,
                 transforms=normalize_run.transforms,
+                source_encoding=normalize_run.encoding,
             )
             if skipped:
                 files_skipped += 1

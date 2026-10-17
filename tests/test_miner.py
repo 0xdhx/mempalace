@@ -1526,7 +1526,7 @@ def test_process_file_stamps_metadata_with_read_time_mtime_not_a_later_restat(
     monkeypatch.setattr(
         miner,
         "_read_text_no_follow",
-        lambda filepath, root: ("print('hello')\n" * 20, read_time_mtime),
+        lambda filepath, root: ("print('hello')\n" * 20, read_time_mtime, "utf-8"),
     )
     monkeypatch.setattr(os.path, "getmtime", lambda path: later_disk_mtime)
     chunks = [{"content": "chunk 0 " * 20, "chunk_index": 0}]

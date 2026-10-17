@@ -29,6 +29,8 @@ import re
 import stat
 from pathlib import Path
 
+from mempalace.fsio import decode_source
+
 HOME = Path.home()
 LUMI_DIR = Path(os.environ.get("MEMPALACE_SOURCE_DIR", str(HOME / "Desktop/transcripts")))
 
@@ -177,18 +179,9 @@ def extract_subject(lines):
 
 
 def _read_lines(path: Path) -> list[str]:
-    """Lines of ``path`` with their endings, never through ``errors='replace'``.
-
-    UTF-8 when it decodes, otherwise cp1252, then latin-1, which maps every
-    byte, so no byte turns into U+FFFD.
-    """
-    raw = path.read_bytes()
-    for codec in ("utf-8", "cp1252"):
-        try:
-            return raw.decode(codec).splitlines(keepends=True)
-        except UnicodeDecodeError:
-            pass
-    return raw.decode("latin-1").splitlines(keepends=True)
+    """Lines of ``path`` with their endings, decoded by ``fsio.decode_source``
+    so no byte turns into U+FFFD."""
+    return decode_source(path.read_bytes())[0].splitlines(keepends=True)
 
 
 def _session_segments(lines: list[str], boundaries: list[int]) -> list[tuple[list[str], bool, int]]:

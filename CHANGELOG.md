@@ -44,6 +44,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Mining no longer turns bytes that are not UTF-8 into U+FFFD.** Project,
+  conversation, diary and sweep ingest decoded files as UTF-8 and replaced
+  anything else with the replacement character, so a cp1252 or latin-1 file
+  lost its smart quotes and accented letters for good. Files now decode as
+  UTF-8, then cp1252, then latin-1, which keeps every byte, and a drawer whose
+  source was not plain UTF-8 carries `source_encoding` (`utf-8-sig`, `cp1252`
+  or `latin-1`); `text.encode(source_encoding)` gives the source bytes back.
+  Drawers filed before this release keep their replacement characters until
+  their file is mined again.
 - **A re-mine no longer loses a file's drawers when it fails part-way.** The
   project and conversation miners deleted a changed file's drawers before
   writing the new ones, so a crash or backend error during the write left the

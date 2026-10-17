@@ -978,7 +978,7 @@ def _is_a_named_pipe(sqlite_path: str) -> bool:
     A read that fails is an answer; a read that never returns is not. Opening a
     FIFO for reading parks in the kernel until a writer arrives, so it has to
     be decided about before reading rather than by reading.
-    ``miner._read_text_no_follow`` meets the same hazard and answers it with
+    ``fsio.open_source_file`` meets the same hazard and answers it with
     ``O_NONBLOCK``; there is no open to pass flags to here, because the open
     happens inside sqlite3.
 
