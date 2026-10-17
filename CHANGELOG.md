@@ -10,17 +10,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **`mempalace init` records a backend chosen with `MEMPALACE_BACKEND`.** The
+  backend is read from `config.json` before the environment, and a palace init
+  has not created yet has nothing on disk to detect it from, so the first
+  `mine` run without the variable used the default backend. When `config.json`
+  names no backend, init now writes the one `MEMPALACE_BACKEND` selects. This is
+  the one setting init takes from the environment; it never replaces a backend
+  `config.json` already names, and an unknown name is reported and skipped.
 - **The next mine re-reads every source once.** The drawer normalization
   version moves to 3, so each mined file reads as stale and is filed again
   through the write-then-prune path. Drawers whose text comes out the same
   keep their stored embedding, so the pass mostly costs reading files, not
   embedding them. A file whose text did not change also keeps its closets,
   LLM-generated ones included, and its AAAK summaries; in a changed file only
-  the summaries of rewritten or removed drawers go. What changes: user turns are stored as written instead of
-  spell-corrected, ChatGPT exports follow the branch the conversation ended
-  on, lossy parsing steps are stamped in `transforms`, a conversation is filed
-  under every file that holds it (files once skipped as duplicates get their
-  own drawers), and non-UTF-8 sources keep their exact bytes.
+  the summaries of rewritten or removed drawers go. What changes: user turns
+  are stored as written instead of spell-corrected, ChatGPT exports follow the
+  branch the conversation ended on, lossy parsing steps are stamped in
+  `transforms`, a conversation is filed under every file that holds it (files
+  once skipped as duplicates get their own drawers), and non-UTF-8 sources
+  keep their exact bytes.
 - **The HTTP MCP server requires a bearer token on every bind, loopback
   included.** With no `--token` or `MEMPALACE_MCP_HTTP_TOKEN`, `mempalace serve`
   and `mempalace-mcp --transport http` reuse or create the palace's token at
@@ -89,6 +97,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **A failed dimension probe no longer erases a recorded embedder dimension.**
+  `mempalace palace set-embedder` and repair record the embedder in the palace
+  sidecar. When the model's dimension probe failed, they wrote a dimension of 0
+  over the one already recorded. A failed probe now keeps the recorded dimension
+  for the same model, and records a new model as unknown with a warning.
 - **`mempalace repair --mode max-seq-id` no longer runs alongside a writer.**
   The repair rewrote Chroma's `max_seq_id` rows without the palace lease, so a
   mine or an MCP write could land in the middle of it. It now takes the lease,

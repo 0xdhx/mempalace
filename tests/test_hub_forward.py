@@ -747,7 +747,9 @@ class TestForwardSearchToHub:
         ],
     )
     def test_per_invocation_search_override_is_not_forwardable(self, monkeypatch, env_name):
-        for name in cli._SEARCH_OVERRIDE_ENV_VARS:
+        from mempalace.hub_client import SEARCH_OVERRIDE_ENV_VARS
+
+        for name in SEARCH_OVERRIDE_ENV_VARS:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv(env_name, "en")
         assert cli._search_args_forwardable(_search_args()) is False

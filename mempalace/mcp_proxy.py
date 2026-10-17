@@ -28,7 +28,13 @@ import os
 import sys
 import urllib.error
 
-from .hub_client import HUB_FORWARD_ENV, HUB_PROXY_TIMEOUT_S, discover_hub
+from .hub_client import (
+    HUB_FORWARD_ENV,
+    HUB_PROXY_TIMEOUT_S,
+    SEARCH_TOOL_NAMES,
+    discover_hub,
+    search_settings_overridden,
+)
 from .stored_text import dumps_client, dumps_internal
 
 from .update_awareness import cached_update_status, schedule_update_check
@@ -87,13 +93,20 @@ def _is_plain_stdio_invocation(argv: list) -> bool:
     return True
 
 
+def _flag_value(argv: list, flag: str):
+    for i, arg in enumerate(argv):
+        if arg == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if arg.startswith(flag + "="):
+            return arg.split("=", 1)[1]
+    return None
+
+
 def _palace_path(argv: list):
     """Resolve the palace path without importing the server."""
-    for i, arg in enumerate(argv):
-        if arg == "--palace" and i + 1 < len(argv):
-            return argv[i + 1]
-        if arg.startswith("--palace="):
-            return arg.split("=", 1)[1]
+    palace = _flag_value(argv, "--palace")
+    if palace:
+        return palace
     try:
         from .config import MempalaceConfig
 
@@ -315,11 +328,29 @@ def _local_server_error(request: dict, exc: Exception):
     )
 
 
-def _handle(request: dict, palace_path, local: _LocalServer):
+def _search_stays_local(request: dict, backend) -> bool:
+    """A search whose settings this session chose itself, which the hub may not share."""
+    if request.get("method") != "tools/call":
+        return False
+    params = request.get("params")
+    if not isinstance(params, dict) or params.get("name") not in SEARCH_TOOL_NAMES:
+        return False
+    return search_settings_overridden(backend)
+
+
+def _handle(request: dict, palace_path, local: _LocalServer, backend=None):
     """Route one request: live hub first, this process otherwise."""
     if not isinstance(request, dict):
         # What the full server answers it with.
         return _json_rpc_error(None, -32600, "Invalid Request")
+    if _search_stays_local(request, backend):
+        # The hub is fine; this one search just runs with this session's settings.
+        try:
+            module = local.load()
+        except Exception as exc:
+            logger.error("Local server could not start: %s", exc)
+            return _local_server_error(request, exc)
+        return module.handle_request(request)
     target = _hub_target(palace_path)
     if target is not None:
         base_url, headers = target
@@ -361,7 +392,7 @@ def _handle(request: dict, palace_path, local: _LocalServer):
     return _annotate_degraded(module.handle_request(request))
 
 
-def _run_proxy_loop(palace_path) -> None:
+def _run_proxy_loop(palace_path, backend=None) -> None:
     for stream in (sys.stdin, sys.stdout):
         if hasattr(stream, "reconfigure"):
             try:
@@ -398,7 +429,7 @@ def _run_proxy_loop(palace_path) -> None:
             payload = dumps_client(_json_rpc_error(None, -32700, "Parse error"))
         else:
             try:
-                response = _handle(request, palace_path, local)
+                response = _handle(request, palace_path, local, backend)
                 if response is not None:
                     payload = dumps_client(response)
             except KeyboardInterrupt:
@@ -445,4 +476,4 @@ def main() -> None:
         return mcp_server.main()
 
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
-    _run_proxy_loop(palace_path)
+    _run_proxy_loop(palace_path, _flag_value(argv, "--backend"))

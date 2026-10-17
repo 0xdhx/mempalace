@@ -77,6 +77,34 @@ SEARCH_OVERRIDE_ENV_VARS = SEARCH_SELECTOR_ENV_VARS + tuple(
 )
 
 
+# MCP tools whose results depend on the search settings above.
+SEARCH_TOOL_NAMES = frozenset({"mempalace_search", "mempalace_check_duplicate"})
+
+
+def search_settings_overridden(backend: str | None = None) -> bool:
+    """Whether this process asks for search settings a hub may not be using.
+
+    An explicit backend, or any env var in ``SEARCH_OVERRIDE_ENV_VARS``, means
+    the caller chose settings itself; the hub searches with what it resolved
+    when it started, so such a search stays local.
+    """
+    if backend:
+        return True
+    return any(os.environ.get(name, "").strip() for name in SEARCH_OVERRIDE_ENV_VARS)
+
+
+def search_fingerprint_matches(info: Mapping, palace_path: str) -> bool:
+    """Whether a hub's registered search fingerprint equals this process's.
+
+    Resolving the fingerprint opens the palace package, so the light stdio
+    proxy leaves this check to processes that load storage anyway.
+    """
+    from .config import MempalaceConfig
+
+    current = MempalaceConfig(palace_path=palace_path).search_config_fingerprint
+    return info.get("search_config_fingerprint") == current
+
+
 def search_setting_in_scope(scope, backend: str, embedding_model: str) -> bool:
     """Whether a ``SEARCH_SETTINGS`` row applies to this backend and model."""
     if scope is None:

@@ -189,13 +189,8 @@ def write_file_drawers(
             f"stale-drawer purge failed for {source_file!r} ({exc!r}); the new drawers "
             "stay marked unfinished and the next mine retries"
         ) from exc
-    if aaak_col is not None and (rewritten or stale):
-        try:
-            purge_aaak_rows(aaak_col, drawer_ids=rewritten + stale)
-        except MINE_ABORTS:
-            raise
-        except Exception:
-            logger.warning("AAAK purge failed for %s", source_file, exc_info=True)
+    if rewritten or stale:
+        drawers_removed(None, aaak_ids=rewritten + stale, aaak_col=aaak_col, reraise=MINE_ABORTS)
     for start in range(0, len(written), DRAWER_UPSERT_BATCH_SIZE):
         batch = written[start : start + DRAWER_UPSERT_BATCH_SIZE]
         collection.update(

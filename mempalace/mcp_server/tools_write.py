@@ -642,30 +642,6 @@ def tool_add_drawer(
         return outcome
 
 
-def _purge_revisions(drawer_ids=(), source_file=None):
-    """Drop the saved prior text of drawers that were just deleted.
-
-    Runs after the drawer delete commits, so a failed delete keeps them. The
-    drawers are already gone, so a failure here is logged and reported in the
-    result, not raised. Returns the fields to merge into the delete result.
-    """
-    from ..revisions import purge_drawer_revisions
-
-    if not drawer_ids and source_file is None:
-        return {"revisions_deleted": 0}
-    try:
-        removed = purge_drawer_revisions(
-            _config.palace_path, drawer_ids=drawer_ids, source_file=source_file
-        )
-    except Exception as exc:
-        logger.exception("Revision purge failed after a drawer delete")
-        return {
-            "revisions_deleted": None,
-            "revisions_error": f"revision purge failed: {type(exc).__name__}",
-        }
-    return {"revisions_deleted": removed}
-
-
 def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
     """Write-ahead, delete, and closet-purge one already resolved record.
 
@@ -688,9 +664,18 @@ def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
     col.delete(ids=record["ids"])
     _invalidate_overview_caches()
 
+    from ..palace import drawers_removed
+
     source_file = record["metadata"].get("source_file")
-    closets_deleted = _purge_source_closets(source_file, commit=True) if source_file else 0
-    _purge_aaak(drawer_ids=[drawer_id, *record["ids"]])
+    removed_ids = [drawer_id, *record["ids"]]
+    purged = drawers_removed(
+        _config.palace_path,
+        aaak_ids=removed_ids,
+        closet_sources=[source_file] if source_file else (),
+        # A batch purges revisions once for every id it deleted (tool_delete_drawers).
+        revision_ids=None if bulk else removed_ids,
+    )
+    closets_deleted = purged.pop("closets_deleted", 0)
 
     logger.info(
         "Deleted drawer: %s (%s rows, %s closet(s) purged)%s",
@@ -707,9 +692,7 @@ def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
         "chunks_deleted": len(record["ids"]),
         "closets_deleted": closets_deleted,
     }
-    # A batch purges once for every id it deleted (tool_delete_drawers).
-    if not bulk:
-        outcome.update(_purge_revisions([drawer_id, *record["ids"]]))
+    outcome.update(purged)
     return outcome
 
 
@@ -1054,59 +1037,6 @@ def tool_mine(
             _invalidate_overview_caches()
 
 
-def _purge_source_closets(source_file: str, *, commit: bool) -> int:
-    """Count, and optionally delete, closets matching ``source_file`` exactly.
-
-    The closets collection is the searchable AAAK index layer; it is keyed by
-    ``source_file`` independently of the drawers collection, so a drawer-only
-    delete would strand stale index pointers at the deleted source (#1722).
-    Mirrors the closet-purge step in :func:`mempalace.sync.sync_palace` and the
-    re-mine purge in :func:`mempalace.palace.purge_file_closets`.
-
-    Best-effort: a missing or unavailable closet collection yields 0 and never
-    raises, so it can never abort a drawer delete that has already committed.
-    Deletion is pushed down via ``delete(where=...)`` so it survives palaces
-    larger than the 10k ``get()`` truncation; the returned count is the (best
-    effort) number of matching closets observed before the delete.
-    """
-    from ..palace import get_closets_collection
-
-    try:
-        closets_col = get_closets_collection(_config.palace_path, create=False)
-    except Exception as exc:
-        logger.warning("Closet purge skipped (collection unavailable): %s", exc)
-        return 0
-    if closets_col is None:
-        return 0
-    try:
-        ids = closets_col.get(where={"source_file": source_file}, include=[]).get("ids") or []
-        count = len(ids)
-        if commit and count:
-            closets_col.delete(where={"source_file": source_file})
-        return count
-    except Exception as exc:
-        logger.warning("Closet purge failed for %s: %s", source_file, exc)
-        return 0
-
-
-def _purge_aaak(*, source_file=None, drawer_ids=()) -> None:
-    """Delete the AAAK summaries of drawers that were deleted or rewritten.
-
-    A summary quotes its drawer, so it must not outlive it. Best-effort like
-    the closet purge: the drawer change has already committed.
-    """
-    from ..palace import open_aaak_collection, purge_aaak_rows
-
-    try:
-        purge_aaak_rows(
-            open_aaak_collection(_config.palace_path),
-            source_file=source_file,
-            drawer_ids=drawer_ids,
-        )
-    except Exception as exc:
-        logger.warning("AAAK purge failed for %s: %s", source_file or "drawers", exc)
-
-
 def tool_delete_by_source(source_file: str, dry_run: bool = True):
     """Delete every drawer whose ``source_file`` metadata matches exactly.
 
@@ -1167,8 +1097,10 @@ def tool_delete_by_source(source_file: str, dry_run: bool = True):
         if len(sample) >= 5:
             break
 
+    from ..palace import drawers_removed, purge_source_closets
+
     if dry_run:
-        closet_match_count = _purge_source_closets(source_file, commit=False)
+        closet_match_count = purge_source_closets(_config.palace_path, source_file, commit=False)
         return {
             "success": True,
             "dry_run": True,
@@ -1201,13 +1133,13 @@ def tool_delete_by_source(source_file: str, dry_run: bool = True):
     try:
         col.delete(where=where)
         _invalidate_overview_caches()
-        # Purge the matching closets too so the AAAK index doesn't keep stale
-        # pointers at the now-deleted drawers (#1722). Done after the drawer
-        # delete and intentionally best-effort: the drawers are already gone,
-        # so a closet-purge hiccup must not turn a successful delete into an
-        # error — it just leaves index cruft a later `repair` / re-mine clears.
-        closets_deleted = _purge_source_closets(source_file, commit=True)
-        _purge_aaak(source_file=source_file)
+        purged = drawers_removed(
+            _config.palace_path,
+            aaak_source=source_file,
+            closet_sources=[source_file],
+            revision_source=source_file,
+        )
+        closets_deleted = purged.pop("closets_deleted")
         logger.info(
             "Deleted %d drawer(s) and %d closet(s) from source: %s",
             match_count,
@@ -1220,7 +1152,7 @@ def tool_delete_by_source(source_file: str, dry_run: bool = True):
             "source_file": source_file,
             "deleted": match_count,
             "closets_deleted": closets_deleted,
-            **_purge_revisions(source_file=source_file),
+            **purged,
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -1621,14 +1553,16 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
         # A closet quotes the source file, not the stored drawer, so it only
         # goes stale on a content change; wing/room alone leaves it correct (#2325).
         # Purged only after the drawer write commits, so a failed write keeps them.
-        source_file = old_meta.get("source_file")
-        outcome["closets_deleted"] = (
-            _purge_source_closets(source_file, commit=True)
-            if content is not None and source_file
-            else 0
-        )
+        outcome["closets_deleted"] = 0
         if content is not None:
-            _purge_aaak(drawer_ids=[drawer_id, *record["ids"]])
+            from ..palace import drawers_removed
+
+            source_file = old_meta.get("source_file")
+            outcome["closets_deleted"] = drawers_removed(
+                _config.palace_path,
+                aaak_ids=[drawer_id, *record["ids"]],
+                closet_sources=[source_file] if source_file else (),
+            ).get("closets_deleted", 0)
         _invalidate_overview_caches()
         if revision_id:
             outcome["revision_id"] = revision_id
@@ -1703,10 +1637,12 @@ def tool_delete_drawers(drawer_ids: list):
             }
         )
 
+    from ..palace import drawers_removed
+
     return {
         "results": results,
         "count": len(results),
         "deleted": deleted,
         "errors": errors,
-        **_purge_revisions(deleted_ids),
+        **drawers_removed(_config.palace_path, revision_ids=deleted_ids),
     }
