@@ -31,6 +31,7 @@ from ..stored_text import (
     index_text,
     prepare_stored_write,
 )
+from ._filters import matches_where, matches_where_document, validate_where
 from ._magic import has_sqlite_magic, read_header_fields
 from .base import (
     BackendClosedError,
@@ -47,7 +48,6 @@ from .base import (
     PalaceRef,
     QueryResult,
     UnsupportedCapabilityError,
-    UnsupportedFilterError,
     _IncludeSpec,
 )
 
@@ -59,9 +59,6 @@ _DB_FILENAME = "sqlite_exact.sqlite3"
 # stamp the checkpoint with the same mtime as the previous one.
 _WRITE_GENERATION_KEY = "write_generation"
 _WRITE_GENERATION_SQL = "SELECT value FROM meta WHERE key = ?"
-_SUPPORTED_OPERATORS = frozenset(
-    {"$eq", "$ne", "$in", "$nin", "$and", "$or", "$contains", "$gt", "$gte", "$lt", "$lte"}
-)
 
 
 def _utcnow() -> str:
@@ -114,82 +111,6 @@ def _decode_array(blob: bytes | None) -> Optional[np.ndarray]:
     if arr.size == 0:
         return None
     return arr
-
-
-def _validate_where(where: Optional[dict]) -> None:
-    if not where:
-        return
-    stack = [where]
-    while stack:
-        node = stack.pop()
-        if not isinstance(node, dict):
-            continue
-        for key, value in node.items():
-            if key.startswith("$") and key not in _SUPPORTED_OPERATORS:
-                raise UnsupportedFilterError(f"operator {key!r} not supported by sqlite_exact")
-            if isinstance(value, dict):
-                stack.append(value)
-            elif isinstance(value, list):
-                stack.extend(item for item in value if isinstance(item, dict))
-
-
-def _coerce_comparable(value: Any):
-    if isinstance(value, bool):
-        return int(value)
-    return value
-
-
-def _compare(actual: Any, op: str, expected: Any) -> bool:
-    actual = _coerce_comparable(actual)
-    expected = _coerce_comparable(expected)
-    if op == "$eq":
-        return actual == expected
-    if op == "$ne":
-        return actual != expected
-    if op == "$in":
-        return actual in (expected or [])
-    if op == "$nin":
-        return actual not in (expected or [])
-    if op == "$contains":
-        return str(expected) in str(actual or "")
-    try:
-        if op == "$gt":
-            return actual > expected
-        if op == "$gte":
-            return actual >= expected
-        if op == "$lt":
-            return actual < expected
-        if op == "$lte":
-            return actual <= expected
-    except TypeError:
-        return False
-    raise UnsupportedFilterError(f"operator {op!r} not supported by sqlite_exact")
-
-
-def _matches_where(meta: dict, where: Optional[dict]) -> bool:
-    if not where:
-        return True
-    if not isinstance(where, dict):
-        return False
-    for key, expected in where.items():
-        if key == "$and":
-            if not all(_matches_where(meta, clause) for clause in expected or []):
-                return False
-            continue
-        if key == "$or":
-            if not any(_matches_where(meta, clause) for clause in expected or []):
-                return False
-            continue
-        if key.startswith("$"):
-            raise UnsupportedFilterError(f"operator {key!r} not supported by sqlite_exact")
-        actual = meta.get(key)
-        if isinstance(expected, dict):
-            for op, operand in expected.items():
-                if not _compare(actual, op, operand):
-                    return False
-        elif actual != expected:
-            return False
-    return True
 
 
 _FACET_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -249,7 +170,7 @@ def _equality_where_sql(
 ) -> Optional[tuple[str, list]]:
     """Push equality / ``$and``-of-equality filters into SQL, else ``None``.
 
-    ``None`` means the filter needs the Python ``_matches_where`` path
+    ``None`` means the filter needs the Python ``matches_where`` path
     (``$or``, comparisons, ``$contains``, non-identifier keys).
     """
     if not where:
@@ -459,28 +380,6 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
         (decode_value(room), decode_value(wing), decode_value(hall), n, decode_value(last))
         for room, wing, hall, n, last in rows
     ]
-
-
-def _matches_where_document(document: str, where_document: Optional[dict]) -> bool:
-    if not where_document:
-        return True
-    if not isinstance(where_document, dict):
-        return False
-    for key, value in where_document.items():
-        if key == "$contains":
-            if str(value) not in document:
-                return False
-            continue
-        if key == "$and":
-            if not all(_matches_where_document(document, clause) for clause in value or []):
-                return False
-            continue
-        if key == "$or":
-            if not any(_matches_where_document(document, clause) for clause in value or []):
-                return False
-            continue
-        raise UnsupportedFilterError(f"where_document operator {key!r} not supported")
-    return True
 
 
 def _validate_write_batch(
@@ -949,8 +848,8 @@ class SQLiteExactCollection(BaseCollection):
         offset=None,
         spec: Optional[_IncludeSpec] = None,
     ) -> list[dict]:
-        _validate_where(where)
-        _validate_where(where_document)
+        validate_where(where)
+        validate_where(where_document)
         spec = spec or _IncludeSpec.resolve(None, default_distances=False)
         collection_id = self._collection_id(cur)
         push = (
@@ -1003,9 +902,9 @@ class SQLiteExactCollection(BaseCollection):
                 idx += 1
             if need_emb:
                 emb_blob = row[idx]
-            if python_where and not _matches_where(meta, where):
+            if python_where and not matches_where(meta, where):
                 continue
-            if where_document and not _matches_where_document(doc, where_document):
+            if where_document and not matches_where_document(doc, where_document):
                 continue
             out.append(
                 {
@@ -1208,8 +1107,8 @@ class SQLiteExactCollection(BaseCollection):
         Equality filters then restrict by id; other filters fall back to
         ``_rows`` only to decide membership.
         """
-        _validate_where(where)
-        _validate_where(where_document)
+        validate_where(where)
+        validate_where(where_document)
         expected = self._collection_dimension(cur, collection_id)
         empty = np.zeros((0, expected or 0), dtype=np.float32)
         empty_norms = np.zeros((0,), dtype=np.float32)
@@ -1232,7 +1131,7 @@ class SQLiteExactCollection(BaseCollection):
             }
             keep = [i for i, doc_id in enumerate(ids) if doc_id in wanted]
         else:
-            keep = [i for i, meta in enumerate(metas) if _matches_where(meta, where)]
+            keep = [i for i, meta in enumerate(metas) if matches_where(meta, where)]
         if not keep:
             return (
                 [],
@@ -1317,8 +1216,8 @@ class SQLiteExactCollection(BaseCollection):
         spec = _IncludeSpec.resolve(include, default_distances=False)
         # get(ids=...) must not scan the collection: look up by primary key.
         if ids is not None:
-            _validate_where(where)
-            _validate_where(where_document)
+            validate_where(where)
+            validate_where(where_document)
             lookup_spec = _IncludeSpec(
                 documents=spec.documents or bool(where_document),
                 metadatas=spec.metadatas or bool(where),
@@ -1332,8 +1231,8 @@ class SQLiteExactCollection(BaseCollection):
                 by_id[doc_id]
                 for doc_id in ids
                 if doc_id in by_id
-                and _matches_where(by_id[doc_id]["metadata"], where)
-                and _matches_where_document(by_id[doc_id]["document"], where_document)
+                and matches_where(by_id[doc_id]["metadata"], where)
+                and matches_where_document(by_id[doc_id]["document"], where_document)
             ]
             if offset:
                 rows = rows[offset:]
@@ -1431,7 +1330,7 @@ class SQLiteExactCollection(BaseCollection):
         where: Optional[dict] = None,
         limit: int = 1000,
     ) -> dict[str, int]:
-        _validate_where(where)
+        validate_where(where)
         if not _FACET_FIELD_RE.match(field):
             raise UnsupportedCapabilityError(f"facet field {field!r} is not a JSON key")
         push = _equality_where_sql(where, locus_columns=self._handle.has_locus_columns)
@@ -1457,7 +1356,7 @@ class SQLiteExactCollection(BaseCollection):
         return {str(decode_value(key)): int(count) for key, count in rows if key is not None}
 
     def lexical_search(self, *, query: str, n_results: int = 10, where: Optional[dict] = None):
-        _validate_where(where)
+        validate_where(where)
         with self._cursor() as cur:
             hits = self._lexical_search_fts(cur, query=query, n_results=n_results, where=where)
             if hits is not None:
@@ -1530,7 +1429,7 @@ class SQLiteExactCollection(BaseCollection):
             if doc_meta is None:
                 continue
             doc, meta = doc_meta
-            if not _matches_where(meta, where):
+            if not matches_where(meta, where):
                 continue
             hits.append(
                 LexicalHit(

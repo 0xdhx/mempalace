@@ -25,6 +25,7 @@ import numpy as np
 from ..lexical import bm25_scores, tokenize
 from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
 from ..version import __version__
+from ._filters import matches_where, matches_where_document, validate_where
 from ._remote_common import (
     RemoteMarkerMixin,
     as_vector_array,
@@ -47,7 +48,6 @@ from .base import (
     PalaceRef,
     QueryResult,
     UnsupportedCapabilityError,
-    UnsupportedFilterError,
     _IncludeSpec,
 )
 
@@ -72,111 +72,10 @@ _POINT_NAMESPACE = uuid.UUID("c06c3fc7-5c14-4dc4-84c2-24a5f72d8dc1")
 # Qdrant handles it and round-trips still drop overall, but this is a real
 # trade-off, not a metadata-only optimization.
 _SCROLL_PAGE_SIZE = 4096
-_SUPPORTED_OPERATORS = frozenset(
-    {"$eq", "$ne", "$in", "$nin", "$and", "$or", "$contains", "$gt", "$gte", "$lt", "$lte"}
-)
 
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _validate_where(where: Optional[dict]) -> None:
-    if not where:
-        return
-    stack = [where]
-    while stack:
-        node = stack.pop()
-        if not isinstance(node, dict):
-            continue
-        for key, value in node.items():
-            if key.startswith("$") and key not in _SUPPORTED_OPERATORS:
-                raise UnsupportedFilterError(f"operator {key!r} not supported by qdrant")
-            if isinstance(value, dict):
-                stack.append(value)
-            elif isinstance(value, list):
-                stack.extend(item for item in value if isinstance(item, dict))
-
-
-def _coerce_comparable(value: Any):
-    if isinstance(value, bool):
-        return int(value)
-    return value
-
-
-def _compare(actual: Any, op: str, expected: Any) -> bool:
-    actual = _coerce_comparable(actual)
-    expected = _coerce_comparable(expected)
-    if op == "$eq":
-        return actual == expected
-    if op == "$ne":
-        return actual != expected
-    if op == "$in":
-        return actual in (expected or [])
-    if op == "$nin":
-        return actual not in (expected or [])
-    if op == "$contains":
-        return str(expected) in str(actual or "")
-    try:
-        if op == "$gt":
-            return actual > expected
-        if op == "$gte":
-            return actual >= expected
-        if op == "$lt":
-            return actual < expected
-        if op == "$lte":
-            return actual <= expected
-    except TypeError:
-        return False
-    raise UnsupportedFilterError(f"operator {op!r} not supported by qdrant")
-
-
-def _matches_where(meta: dict, where: Optional[dict]) -> bool:
-    if not where:
-        return True
-    if not isinstance(where, dict):
-        return False
-    for key, expected in where.items():
-        if key == "$and":
-            if not all(_matches_where(meta, clause) for clause in expected or []):
-                return False
-            continue
-        if key == "$or":
-            if not any(_matches_where(meta, clause) for clause in expected or []):
-                return False
-            continue
-        if key.startswith("$"):
-            raise UnsupportedFilterError(f"operator {key!r} not supported by qdrant")
-        actual = meta.get(key)
-        if isinstance(expected, dict):
-            for op, operand in expected.items():
-                if not _compare(actual, op, operand):
-                    return False
-        elif actual != expected:
-            return False
-    return True
-
-
-def _matches_where_document(document: str, where_document: Optional[dict]) -> bool:
-    if not where_document:
-        return True
-    if not isinstance(where_document, dict):
-        return False
-    for key, value in where_document.items():
-        if key == "$contains":
-            if str(value) not in document:
-                return False
-            continue
-        if key == "$and":
-            if not all(_matches_where_document(document, clause) for clause in value or []):
-                return False
-            continue
-        if key == "$or":
-            if not any(_matches_where_document(document, clause) for clause in value or []):
-                return False
-            continue
-        raise UnsupportedFilterError(f"where_document operator {key!r} not supported")
-    return True
 
 
 def _validate_write_batch(
@@ -574,7 +473,7 @@ def _requires_local_filter(where: Optional[dict], where_document: Optional[dict]
 def _qdrant_filter(where: Optional[dict]) -> Optional[dict]:
     if not where:
         return None
-    _validate_where(where)
+    validate_where(where)
     must = []
     must_not = []
     for key, expected in where.items():
@@ -741,8 +640,8 @@ class QdrantCollection(BaseCollection):
         with_vector: bool = False,
         max_rows: Optional[int] = None,
     ) -> list[dict]:
-        _validate_where(where)
-        _validate_where(where_document)
+        validate_where(where)
+        validate_where(where_document)
         local_filter_required = _requires_local_filter(where, where_document)
         q_filter = None if local_filter_required else _qdrant_filter(where)
         if ids is not None:
@@ -759,8 +658,8 @@ class QdrantCollection(BaseCollection):
             row
             for row in rows
             if (id_set is None or row["id"] in id_set)
-            and _matches_where(row["metadata"], where)
-            and _matches_where_document(row["document"], where_document)
+            and matches_where(row["metadata"], where)
+            and matches_where_document(row["document"], where_document)
         ]
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
@@ -825,8 +724,8 @@ class QdrantCollection(BaseCollection):
         rows = [
             row
             for row in rows
-            if _matches_where(row["metadata"], where)
-            and _matches_where_document(row["document"], where_document)
+            if matches_where(row["metadata"], where)
+            and matches_where_document(row["document"], where_document)
         ]
         outer_ids: list[list[str]] = []
         outer_docs: list[list[str]] = []
@@ -872,8 +771,8 @@ class QdrantCollection(BaseCollection):
             raise ValueError("query requires query_embeddings")
         if not query_embeddings:
             raise ValueError("query input must be a non-empty list")
-        _validate_where(where)
-        _validate_where(where_document)
+        validate_where(where)
+        validate_where(where_document)
         if _requires_local_filter(where, where_document):
             return self._query_local_exact(
                 query_embeddings=query_embeddings,
@@ -975,7 +874,7 @@ class QdrantCollection(BaseCollection):
         Delegates to self._rows(), the same single-scroll-plus-local-filter
         helper that backs get()/delete(). With ids=None and
         where_document=None, _rows() reduces to exactly one _scroll_all()
-        pass followed by an unconditional _matches_where() re-check on every
+        pass followed by an unconditional matches_where() re-check on every
         row -- the same filter logic get(), delete(), and lexical_search()
         already use, so this can't independently drift from those call
         sites. (Avoid duplicating the filter
@@ -1017,7 +916,7 @@ class QdrantCollection(BaseCollection):
         # unsupported local-only filter raises regardless of whether the
         # collection has been materialized yet — matching the order used by
         # get()/lexical_search() above.
-        _validate_where(where)
+        validate_where(where)
         if _requires_local_filter(where):
             raise UnsupportedCapabilityError("facet_counts does not support local-only filters")
         if not self._remote_exists():
@@ -1035,7 +934,7 @@ class QdrantCollection(BaseCollection):
         )
 
     def delete(self, *, ids=None, where=None):
-        _validate_where(where)
+        validate_where(where)
         if not self._remote_exists():
             if self._marker_exists():
                 raise CollectionNotInitializedError(self._collection_name)
@@ -1066,7 +965,7 @@ class QdrantCollection(BaseCollection):
         return self._client.count_points(self._remote_collection)
 
     def lexical_search(self, *, query: str, n_results: int = 10, where: Optional[dict] = None):
-        _validate_where(where)
+        validate_where(where)
         q_filter = None if _requires_local_filter(where) else _qdrant_filter(where)
         rows = []
         text_filter = _text_any_filter(query)
@@ -1085,7 +984,7 @@ class QdrantCollection(BaseCollection):
                 rows = []
         if not text_filter_success:
             rows = self._scroll_all(qdrant_filter=q_filter, with_vector=False)
-        rows = [row for row in rows if _matches_where(row["metadata"], where)]
+        rows = [row for row in rows if matches_where(row["metadata"], where)]
         scores = bm25_scores(query, [row["document"] for row in rows])
         hits = [
             LexicalHit(
