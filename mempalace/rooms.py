@@ -508,7 +508,7 @@ class RoomPlan:
     # {(source_file, room): {new_room or "": drawers}} — every drawer of the
     # wing counted under the room it started in, with "" for the ones that
     # did not move. The closet layer is keyed per source file and room, so
-    # `rekey_closets` needs the stayers too: a closet may only follow a
+    # `closet_targets` needs the stayers too: a closet may only follow a
     # source whose drawers *all* moved to one room.
     source_moves: dict
     kept: int
@@ -678,14 +678,6 @@ def plan_closet_moves(closets_col, wing: str, targets: dict) -> dict[str, list[s
     return out
 
 
-def resolve_closet_id_targets(closets_col, wing: str, targets: dict) -> dict[str, str]:
-    """``{closet_id: destination}`` view of :func:`plan_closet_moves`."""
-    return {
-        cid: dest
-        for cid, (_src, _old, dest) in plan_closet_moves(closets_col, wing, targets).items()
-    }
-
-
 def rekey_closets_by_ids(closets_col, wing: str, moves: dict) -> int:
     """Move closets by stable id within ``wing``; returns moved.
 
@@ -733,28 +725,6 @@ def rekey_closets_by_ids(closets_col, wing: str, moves: dict) -> int:
             metadatas=metas[start : start + _UPDATE_BATCH],
         )
     return len(move_ids)
-
-
-def rekey_closets_to(closets_col, wing: str, targets: dict, *, moves: Optional[dict] = None) -> int:
-    """Move each matching closet to its target room; returns closets moved.
-
-    Resolves closet identities once, then moves by id so a retry cannot
-    treat an intermediate room as a fresh source mapping. Only ``room``
-    metadata is rewritten, never the record id.
-    """
-    if moves is None:
-        moves = plan_closet_moves(closets_col, wing, targets)
-    elif any(targets.get((source, old)) != target for source, old, target in moves.values()):
-        raise ValueError("closet moves conflict with room apply targets")
-    return rekey_closets_by_ids(closets_col, wing, moves)
-
-
-def rekey_closets(closets_col, plan: RoomPlan) -> dict:
-    """Follow the drawers with the AAAK index layer; ``{"moved", "ambiguous"}``."""
-    if closets_col is None:
-        return {"moved": 0, "ambiguous": 0}
-    targets, ambiguous = closet_targets(plan)
-    return {"moved": rekey_closets_to(closets_col, plan.wing, targets), "ambiguous": ambiguous}
 
 
 # ── resumable apply ─────────────────────────────────────────────────────────
