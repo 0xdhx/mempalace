@@ -46,7 +46,7 @@ from .dynamics import initialize_dynamics_fields
 from .fsio import atomic_write_json as _atomic_write_json
 from .fsio import read_json_for_update as _read_json_for_update
 from .fsio import refuse_unparsed as _refuse_unparsed
-from .metadata_types import is_sentinel
+from .metadata_types import is_bookkeeping
 
 logger = logging.getLogger("mempalace_hallways")
 
@@ -540,7 +540,7 @@ def _wing_file_keys(metadatas) -> dict[str, str]:
     """
     by_base: dict[str, set[str]] = defaultdict(set)
     for meta in metadatas:
-        if not isinstance(meta, dict) or is_sentinel(meta):
+        if not isinstance(meta, dict) or is_bookkeeping(meta):
             continue
         for spelling in _parse_entities(meta.get("entities")):
             by_base[entity_spelling_key(spelling)].add(spelling)
@@ -742,7 +742,7 @@ def compute_hallways_for_wing(
         if not isinstance(meta, dict):
             continue
         # Sentinel drawers carry no real content — skip them.
-        if is_sentinel(meta):
+        if is_bookkeeping(meta):
             continue
         entities = []
         for spelling in _parse_entities(meta.get("entities")):

@@ -2043,8 +2043,9 @@ def _sqlite_wing_room_counts(
                 is None
             ):
                 return None
+            # Registry rows and sentinels track sources; they are not drawers.
             rows = conn.execute(
-                """
+                f"""
                 SELECT COALESCE(wm.string_value, CAST(wm.int_value AS TEXT),
                                 CAST(wm.float_value AS TEXT), '?') AS wing,
                        COALESCE(rm.string_value, CAST(rm.int_value AS TEXT),
@@ -2055,7 +2056,7 @@ def _sqlite_wing_room_counts(
                 JOIN collections c ON s.collection = c.id
                 LEFT JOIN embedding_metadata wm ON wm.id = e.id AND wm.key = 'wing'
                 LEFT JOIN embedding_metadata rm ON rm.id = e.id AND rm.key = 'room'
-                WHERE c.name = ?
+                WHERE c.name = ? AND {not_bookkeeping_sql(conn)}
                 GROUP BY wing, room
                 """,
                 (collection_name,),
@@ -2255,6 +2256,19 @@ def _metadata_value_columns(conn) -> list[str]:
     """
     present = {row[1] for row in conn.execute("PRAGMA table_info(embedding_metadata)")}
     return [c for c in ("string_value", "int_value", "float_value", "bool_value") if c in present]
+
+
+def not_bookkeeping_sql(conn, row_id: str = "e.id") -> str:
+    """SQL predicate: the row is no registry row or sentinel (``is_bookkeeping``)."""
+    columns = _metadata_value_columns(conn)
+    flag = ["b.string_value IN ('true', 'True', '1')"]
+    flag += [f"b.{c} = 1" for c in ("int_value", "bool_value") if c in columns]
+    return (
+        "NOT EXISTS (SELECT 1 FROM embedding_metadata b"
+        f" WHERE b.id = {row_id} AND ("
+        "(b.key = 'ingest_mode' AND b.string_value = 'registry')"
+        f" OR (b.key = 'is_sentinel' AND ({' OR '.join(flag)}))))"
+    )
 
 
 def _equality_filters(where: Optional[dict]) -> Optional[dict]:

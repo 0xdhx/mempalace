@@ -698,7 +698,7 @@ class TestGeminiJson:
         assert "Why did the chicken cross the road?" in result
 
     def test_multi_part_text_joined(self):
-        """Multiple text parts within a single message are joined with spaces."""
+        """Text parts within one message concatenate as written, as Gemini reads them."""
         data = {
             "contents": [
                 {
@@ -713,7 +713,7 @@ class TestGeminiJson:
         }
         result = _try_gemini_json(data)
         assert result is not None
-        assert "Part one. Part two." in result
+        assert "Part one.Part two." in result
 
     def test_non_text_parts_skipped(self):
         """``inline_data`` / ``function_call`` parts are skipped; only ``text`` is extracted."""
@@ -2065,12 +2065,15 @@ class TestStripNoiseRemovesSystemChrome:
             assert tag not in out, f"{tag} leaked into output"
             assert "Real." in out
 
-    def test_collapses_excessive_blank_lines(self):
+    def test_keeps_blank_lines_when_nothing_is_stripped(self):
         text = "line one\n\n\n\n\n\nline two"
+        assert strip_noise(text) == text
+
+    def test_collapses_the_blank_lines_a_removal_leaves(self):
+        text = "line one\n\n<system-reminder>\nnote\n</system-reminder>\n\n\n\nline two"
         out = strip_noise(text)
         assert "line one" in out
         assert "line two" in out
-        # Should collapse to no more than 3 newlines
         assert "\n\n\n\n" not in out
 
 

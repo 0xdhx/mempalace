@@ -17,6 +17,7 @@ import re
 from collections import defaultdict
 from datetime import datetime
 
+from .metadata_types import is_bookkeeping
 from .palace import get_collection
 
 
@@ -115,6 +116,8 @@ def export_palace(palace_path: str, output_dir: str, format: str = "markdown") -
         # Group this batch by wing/room so we do one file write per room per batch
         batch_grouped: dict[str, dict[str, list]] = defaultdict(lambda: defaultdict(list))
         for doc_id, doc, meta in zip(batch["ids"], batch["documents"], batch["metadatas"]):
+            if is_bookkeeping(meta, doc_id):
+                continue
             wing = meta.get("wing", "unknown")
             room = meta.get("room", "general")
             batch_grouped[wing][room].append(

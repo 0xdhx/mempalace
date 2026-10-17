@@ -319,6 +319,8 @@ def _bm25_only_via_sqlite(
     candidates = []
     for d in drawers.values():
         text, meta = decode_record(d["text"], d["metadata"])
+        if is_bookkeeping(meta, d["_stored_drawer_id"]):
+            continue
         if wing and meta.get("wing") != wing:
             continue
         if room and meta.get("room") != room:
@@ -445,6 +447,8 @@ def _merge_bm25_union_candidates(
     bm25_extra = []
     for hit in lexical.hits:
         meta = hit.metadata or {}
+        if is_bookkeeping(meta, hit.id):
+            continue
         # The window applies to every candidate source; a lexically strong
         # drawer outside [since, before) must not enter through this side
         # door (the vector-path candidates are filtered upstream).

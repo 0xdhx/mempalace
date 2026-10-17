@@ -39,7 +39,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional, Protocol
 
 from .config import MempalaceConfig, sanitize_name
-from .metadata_types import is_sentinel
+from .metadata_types import is_bookkeeping
 
 ROOM_SET_SCHEMA_VERSION = 1
 DEFAULT_SAMPLE_SIZE = 60
@@ -184,7 +184,7 @@ def _iter_wing_rows(col, wing: str, include: list[str]) -> Iterable[dict]:
         embs = list(embs) if embs is not None else [None] * len(ids)
         for i, row_id in enumerate(ids):
             meta = metas[i] or {}
-            if meta.get("wing") != wing or is_sentinel(meta):
+            if meta.get("wing") != wing or is_bookkeeping(meta):
                 continue
             yield {"id": row_id, "metadata": meta, "document": docs[i], "embedding": embs[i]}
         offset += len(ids)

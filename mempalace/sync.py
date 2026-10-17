@@ -18,7 +18,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Final, Literal, Optional, TypedDict
 
-from .metadata_types import is_sentinel
+from .metadata_types import is_bookkeeping
 from .miner import is_gitignored, load_gitignore_matcher
 from .palace import (
     MineAlreadyRunning,
@@ -123,13 +123,16 @@ def _is_registry_row(meta: dict, drawer_id: str) -> bool:
     Deleting a `_reg_*` sentinel makes the next mine pass re-chunk and re-embed
     the entire transcript even though its content has not changed.
     """
-    if (meta or {}).get("room") == "_registry":
-        return True
-    if (meta or {}).get("ingest_mode") == "registry":
+    meta = meta or {}
+    if meta.get("ingest_mode") == "registry":
         return True
     if drawer_id and drawer_id.startswith("_reg_"):
         return True
-    return False
+    # A project can name a real room "_registry"; its drawers have a chunk
+    # index and a drawer_ id, and are pruned like any other.
+    return meta.get("room") == "_registry" and (
+        "chunk_index" not in meta or not str(drawer_id or "").startswith("drawer_")
+    )
 
 
 # ``Final`` keeps these literal types rather than widening them to ``str``,
@@ -512,11 +515,7 @@ def _is_bookkeeping_row(meta: dict, drawer_id: str) -> bool:
     a real file and goes when the file does. Widening it would keep those
     sentinels for good instead.
     """
-    if _is_registry_row(meta, drawer_id):
-        return True
-    if is_sentinel(meta):
-        return True
-    return bool(drawer_id) and drawer_id.startswith("sentinel_")
+    return is_bookkeeping(meta, drawer_id) or _is_registry_row(meta, drawer_id)
 
 
 def _source_holds_nothing(col, source) -> bool:

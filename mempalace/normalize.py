@@ -134,11 +134,16 @@ def strip_noise(text: str) -> str:
     ):
         text, n = pat.subn("", text)
         removed += n
-    if removed:
-        _record("strip_tool_chrome")
-    # Collapse runs of blank lines created by the removals
-    text = re.sub(r"\n{4,}", "\n\n\n", text)
-    return text.strip()
+    if not removed:
+        # Nothing was stripped, so the message keeps its own blank lines.
+        return text
+    _record("strip_tool_chrome")
+    # Collapse the runs of blank lines the removals left behind; one the
+    # writer typed is collapsed too, so say so when it happens.
+    collapsed = re.sub(r"\n{4,}", "\n\n\n", text)
+    if collapsed != text:
+        _record("whitespace_collapse_internal")
+    return collapsed.strip()
 
 
 _MAX_TRANSCRIPT_BYTES = 500 * 1024 * 1024  # 500 MB safety limit
@@ -455,8 +460,8 @@ def _try_gemini_jsonl(content: str) -> Optional[str]:
     ``session_metadata`` are discarded — they are treated as preamble
     noise, not conversational turns. ``message_update`` entries are
     skipped — they have no message text. Multiple text blocks within a
-    single message's content array are concatenated in order, separated
-    by newlines.
+    single message's content array are concatenated in order with nothing
+    between them, as Gemini's own clients read a message.
     """
     lines = [line.strip() for line in content.strip().split("\n") if line.strip()]
     messages = []
@@ -492,14 +497,14 @@ def _try_gemini_jsonl(content: str) -> Optional[str]:
             if not isinstance(block, dict):
                 continue
             text = block.get("text", "")
-            if isinstance(text, str) and text.strip():
+            if isinstance(text, str) and text:
                 parts.append(text)
             elif any(key != "text" for key in block):
                 # functionCall, functionResponse, inlineData and the like.
                 _record("conversations.content_block_drop")
-        if not parts:
+        joined = "".join(parts)
+        if not joined.strip():
             continue
-        joined = "\n".join(parts)
 
         if entry_type == "user":
             messages.append(("user", joined))
@@ -610,27 +615,25 @@ def _try_gemini_json(data) -> Optional[str]:
         # Extract text — try "parts" first (Gemini API), then "content" (flat).
         text = ""
         parts = item.get("parts")
-        joined_parts = 0
         if isinstance(parts, list):
             text_parts = []
             for p in parts:
                 if isinstance(p, str):
                     text_parts.append(p)
-                elif isinstance(p, dict) and "text" in p:
+                elif isinstance(p, dict) and isinstance(p.get("text"), str):
                     text_parts.append(p["text"])
                 elif p:
                     # inlineData, functionCall, functionResponse and the like.
                     _record("conversations.content_block_drop")
-            joined_parts = len([t for t in text_parts if t])
-            text = " ".join(text_parts).strip()
+            # Gemini's own clients read a message as its text parts
+            # concatenated, so that is the message as written.
+            text = "".join(text_parts).strip()
         else:
             text = _extract_content(item.get("content", ""))
 
         if not text:
             continue
 
-        if role in ("user", "model", "assistant") and joined_parts > 1:
-            _record("line_join_spaces")
         if role == "user":
             messages.append(("user", text))
         elif role == "model":

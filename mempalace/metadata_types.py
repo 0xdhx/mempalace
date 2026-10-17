@@ -111,3 +111,22 @@ def is_sentinel(metadata):
     """
     flag = _as_bool((metadata or {}).get("is_sentinel"))
     return flag is not False and bool(flag)
+
+
+def is_bookkeeping(metadata, drawer_id=None):
+    """Whether a row tracks a source instead of holding any of its text.
+
+    That is the convo miner's registry row (``ingest_mode="registry"``, an id
+    starting ``_reg_``) or a miner's sentinel. The mining checks read these
+    rows; nothing a user sees should. A room name alone proves nothing: a
+    project can name a real room ``_registry``.
+    """
+    meta = metadata or {}
+    if is_sentinel(meta) or meta.get("ingest_mode") == "registry":
+        return True
+    return isinstance(drawer_id, str) and drawer_id.startswith(("_reg_", "sentinel_"))
+
+
+# A ``where`` filter matching the bookkeeping rows ``is_bookkeeping`` names by
+# metadata, for readers that can only subtract them after counting.
+BOOKKEEPING_WHERE = {"$or": [{"ingest_mode": "registry"}, {"is_sentinel": True}]}
