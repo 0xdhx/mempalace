@@ -4,10 +4,8 @@ import contextlib
 import datetime as _dt
 import json
 import logging
-import math
 import os
 import pickle
-import re
 import shlex
 import sqlite3
 import struct
@@ -24,6 +22,7 @@ import chromadb
 from chromadb.config import Settings as _ChromaSettings
 from chromadb.errors import NotFoundError as _ChromaNotFoundError
 
+from ..lexical import bm25_scores, tokenize
 from ..stored_text import (
     FLAG,
     decode_record,
@@ -97,7 +96,6 @@ _CLIENT_SETTINGS = _ChromaSettings(anonymized_telemetry=False)
 _REQUIRED_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin", "$and", "$or", "$contains"})
 _OPTIONAL_OPERATORS = frozenset({"$gt", "$gte", "$lt", "$lte"})
 _SUPPORTED_OPERATORS = _REQUIRED_OPERATORS | _OPTIONAL_OPERATORS
-_TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
 
 # A healthy HNSW payload should keep link_lists.bin proportional to
 # data_level0.bin. When link_lists.bin grows orders of magnitude larger than
@@ -597,56 +595,6 @@ def _validate_where(where: Optional[dict]) -> None:
                 stack.extend(x for x in v if isinstance(x, dict))
 
 
-def _tokenize(text: str) -> list[str]:
-    if not text:
-        return []
-    return _TOKEN_RE.findall(text.lower())
-
-
-def _bm25_scores(
-    query: str,
-    documents: list[str],
-    k1: float = 1.5,
-    b: float = 0.75,
-) -> list[float]:
-    query_terms = set(_tokenize(query))
-    n_docs = len(documents)
-    if not query_terms or n_docs == 0:
-        return [0.0] * n_docs
-
-    tokenized = [_tokenize(doc) for doc in documents]
-    doc_lens = [len(toks) for toks in tokenized]
-    if not any(doc_lens):
-        return [0.0] * n_docs
-    avgdl = sum(doc_lens) / n_docs or 1.0
-
-    df = {term: 0 for term in query_terms}
-    for toks in tokenized:
-        for term in set(toks) & query_terms:
-            df[term] += 1
-
-    idf = {
-        term: math.log((n_docs - df[term] + 0.5) / (df[term] + 0.5) + 1.0) for term in query_terms
-    }
-
-    scores = []
-    for toks, dl in zip(tokenized, doc_lens):
-        if dl == 0:
-            scores.append(0.0)
-            continue
-        tf: dict[str, int] = {}
-        for token in toks:
-            if token in query_terms:
-                tf[token] = tf.get(token, 0) + 1
-        score = 0.0
-        for term, freq in tf.items():
-            num = freq * (k1 + 1)
-            den = freq + k1 * (1 - b + b * dl / avgdl)
-            score += idf[term] * num / den
-        scores.append(score)
-    return scores
-
-
 # Most full-text matches the candidate pickers below read, best-ranked first.
 _FTS_SCAN_CAP = 50_000
 # A metadata filter matching at most this many drawers is evaluated by reading
@@ -659,7 +607,7 @@ def _fts_tokens(query: str, stop_words: frozenset = frozenset()) -> list[str]:
 
     Stop words are dropped unless the query holds nothing else.
     """
-    terms = [t for t in _tokenize(query) if len(t) >= 3]
+    terms = [t for t in tokenize(query) if len(t) >= 3]
     return [t for t in terms if t not in stop_words] or terms
 
 
@@ -686,7 +634,7 @@ def _whole_words_first(rows, query_tokens: Iterable[str], limit: Optional[int]) 
     whole: list[int] = []
     partial: list[int] = []
     for row_id, text in rows:
-        if words.intersection(_tokenize(text)):
+        if words.intersection(tokenize(text)):
             whole.append(int(row_id))
             if limit is not None and len(whole) >= limit:
                 break
@@ -742,7 +690,7 @@ def _fts_candidate_rows(
     if len(ranked) < _FTS_SCAN_CAP:
         return result
     text_by_id = {int(row_id): text or "" for row_id, text in ranked}
-    whole = [row_id for row_id in result if words.intersection(_tokenize(text_by_id[row_id]))]
+    whole = [row_id for row_id in result if words.intersection(tokenize(text_by_id[row_id]))]
     if limit is not None and len(whole) >= limit:
         return result
     # The ranked window is full and short of whole-word matches: a name can
@@ -756,7 +704,7 @@ def _fts_candidate_rows(
         (*params, _FTS_CONTINUATION_BUDGET),
     ):
         read += 1
-        if int(row_id) in seen or not words.intersection(_tokenize(text)):
+        if int(row_id) in seen or not words.intersection(tokenize(text)):
             continue
         extra.append(int(row_id))
         if limit is not None and len(whole) + len(extra) >= limit:
@@ -3754,7 +3702,7 @@ class ChromaCollection(BaseCollection):
             metas.extend(meta or {} for meta in batch.metadatas)
             offset += len(batch.ids)
 
-        scores = _bm25_scores(query, docs)
+        scores = bm25_scores(query, docs)
         hits = [
             LexicalHit(id=doc_id, document=doc, metadata=meta, score=float(score))
             for doc_id, doc, meta, score in zip(ids, docs, metas, scores)
@@ -3789,7 +3737,7 @@ class ChromaCollection(BaseCollection):
         if not collection_name:
             return []
 
-        tokens = [t for t in _tokenize(query) if len(t) >= 3]
+        tokens = [t for t in tokenize(query) if len(t) >= 3]
         use_recency_fallback = not tokens
         candidate_ids: list[int] = []
         # Map internal embeddings.id (rowid, used to join embedding_metadata)
@@ -3934,7 +3882,7 @@ class ChromaCollection(BaseCollection):
             ordered.append((emb_id, *decode_record(drawer["document"], drawer["metadata"])))
 
         docs = [doc for _, doc, _ in ordered]
-        scores = _bm25_scores(query, docs)
+        scores = bm25_scores(query, docs)
         hits = [
             LexicalHit(
                 id=public_ids.get(emb_id, str(emb_id)),

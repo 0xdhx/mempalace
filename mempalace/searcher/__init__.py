@@ -37,6 +37,7 @@ from ..config import MempalaceConfig
 from ..date_window import filed_at_in_window, parse_window
 from ..embedding import UnknownEmbeddingModelError, _model_error_class, model_error_result
 from ..i18n import _canonical_lang, get_stopwords
+from ..lexical import bm25_scores, tokenize
 from ..metadata_types import is_bookkeeping
 from ..palace import (
     _open_collection_or_explain,
@@ -62,8 +63,6 @@ logger = logging.getLogger("mempalace_mcp")
 class SearchError(Exception):
     """Raised when search cannot proceed (e.g. no palace found)."""
 
-
-_TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
 
 _FRAGMENT_DIR = Path(__file__).resolve().parent
 # Load order is a dependency sequence, not a catalog: later files use names

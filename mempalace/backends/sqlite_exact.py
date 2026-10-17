@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 import numpy as np
 
+from ..lexical import bm25_scores, tokenize
 from ..stored_text import (
     decode_record,
     decode_value,
@@ -58,7 +59,6 @@ _DB_FILENAME = "sqlite_exact.sqlite3"
 # stamp the checkpoint with the same mtime as the previous one.
 _WRITE_GENERATION_KEY = "write_generation"
 _WRITE_GENERATION_SQL = "SELECT value FROM meta WHERE key = ?"
-_TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
 _SUPPORTED_OPERATORS = frozenset(
     {"$eq", "$ne", "$in", "$nin", "$and", "$or", "$contains", "$gt", "$gte", "$lt", "$lte"}
 )
@@ -114,49 +114,6 @@ def _decode_array(blob: bytes | None) -> Optional[np.ndarray]:
     if arr.size == 0:
         return None
     return arr
-
-
-def _tokenize(text: str) -> list[str]:
-    if not text:
-        return []
-    return _TOKEN_RE.findall(text.lower())
-
-
-def _bm25_scores(query: str, documents: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
-    query_terms = set(_tokenize(query))
-    n_docs = len(documents)
-    if not query_terms or n_docs == 0:
-        return [0.0] * n_docs
-
-    tokenized = [_tokenize(d) for d in documents]
-    doc_lens = [len(toks) for toks in tokenized]
-    if not any(doc_lens):
-        return [0.0] * n_docs
-    avgdl = sum(doc_lens) / n_docs or 1.0
-
-    df = {term: 0 for term in query_terms}
-    for toks in tokenized:
-        for term in set(toks) & query_terms:
-            df[term] += 1
-
-    idf = {term: np.log((n_docs - df[term] + 0.5) / (df[term] + 0.5) + 1.0) for term in query_terms}
-
-    scores = []
-    for toks, dl in zip(tokenized, doc_lens):
-        if dl == 0:
-            scores.append(0.0)
-            continue
-        tf: dict[str, int] = {}
-        for token in toks:
-            if token in query_terms:
-                tf[token] = tf.get(token, 0) + 1
-        score = 0.0
-        for term, freq in tf.items():
-            num = freq * (k1 + 1)
-            den = freq + k1 * (1 - b + b * dl / avgdl)
-            score += float(idf[term]) * num / den
-        scores.append(score)
-    return scores
 
 
 def _validate_where(where: Optional[dict]) -> None:
@@ -1506,7 +1463,7 @@ class SQLiteExactCollection(BaseCollection):
             if hits is not None:
                 return LexicalResult(hits=hits)
             rows = self._rows(cur, where=where)
-        scores = _bm25_scores(query, [row["document"] for row in rows])
+        scores = bm25_scores(query, [row["document"] for row in rows])
         scored = [
             LexicalHit(
                 id=row["id"],
@@ -1523,7 +1480,7 @@ class SQLiteExactCollection(BaseCollection):
     def _lexical_search_fts(self, cur, *, query: str, n_results: int, where: Optional[dict]):
         if not self._fts_available(cur):
             return None
-        tokens = [t for t in _tokenize(query) if len(t) >= 2]
+        tokens = [t for t in tokenize(query) if len(t) >= 2]
         if not tokens:
             return None
         fts_query = " OR ".join(tokens)
