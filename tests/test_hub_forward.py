@@ -105,7 +105,8 @@ class TestServerRegistry:
     def test_shares_directory_with_server_token(self, isolated_home):
         palace = str(isolated_home / "palace")
         assert (
-            server_registry.serverinfo_path(palace).parent == cli._server_token_path(palace).parent
+            server_registry.serverinfo_path(palace).parent
+            == server_registry.server_token_path(palace).parent
         )
 
     def test_dead_pid_record_is_ignored(self, isolated_home):

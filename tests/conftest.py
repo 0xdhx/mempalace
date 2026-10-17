@@ -341,6 +341,17 @@ def _isolate_home():
 
 
 @pytest.fixture
+def tokenless_http_hub(monkeypatch):
+    """Serve MCP HTTP without a bearer token, as ``mempalace serve --no-token`` does.
+
+    The transport requires a token by default; suites that drive a loopback
+    hub with raw HTTP requests opt out with this rather than carry a token.
+    """
+    monkeypatch.delenv("MEMPALACE_MCP_HTTP_TOKEN", raising=False)
+    monkeypatch.setenv("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN", "1")
+
+
+@pytest.fixture
 def tmp_dir():
     """Create and auto-cleanup a temporary directory."""
     d = tempfile.mkdtemp(prefix="mempalace_test_")
