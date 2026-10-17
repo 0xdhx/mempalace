@@ -201,7 +201,9 @@ extend-exclude = ["benchmarks", "*.md"]
 select = ["E", "F", "W", "C901", "I", "RUF100", "B", "RET", "ERA"]
 # RET501: an explicit `return None` in a no-op default or a test fake shows
 # the reader it stands in for a call that returns a value.
-ignore = ["E501", "RET501"]
+# RET503: every hit ends in a call that always raises, a retry loop whose last
+# attempt re-raises, or an endless generator; an added `return` would be dead.
+ignore = ["E501", "RET501", "RET503"]
 # Codes of rules planned for later lint stages. Their noqa marks are
 # deliberate, so RUF100 must not strip them before those rules are on.
 external = ["A002", "ARG001", "ARG002", "BLE001", "S310"]
