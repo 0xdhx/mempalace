@@ -32,6 +32,7 @@ import time
 from pathlib import Path
 
 from mempalace._proc import pid_alive as _pid_alive
+from mempalace.fsio import atomic_write_text, read_published_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +71,7 @@ def serverinfo_path(palace_path: str) -> Path:
 def _read_server_token_file(palace_path: str) -> str:
     """The stored token, or "" when it is missing, unreadable or not text."""
     try:
-        return server_token_path(palace_path).read_text(encoding="utf-8").strip()
+        return read_published_bytes(server_token_path(palace_path)).decode("utf-8").strip()
     except (OSError, ValueError):
         return ""
 
@@ -86,7 +87,6 @@ def load_or_create_server_token(palace_path: str) -> tuple[str, bool]:
     """
     import secrets
 
-    from .fsio import atomic_write_text
     from .palace import mine_lock
 
     path = server_token_path(palace_path)
@@ -137,10 +137,7 @@ def write_serverinfo(
         "search_config_fingerprint": search_config_fingerprint,
         "palace_path": _canonical(palace_path),
     }
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-        fh.write("\n")
+    atomic_write_text(path, json.dumps(payload) + "\n")
     return path
 
 
@@ -175,21 +172,9 @@ def write_mesh_state(palace_path: str, *, peers: dict, profiles: dict) -> Path:
         "peers": peers,
         "profiles": profiles,
     }
-    # Write-and-rename: readers in other processes must never observe a
-    # half-serialized estate, and this file is rewritten every sync round.
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(payload, fh)
-            fh.write("\n")
-        os.replace(str(tmp), str(path))
-    except BaseException:
-        try:
-            os.unlink(str(tmp))
-        except OSError:
-            pass
-        raise
+    # Readers in other processes must never observe a half-serialized
+    # estate, and this file is rewritten every sync round.
+    atomic_write_text(path, json.dumps(payload) + "\n", follow_symlinks=False)
     return path
 
 
@@ -204,7 +189,7 @@ def read_mesh_state(palace_path: str) -> dict:
     """
     empty = {"peers": {}, "profiles": {}, "written_at": None, "writer_alive": False}
     try:
-        state = json.loads(mesh_state_path(palace_path).read_text(encoding="utf-8"))
+        state = json.loads(read_published_bytes(mesh_state_path(palace_path)).decode("utf-8"))
     except (OSError, ValueError):
         return empty
     if not isinstance(state, dict):
@@ -227,7 +212,7 @@ def clear_serverinfo(palace_path: str) -> None:
     """
     path = serverinfo_path(palace_path)
     try:
-        recorded = json.loads(path.read_text(encoding="utf-8"))
+        recorded = json.loads(read_published_bytes(path).decode("utf-8"))
     except (OSError, ValueError):
         return
     if recorded.get("pid") != os.getpid():
@@ -246,7 +231,7 @@ def read_live_serverinfo(palace_path: str):
     """
     path = serverinfo_path(palace_path)
     try:
-        info = json.loads(path.read_text(encoding="utf-8"))
+        info = json.loads(read_published_bytes(path).decode("utf-8"))
     except (OSError, ValueError):
         return None
     if not isinstance(info, dict):

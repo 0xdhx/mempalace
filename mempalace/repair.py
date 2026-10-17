@@ -57,6 +57,7 @@ from .backends.chroma import ChromaBackend, _clear_chroma_system_cache, hnsw_cap
 # backends._inproc_sqlite, which opens them with connect_sqlite_read under the
 # palace's in-process lock.
 from .config import connect_sqlite_read, sqlite_read_uri  # noqa: F401
+from .fsio import atomic_write_text
 from .stored_text import decode_record
 
 COLLECTION_NAME = "mempalace_drawers"
@@ -103,30 +104,6 @@ def _open_regular_file_no_follow(path: str) -> int:
         return fd
     except Exception:
         os.close(fd)
-        raise
-
-
-def _write_text_replace_no_follow(path: str, text: str) -> None:
-    directory = os.path.dirname(path) or "."
-    basename = os.path.basename(path)
-    tmp_path = os.path.join(
-        directory,
-        f".{basename}.{os.getpid()}.{int(time.time() * 1_000_000)}.tmp",
-    )
-    fd = os.open(
-        tmp_path,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _no_follow_flag(),
-        0o600,
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.replace(tmp_path, path)
-    except Exception:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
         raise
 
 
@@ -729,9 +706,9 @@ def scan_palace(palace_path=None, only_wing=None, collection_name: Optional[str]
     print(f"  BAD:  {len(bad_set):,}  ({len(bad_set) / max(len(all_ids), 1) * 100:.1f}%)")
 
     bad_file = os.path.join(palace_path, "corrupt_ids.txt")
-    _write_text_replace_no_follow(
-        bad_file,
-        "".join(f"{bid}\n" for bid in sorted(bad_set)),
+    # A symlink at that name is replaced, never written through.
+    atomic_write_text(
+        bad_file, "".join(f"{bid}\n" for bid in sorted(bad_set)), follow_symlinks=False
     )
     print(f"\n  Bad IDs written to: {bad_file}")
     return good_set, bad_set
