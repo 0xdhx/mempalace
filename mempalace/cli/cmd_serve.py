@@ -72,8 +72,9 @@ def _server_is_loopback(host: str) -> bool:
 def cmd_serve(args):
     """Run a secure remote HTTP MCP server for a team to share one palace (#1877).
 
-    A turnkey wrapper over ``mempalace-mcp --transport http``: it resolves a
-    bearer token (reusing or auto-generating the palace's stored one), prints a
+    A turnkey wrapper over ``mempalace-mcp --transport http``: on a network bind
+    it resolves a bearer token (reusing or auto-generating the palace's stored
+    one; a loopback bind needs none unless ``--token`` is given), prints a
     ready-to-paste client config, then execs the real server in the foreground so
     Docker/systemd own the process lifecycle. The token is passed via the
     environment, never argv, so it can't leak through ``ps``, and is never
@@ -112,9 +113,12 @@ def cmd_serve(args):
         sys.exit(2)
 
     # Token resolution. Explicit flag > existing env > the palace's stored token.
+    # A loopback bind no proxy publishes (no MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS)
+    # needs none unless one is given; --no-token is a no-op there.
     token = (args.token or os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "")).strip()
     token_created = False
-    tokenless = no_token or args.allow_insecure
+    local_only = loopback and not os.environ.get("MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS", "").strip()
+    tokenless = local_only or no_token or args.allow_insecure
     if not token and not tokenless:
         token, token_created = load_or_create_server_token(palace_path)
     token_path = server_token_path(palace_path)
@@ -127,7 +131,7 @@ def cmd_serve(args):
         env["MEMPALACE_BACKEND"] = str(backend).strip().lower()
     if token:
         env["MEMPALACE_MCP_HTTP_TOKEN"] = token
-    if not token and tokenless:
+    if not token and not local_only and tokenless:
         env["MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN"] = "1"
 
     child = [
@@ -164,7 +168,8 @@ def cmd_serve(args):
         state = "new, " if token_created else ""
         print(f"  token    : {token_path}  ({state}0600; local mempalace clients read it)")
     elif not token:
-        print("  token    : none (--no-token / --allow-insecure)")
+        reason = "loopback bind" if local_only else "--no-token / --allow-insecure"
+        print(f"  token    : none ({reason})")
     print("\nConnect a client:")
     if token:
         print(

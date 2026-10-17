@@ -150,27 +150,40 @@ def test_concurrent_starts_settle_on_the_token_on_disk(isolated_home, leftover):
     assert tokens == {path.read_text().strip()}
 
 
-def test_loopback_serve_requires_the_stored_token_by_default(isolated_home, capture_exec, capsys):
+def test_loopback_serve_needs_no_token_by_default(isolated_home, capture_exec, capsys):
     with pytest.raises(_ExecCalled):
         cli.cmd_serve(_serve_args(isolated_home, host="127.0.0.1"))
     env = capture_exec["env"]
-    token = env.get("MEMPALACE_MCP_HTTP_TOKEN")
-    assert token, "D-25: a loopback bind gets a token too"
+    assert "MEMPALACE_MCP_HTTP_TOKEN" not in env
     assert "MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN" not in env
-    assert all(token not in part for part in capture_exec["argv"])
-    path = server_token_path(str(isolated_home / "palace"))
-    assert path.read_text().strip() == token
-    # The token itself is never printed: a terminal or service log would keep it.
+    assert not server_token_path(str(isolated_home / "palace")).exists()
     out = capsys.readouterr().out
-    assert token not in out
-    assert str(path) in out
+    assert "none (loopback bind)" in out
+    assert "Authorization" not in out
 
 
-def test_no_token_serves_loopback_open(isolated_home, capture_exec):
+def test_loopback_serve_keeps_an_explicit_token(isolated_home, capture_exec, capsys):
+    with pytest.raises(_ExecCalled):
+        cli.cmd_serve(_serve_args(isolated_home, host="127.0.0.1", token="s3cret-token"))
+    env = capture_exec["env"]
+    assert env.get("MEMPALACE_MCP_HTTP_TOKEN") == "s3cret-token"
+    assert all("s3cret-token" not in part for part in capture_exec["argv"])
+    assert "s3cret-token" not in capsys.readouterr().out
+
+
+def test_proxied_loopback_serve_generates_a_token(isolated_home, capture_exec, monkeypatch):
+    monkeypatch.setenv("MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS", "box.example.ts.net")
+    with pytest.raises(_ExecCalled):
+        cli.cmd_serve(_serve_args(isolated_home, host="127.0.0.1"))
+    token = capture_exec["env"].get("MEMPALACE_MCP_HTTP_TOKEN")
+    assert token
+    assert server_token_path(str(isolated_home / "palace")).read_text().strip() == token
+
+
+def test_no_token_is_a_no_op_on_loopback(isolated_home, capture_exec):
     with pytest.raises(_ExecCalled):
         cli.cmd_serve(_serve_args(isolated_home, host="127.0.0.1", no_token=True))
     env = capture_exec["env"]
-    assert env.get("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN") == "1"
     assert "MEMPALACE_MCP_HTTP_TOKEN" not in env
     assert not server_token_path(str(isolated_home / "palace")).exists()
 

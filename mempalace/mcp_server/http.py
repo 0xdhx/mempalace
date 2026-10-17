@@ -1192,16 +1192,26 @@ def _http_serve_logstream_stream(handler) -> None:
         handler.close_connection = True
 
 
-def _http_resolve_token() -> str:
-    """The bearer token /mcp requires, or "" when serving deliberately without one.
+def _http_local_only(host: str) -> bool:
+    """A loopback bind that no fronting proxy publishes to other machines.
 
-    On by default for every bind (D-25): an unset ``MEMPALACE_MCP_HTTP_TOKEN``
-    reuses or mints the palace's stored token, which local clients read from
-    the same place. Only ``MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN`` (set by
-    ``mempalace serve --no-token`` / ``--allow-insecure``) serves without one.
+    ``MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS`` names the public host a proxy such as
+    ``tailscale serve`` forwards under, so such a hub is treated as remote.
+    """
+    return _http_is_loopback(host) and not os.environ.get(_HTTP_EXTRA_ALLOWED_HOSTS_ENV, "").strip()
+
+
+def _http_resolve_token(host: str) -> str:
+    """The bearer token /mcp requires, or "" when serving without one.
+
+    A local-only loopback bind needs no token unless ``MEMPALACE_MCP_HTTP_TOKEN``
+    sets one; the Host pin and Origin check guard it against browsers. Any other
+    bind reuses or mints the palace's stored token, which local clients read
+    from the same place, unless ``MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN``
+    (``mempalace serve --allow-insecure``) says a trusted proxy guards it.
     """
     token = os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "").strip()
-    if token or _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV):
+    if token or _http_local_only(host) or _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV):
         return token
     if not _config.palace_path:
         raise ValueError(
@@ -1225,7 +1235,7 @@ def _build_http_server(host: str, port: int):
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    auth_token = _http_resolve_token()
+    auth_token = _http_resolve_token(host)
 
     # Resolve TLS before bind so a bad cert/key fails loudly rather than at the
     # first request. TLS is transport encryption only — the bearer-token guard

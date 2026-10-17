@@ -119,13 +119,15 @@ and needs no extra.
 
 ## 3. Serve MCP over HTTP
 
-One command — `mempalace serve` — runs the server with secure defaults. Every
-bind, loopback included, **requires a bearer token**: unless you pass one, the
-server reuses or auto-generates a strong token stored `0600` at
+One command — `mempalace serve` — runs the server with secure defaults. A
+network bind, or a loopback bind a proxy publishes (see *Fronting proxies*
+below), **requires a bearer token**: unless you pass one, the server reuses or
+auto-generates a strong token stored `0600` at
 `~/.mempalace/server/<key>/token`, where local `mempalace` clients (the CLI,
-the save hooks, the stdio proxy) read it automatically. It prints that path and
-a ready-to-paste client config, never the token itself, and runs in the
-foreground so Docker/systemd own the lifecycle.
+the save hooks, the stdio proxy) read it automatically. A plain loopback bind
+serves local clients with no token unless you pass `--token`. It prints the
+token's path and a ready-to-paste client config, never the token itself, and
+runs in the foreground so Docker/systemd own the lifecycle.
 
 ```bash
 mempalace serve --host 0.0.0.0 --port 8765 --backend milvus
@@ -140,14 +142,15 @@ Read the token from the printed path to hand it to remote clients. Useful flags:
 | `--backend` | config/env | Storage backend (e.g. `qdrant`) |
 | `--tls-cert` / `--tls-key` | _(none)_ | PEM cert + key to terminate **TLS natively** (server speaks `https`) |
 | `--read-only` | off | Expose recall only — the tools that change state are hidden and refused |
-| `--token` | auto | Use a specific bearer token instead of the stored one |
-| `--no-token` | off | Serve a loopback bind without a token (refused on a network bind) |
+| `--token` | auto on network binds | Use a specific bearer token (also enforces one on loopback) |
+| `--no-token` | off | Accepted for compatibility: a plain loopback bind already needs none (refused on a network bind) |
 | `--allow-insecure` | off | Permit a non-loopback bind with no token (only behind a trusted proxy) |
 
 The token always travels via the environment, never the command line, so it
-can't leak through `ps`. Without `--no-token` or `--allow-insecure` the server
-never runs tokenless; `mempalace-mcp --transport http` follows the same rule,
-and `MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN=1` is its explicit opt-out.
+can't leak through `ps`. Off loopback, or behind a proxy, the server never runs
+tokenless without `--allow-insecure`; `mempalace-mcp --transport http` follows
+the same rule, and `MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN=1` is its
+explicit opt-out.
 Tool arguments are checked against each tool's schema before any handler runs,
 and an internal error reaches a client as its error class only. The server also guards against
 DNS-rebinding with a `Host` allowlist and an `Origin` loopback check, and
