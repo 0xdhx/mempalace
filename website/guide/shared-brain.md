@@ -63,15 +63,11 @@ follow a restarted hub — without touching their config. Set
 `MEMPALACE_HUB_FORWARD=0` to opt out.
 
 Local agents that speak HTTP natively can also connect directly to
-`http://127.0.0.1:8765/mcp` with the hub's bearer token, whose path `serve`
-prints at startup:
+`http://127.0.0.1:8765/mcp`, with no token:
 
 ```bash
-claude mcp add --transport http mempalace http://127.0.0.1:8765/mcp \
-  --header "Authorization: Bearer $(cat ~/.mempalace/server/<key>/token)"
+claude mcp add --transport http mempalace http://127.0.0.1:8765/mcp
 ```
-
-(The stdio route above needs no token: it reads the same file itself.)
 
 ## 3. Bring in remote machines
 
@@ -87,11 +83,12 @@ claude mcp add --transport http mempalace https://memory.example.com/mcp \
   --header "Authorization: Bearer $MEMPALACE_MCP_HTTP_TOKEN"
 ```
 
-The hub requires a bearer token on every bind, loopback included: it reuses or
+Once a proxy publishes the hub (`MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` set) or it
+binds a network address, it requires a bearer token: it reuses or
 auto-generates one stored `0600` at `~/.mempalace/server/<key>/token` (the
 path is printed at startup), and local `mempalace` clients read it from there.
-Hand that token to the proxy or remote agents, or pass your own with `--token`
-/ `MEMPALACE_MCP_HTTP_TOKEN`.
+Hand that token to remote agents, or pass your own with `--token` /
+`MEMPALACE_MCP_HTTP_TOKEN`. A plain loopback hub needs none.
 
 ::: warning Never expose the logstream unauthenticated
 Events and artifacts carry work metadata and patch contents. The hub's
