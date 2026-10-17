@@ -19,6 +19,9 @@ import pytest
 
 from mempalace.stored_text import EXACT_WIRE_HEADER, dumps_client, dumps_internal
 
+# These drive a loopback hub with raw HTTP requests, so they serve it tokenless.
+pytestmark = pytest.mark.usefixtures("tokenless_http_hub")
+
 STRAY_BYTES = ("café zebrafinch " * 10).encode("utf-8") + b"stray\xffbyte"
 STRAY_TEXT = "café zebrafinch " * 10 + "stray\udcffbyte"
 
