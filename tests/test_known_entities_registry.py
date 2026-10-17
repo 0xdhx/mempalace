@@ -14,7 +14,7 @@ import os
 
 import pytest
 
-from mempalace import miner
+from mempalace import fsio, miner
 
 
 @pytest.fixture
@@ -504,7 +504,7 @@ def test_the_rename_is_made_durable(temp_registry, monkeypatch):
     what ``EntityRegistry.save`` does and explains. Nothing observable comes
     out of an fsync, so this asserts the call rather than its effect."""
     synced = []
-    monkeypatch.setattr(miner, "_fsync_directory", lambda d: synced.append(str(d)))
+    monkeypatch.setattr(fsio, "fsync_directory", lambda d: synced.append(str(d)))
 
     miner.add_to_known_entities({"people": ["Alice"]})
 
@@ -591,7 +591,7 @@ def test_the_temporary_file_is_synced(temp_registry, monkeypatch):
         return real_fsync(fd)
 
     monkeypatch.setattr(os, "fsync", record)
-    monkeypatch.setattr(miner, "_fsync_directory", lambda d: None)
+    monkeypatch.setattr(fsio, "fsync_directory", lambda d: None)
 
     miner.add_to_known_entities({"people": ["Alice"]})
 
@@ -676,11 +676,11 @@ def test_a_failed_write_in_place_keeps_the_finished_copy(temp_registry, monkeypa
             raise OSError(errno.EPERM, "Operation not permitted")
         return real_replace(src, dst, *args, **kwargs)
 
-    def dies(registry_path, payload):
+    def dies(path, write_body, **kwargs):
         raise OSError(errno.EIO, "Input/output error")
 
     monkeypatch.setattr(os, "replace", refused)
-    monkeypatch.setattr(miner, "_write_registry_in_place", dies)
+    monkeypatch.setattr(fsio, "write_in_place", dies)
 
     with pytest.raises(OSError):
         miner.add_to_known_entities({"people": ["Dana"]})
@@ -764,7 +764,7 @@ def test_a_refused_temporary_name_is_not_retried_into_a_sweep(temp_registry, mon
     monkeypatch.setattr(os, "open", not_permitted)
     miner.add_to_known_entities({"people": ["Dana"]})
 
-    assert len(attempts) <= miner._TEMP_NAME_ATTEMPTS + 1, len(attempts)
+    assert len(attempts) <= fsio.TEMP_NAME_ATTEMPTS + 1, len(attempts)
     data = json.loads(temp_registry.read_text())
     assert sorted(data["people"]) == ["Alice", "Dana"]
     assert "written in place" in capsys.readouterr().err
@@ -794,25 +794,6 @@ def test_a_taken_temporary_name_is_retried(temp_registry, monkeypatch):
     assert taken["left"] == 0
     data = json.loads(temp_registry.read_text())
     assert sorted(data["people"]) == ["Alice", "Dana"]
-
-
-def test_every_temporary_name_taken_raises_rather_than_sweeping(tmp_path, monkeypatch):
-    """Exhausting the attempts answers the way ``mkstemp`` does."""
-    real_open = os.open
-    calls = {"n": 0}
-
-    def always_exists(path, *args, **kwargs):
-        if os.path.basename(str(path)).startswith("probe."):
-            calls["n"] += 1
-            raise FileExistsError(errno.EEXIST, "File exists")
-        return real_open(path, *args, **kwargs)
-
-    monkeypatch.setattr(os, "open", always_exists)
-
-    with pytest.raises(FileExistsError):
-        miner._open_new_temp_file(tmp_path, prefix="probe.")
-
-    assert calls["n"] == miner._TEMP_NAME_ATTEMPTS
 
 
 def test_eperm_on_both_names_falls_back_too(temp_registry, monkeypatch, capsys):
@@ -905,7 +886,7 @@ def test_the_symlink_probe_raises_when_it_cannot_tell(tmp_path):
     os.chmod(locked, 0o000)
     try:
         with pytest.raises(OSError) as caught:
-            miner._registry_write_target(target)
+            fsio.write_target(target)
     finally:
         os.chmod(locked, 0o700)
 

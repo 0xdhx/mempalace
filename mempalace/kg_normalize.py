@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from .config import MempalaceConfig
+from .fsio import atomic_write_json
 
 NORMALIZE_SCHEMA_VERSION = 1
 DEFAULT_VOCABULARY = (
@@ -180,10 +181,7 @@ def normalize_plan_path(config: MempalaceConfig) -> str:
 def save_normalize_plan(config: MempalaceConfig, plan: dict) -> str:
     path = normalize_plan_path(config)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(plan, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+    atomic_write_json(path, plan, private=False)
     return path
 
 

@@ -29,6 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ._proc import kernel32 as _kernel32, pid_alive as _pid_alive
 from .config import MempalaceConfig
+from .fsio import atomic_write_text
 from .palace import (
     MineAlreadyRunning,
     backend_requires_single_writer,
@@ -138,9 +139,7 @@ def state_dir(palace_path: str) -> Path:
 
 def _write_private(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(text)
+    atomic_write_text(path, text)
 
 
 def ensure_token(palace_path: str) -> str:

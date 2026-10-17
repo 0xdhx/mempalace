@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Optional
 
 from .config import sanitize_iso_temporal, strip_lone_surrogates
+from .fsio import atomic_publish
 
 logger = logging.getLogger("mempalace_logstream")
 
@@ -421,20 +422,13 @@ def write_watch_cursor(path: str, cursor: str, agent: str = None, required: bool
     payload = {"cursor": cursor or None, "updated_at": _utc_now_iso()}
     if agent:
         payload["agent"] = agent
-    tmp = f"{path}.tmp"
     try:
         parent = os.path.dirname(os.path.abspath(path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle)
-        os.replace(tmp, path)
+        atomic_publish(path, lambda handle: json.dump(payload, handle), private=False)
     except OSError:
         logger.debug("could not persist watch cursor to %s", path, exc_info=True)
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
         if required:
             raise
 

@@ -39,6 +39,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Optional, Protocol
 
 from .config import MempalaceConfig, sanitize_name
+from .fsio import atomic_write_json
 from .metadata_types import is_bookkeeping
 
 ROOM_SET_SCHEMA_VERSION = 1
@@ -154,10 +155,7 @@ def room_set_path(config: MempalaceConfig, wing: str) -> str:
 def save_room_set(config: MempalaceConfig, room_set: RoomSet) -> str:
     path = room_set_path(config, room_set.wing)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(room_set.to_dict(), f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+    atomic_write_json(path, room_set.to_dict(), private=False)
     return path
 
 
@@ -788,10 +786,7 @@ def save_pending_apply(
         # reinterpret an intermediate room or mutate a closet that left this wing.
         "closet_moves": {cid: list(entry) for cid, entry in sorted(moves.items())},
     }
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+    atomic_write_json(path, payload, private=False)
     return path
 
 
