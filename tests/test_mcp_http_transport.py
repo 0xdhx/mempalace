@@ -1148,8 +1148,8 @@ def test_proxied_loopback_hub_requires_the_stored_token(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp, "_config", SimpleNamespace(palace_path=palace, backend="chroma"))
     httpd = mcp._build_http_server("127.0.0.1", 0)
     try:
-        token = server_registry.load_server_token(palace)
-        assert token and httpd.auth_token == token
+        tokens = server_registry.load_server_tokens(palace)
+        assert tokens and httpd.auth_token == tokens[0]
     finally:
         httpd.server_close()
 
