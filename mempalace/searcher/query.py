@@ -174,12 +174,15 @@ def _scaled_pool_limits(limits: tuple, scale: int) -> tuple:
     )
 
 
-def _copies_left_results_short(hits, n_results, candidates_fetched, pool_size) -> bool:
-    """Whether folded copies left the page short while the pool was full."""
+def _pool_left_results_short(
+    hits, n_results, candidates_fetched, pool_size, bookkeeping_dropped=0
+) -> bool:
+    """Whether folded copies or skipped bookkeeping rows left the page short
+    while the pool came back full, so more candidates exist."""
     return (
         len(hits) < n_results
         and candidates_fetched >= pool_size
-        and any(hit.get("also_in") for hit in hits)
+        and (bookkeeping_dropped > 0 or any(hit.get("also_in") for hit in hits))
     )
 
 
@@ -370,6 +373,7 @@ def search_memories(
     # Every candidate the vector path measured, kept or dropped, so union
     # mode neither re-admits nor re-counts a drawer this loop already gated.
     measured: dict = {}
+    bookkeeping_dropped = 0
     drawer_docs = _first_or_empty(drawer_results, "documents")
     stored_drawer_ids = _aligned_query_ids(drawer_results, len(drawer_docs))
     for stored_drawer_id, doc, meta, dist in zip(
@@ -383,6 +387,7 @@ def search_memories(
         if stored_drawer_id:
             measured[stored_drawer_id] = dist
         if is_bookkeeping(meta, stored_drawer_id):
+            bookkeeping_dropped += 1
             continue
         gate = _candidate_out_of_scope(dist, meta, max_distance, since_dt, before_dt, metric)
         if gate == "distance":
@@ -480,7 +485,9 @@ def search_memories(
         stats=stats,
         distance_metric=metric,
     )
-    if _copies_left_results_short(hits, n_results, candidates_fetched, pool_size):
+    if _pool_left_results_short(
+        hits, n_results, candidates_fetched, pool_size, bookkeeping_dropped
+    ):
         if _pool_scale < _MAX_POOL_SCALE and pool_size < _MAX_FOLD_POOL:
             return search_memories(
                 query,

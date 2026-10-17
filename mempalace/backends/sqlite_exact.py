@@ -374,8 +374,14 @@ def sqlite_wing_room_counts(
             if row is None:
                 return None
             collection_id = int(row[0])
+            # Registry rows and sentinels track sources; they are not drawers.
+            not_bookkeeping = (
+                "COALESCE(json_extract(metadata_json, '$.ingest_mode'), '') != 'registry'"
+                " AND COALESCE(json_extract(metadata_json, '$.is_sentinel'), 0)"
+                " NOT IN (1, 'true', 'True', '1')"
+            )
             total_row = conn.execute(
-                "SELECT COUNT(*) FROM documents WHERE collection_id = ?",
+                f"SELECT COUNT(*) FROM documents WHERE collection_id = ? AND {not_bookkeeping}",
                 (collection_id,),
             ).fetchone()
             total = int(total_row[0]) if total_row and total_row[0] is not None else 0
@@ -387,7 +393,7 @@ def sqlite_wing_room_counts(
                 f"""
                 SELECT {wing_expr}, {room_expr}, COUNT(*)
                 FROM documents
-                WHERE collection_id = ?
+                WHERE collection_id = ? AND {not_bookkeeping}
                 GROUP BY 1, 2
                 """,
                 (collection_id,),

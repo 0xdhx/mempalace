@@ -113,31 +113,20 @@ def is_sentinel(metadata):
     return flag is not False and bool(flag)
 
 
-# The convo miner files a registry row here for a source with no chunks.
-REGISTRY_ROOM = "_registry"
-
-
 def is_bookkeeping(metadata, drawer_id=None):
     """Whether a row tracks a source instead of holding any of its text.
 
-    That is the convo miner's registry row or a miner's sentinel. The mining
-    checks read these rows; nothing a user sees should.
+    That is the convo miner's registry row (``ingest_mode="registry"``, an id
+    starting ``_reg_``) or a miner's sentinel. The mining checks read these
+    rows; nothing a user sees should. A room name alone proves nothing: a
+    project can name a real room ``_registry``.
     """
     meta = metadata or {}
-    if is_sentinel(meta) or meta.get("room") == REGISTRY_ROOM:
-        return True
-    if meta.get("ingest_mode") == "registry":
+    if is_sentinel(meta) or meta.get("ingest_mode") == "registry":
         return True
     return isinstance(drawer_id, str) and drawer_id.startswith(("_reg_", "sentinel_"))
 
 
-def without_registry_room(wing_rooms):
-    """``{wing: {room: n}}`` minus the registry room, and how many rows that was."""
-    kept = {}
-    dropped = 0
-    for wing, rooms in wing_rooms.items():
-        rest = {room: n for room, n in rooms.items() if room != REGISTRY_ROOM}
-        dropped += rooms.get(REGISTRY_ROOM, 0)
-        if rest:
-            kept[wing] = rest
-    return kept, dropped
+# A ``where`` filter matching the bookkeeping rows ``is_bookkeeping`` names by
+# metadata, for readers that can only subtract them after counting.
+BOOKKEEPING_WHERE = {"$or": [{"ingest_mode": "registry"}, {"is_sentinel": True}]}

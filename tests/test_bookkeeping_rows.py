@@ -8,7 +8,7 @@ import pytest
 
 from _mcp_server_helpers import _patch_mcp_server
 
-from mempalace.metadata_types import is_bookkeeping, without_registry_room
+from mempalace.metadata_types import is_bookkeeping
 
 # The convo miner's row for a transcript with no chunks, and the format
 # miner's for a document that extracted to nothing. Both are filed recently,
@@ -60,10 +60,95 @@ def test_is_bookkeeping_names_registry_rows_and_sentinels():
     assert is_bookkeeping({}, "_reg_abc")
     assert is_bookkeeping(None, "sentinel_w_abc")
     assert not is_bookkeeping({"wing": "w", "room": "r"}, "drawer_w_r_abc")
-    assert without_registry_room({"ghosts": {"_registry": 2}, "w": {"r": 3, "_registry": 1}}) == (
-        {"w": {"r": 3}},
-        3,
+    # A project may name a real room "_registry"; the room alone proves nothing.
+    assert not is_bookkeeping({"wing": "w", "room": "_registry", "ingest_mode": "project"})
+
+
+_CONVOS = "convos"
+
+
+@pytest.fixture
+def crowded(monkeypatch, config, kg, collection, palace_path):
+    """40 registry rows beside 6 real drawers in one wing, plus a real
+    ``_registry`` room a project defined, the shape that hid real drawers."""
+    collection.add(
+        ids=[f"_reg_{i:024x}" for i in range(40)],
+        documents=[f"[registry] /chats/session_{i}.txt" for i in range(40)],
+        metadatas=[
+            {
+                "wing": _CONVOS,
+                "room": "_registry",
+                "source_file": f"/chats/session_{i}.txt",
+                "ingest_mode": "registry",
+                "filed_at": f"2026-03-{(i % 28) + 1:02d}T00:00:00",
+            }
+            for i in range(40)
+        ],
     )
+    collection.add(
+        ids=[f"drawer_convos_notes_{i}" for i in range(6)] + ["drawer_proj_registry_0"],
+        documents=[f"Real conversation note number {i} about sessions." for i in range(6)]
+        + ["The registry module maps plugin names to classes."],
+        metadatas=[
+            {
+                "wing": _CONVOS,
+                "room": "notes",
+                "source_file": f"/chats/notes_{i}.txt",
+                "chunk_index": 0,
+                "filed_at": "2026-01-01T00:00:00",
+            }
+            for i in range(6)
+        ]
+        + [
+            {
+                "wing": "proj",
+                "room": "_registry",
+                "source_file": "/src/registry.py",
+                "chunk_index": 0,
+                "ingest_mode": "project",
+                "filed_at": "2026-01-02T00:00:00",
+            }
+        ],
+    )
+    _patch_mcp_server(monkeypatch, config, kg)
+    return palace_path
+
+
+def test_a_real_room_named_registry_is_shown(crowded):
+    from mempalace import mcp_server
+
+    assert mcp_server.tool_list_rooms(wing="proj")["rooms"] == {"_registry": 1}
+    assert mcp_server.tool_get_taxonomy()["taxonomy"]["proj"] == {"_registry": 1}
+    listed = mcp_server.tool_list_drawers(wing="proj", limit=10)
+    assert [d["drawer_id"] for d in listed["drawers"]] == ["drawer_proj_registry_0"]
+    assert mcp_server.tool_status()["total_drawers"] == 7
+
+
+def test_layers_fill_their_page_past_bookkeeping_rows(crowded):
+    from mempalace.layers import Layer2, Layer3
+
+    retrieved = Layer2(palace_path=crowded).retrieve(wing=_CONVOS, n_results=5)
+    assert retrieved.startswith("## L2 — ON-DEMAND (5 drawers)")
+    assert len(Layer3(palace_path=crowded).search_raw("/chats/session_3.txt", n_results=6)) == 6
+
+
+def test_search_fills_its_page_past_bookkeeping_rows(crowded, capsys):
+    from mempalace.mcp_server import tool_search
+    from mempalace.searcher import search, search_memories
+
+    query = "/chats/session_3.txt"
+    for strategy in ("vector", "union"):
+        found = search_memories(
+            query, palace_path=crowded, wing=_CONVOS, n_results=6, candidate_strategy=strategy
+        )
+        assert len(found["results"]) == 6, strategy
+        assert not _shows_bookkeeping(found["results"])
+    assert len(tool_search(query=query, wing=_CONVOS, limit=6)["results"]) == 6
+
+    search(query, palace_path=crowded, wing=_CONVOS, n_results=6)
+    printed = capsys.readouterr().out
+    assert printed.count("notes_") == 6
+    assert "[registry]" not in printed
 
 
 @pytest.mark.parametrize("fast_path", [True, False])

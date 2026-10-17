@@ -18,6 +18,7 @@ def _tool_status_via_sqlite() -> dict:
     import sqlite3 as _sqlite3
 
     from ..backends._inproc_sqlite import open_reader as open_palace_reader
+    from ..backends.chroma import not_bookkeeping_sql
 
     db_path = os.path.join(_config.palace_path, "chroma.sqlite3")
     if not os.path.isfile(db_path):
@@ -30,20 +31,21 @@ def _tool_status_via_sqlite() -> dict:
     try:
         conn = open_palace_reader(db_path)
         try:
+            drawers_only = not_bookkeeping_sql(conn)
             row = conn.execute(
-                """
+                f"""
                 SELECT COUNT(*)
                 FROM embeddings e
                 JOIN segments s ON e.segment_id = s.id
                 JOIN collections c ON s.collection = c.id
-                WHERE c.name = ?
+                WHERE c.name = ? AND {drawers_only}
                 """,
                 (collection_name,),
             ).fetchone()
             total = int(row[0]) if row and row[0] is not None else 0
             for key, target in (("wing", wings), ("room", rooms)):
                 for value, count in conn.execute(
-                    """
+                    f"""
                     SELECT em.string_value, COUNT(*)
                     FROM embedding_metadata em
                     JOIN embeddings e ON em.id = e.id
@@ -52,6 +54,7 @@ def _tool_status_via_sqlite() -> dict:
                     WHERE c.name = ?
                       AND em.key = ?
                       AND em.string_value IS NOT NULL
+                      AND {drawers_only}
                     GROUP BY em.string_value
                     """,
                     (collection_name, key),
@@ -61,7 +64,6 @@ def _tool_status_via_sqlite() -> dict:
             conn.close()
     except _sqlite3.Error:
         logger.exception("tool_status sqlite fallback read failed")
-    total -= rooms.pop(REGISTRY_ROOM, 0)
 
     result = {
         "total_drawers": total,
@@ -144,8 +146,7 @@ def _sqlite_taxonomy():
         for room, n in room_counts.items():
             rkey = _norm(room)
             dest[rkey] = dest.get(rkey, 0) + n
-    normalized, registry_rows = without_registry_room(normalized)
-    result = total - registry_rows, normalized
+    result = total, normalized
     _taxonomy_cache = (cache_key, result, fingerprint)
     # Stamp once the query is done: stamped at the start, a query slower than
     # the TTL (a full GROUP BY on a multi-million-drawer palace) stored an
@@ -284,29 +285,50 @@ def _chroma_room_wing_hall_counts():
     return rows
 
 
-def _drop_registry_facets(col, wings=None, rooms=None) -> int:
-    """Take the convo miner's registry rows out of facet tallies; return how many.
-
-    With ``rooms`` already tallied, a palace without a registry room costs no
-    extra query.
-    """
-    if rooms is not None and REGISTRY_ROOM not in rooms:
-        return 0
+def _bookkeeping_taxonomy(col) -> dict:
+    """``{wing: {room: n}}`` of the registry rows and sentinels, to subtract
+    from facet counts. One metadata-only read; empty when it fails."""
     try:
-        by_wing = col.facet_counts("wing", where={"room": REGISTRY_ROOM})
+        got = col.get(where=BOOKKEEPING_WHERE, include=["metadatas"])
+        metas = got.get("metadatas") if hasattr(got, "get") else None
     except Exception:
-        logger.debug("registry facet count failed", exc_info=True)
-        by_wing = {}
-    if wings is not None:
-        for w, n in by_wing.items():
-            left = wings.get(w, 0) - n
-            if left > 0:
-                wings[w] = left
-            else:
-                wings.pop(w, None)
-    if rooms is not None:
-        rooms.pop(REGISTRY_ROOM, None)
-    return sum(by_wing.values())
+        logger.debug("bookkeeping row read failed", exc_info=True)
+        metas = None
+    taxonomy: dict = {}
+    for m in metas if isinstance(metas, list) else []:
+        m = m or {}
+        if is_bookkeeping(m):
+            dest = taxonomy.setdefault(m.get("wing", "unknown"), {})
+            room = m.get("room", "unknown")
+            dest[room] = dest.get(room, 0) + 1
+    return taxonomy
+
+
+def _subtract_counts(counts: dict, key, n: int) -> None:
+    left = counts.get(key, 0) - n
+    if left > 0:
+        counts[key] = left
+    else:
+        counts.pop(key, None)
+
+
+def _drop_bookkeeping_facets(col, wings=None, rooms=None, taxonomy=None, wing=None) -> int:
+    """Take registry rows and sentinels out of facet tallies; return how many."""
+    dropped = 0
+    for w, room_counts in _bookkeeping_taxonomy(col).items():
+        if wing is not None and w != wing:
+            continue
+        for r, n in room_counts.items():
+            dropped += n
+            if wings is not None:
+                _subtract_counts(wings, w, n)
+            if rooms is not None:
+                _subtract_counts(rooms, r, n)
+            if taxonomy is not None and w in taxonomy:
+                _subtract_counts(taxonomy[w], r, n)
+                if not taxonomy[w]:
+                    del taxonomy[w]
+    return dropped
 
 
 def _tally_wings_rooms(all_meta, wings=None, rooms=None, taxonomy=None) -> int:
@@ -412,7 +434,7 @@ def tool_status():
                         rooms["unknown"] = rooms.get("unknown", 0) + unknown_rooms
                 except (TypeError, ValueError):
                     pass
-                result["total_drawers"] = count - _drop_registry_facets(col, wings, rooms)
+                result["total_drawers"] = count - _drop_bookkeeping_facets(col, wings, rooms)
 
             except Exception as e:
                 logger.warning(
@@ -490,7 +512,7 @@ def tool_list_wings():
                     wings["unknown"] = wings.get("unknown", 0) + unknown_wings
             except (TypeError, ValueError):
                 pass
-            _drop_registry_facets(col, wings=wings)
+            _drop_bookkeeping_facets(col, wings=wings)
         except Exception as e:
             if _supports_metadata_facets(col):
                 logger.warning(
@@ -542,7 +564,7 @@ def tool_list_rooms(wing: str = None):
                     rooms["unknown"] = rooms.get("unknown", 0) + unknown_rooms
             except (TypeError, ValueError):
                 pass
-            rooms.pop(REGISTRY_ROOM, None)
+            _drop_bookkeeping_facets(col, rooms=rooms, wing=wing)
         except Exception as e:
             if _supports_metadata_facets(col):
                 logger.warning(
@@ -590,7 +612,8 @@ def tool_get_taxonomy():
                     except (TypeError, ValueError):
                         pass
                     temp_taxonomy[wing] = room_counts
-                taxonomy.update(without_registry_room(temp_taxonomy)[0])
+                taxonomy.update(temp_taxonomy)
+            _drop_bookkeeping_facets(col, taxonomy=taxonomy)
         except Exception as e:
             if _supports_metadata_facets(col):
                 logger.warning(

@@ -853,15 +853,20 @@ class TestMetadataFacets:
         monkeypatch.setattr(mcp, "_supports_metadata_facets", lambda _: True)
 
         col = MagicMock()
-        col.count.return_value = 7
-        # The second facet query counts the registry rows each wing holds.
-        col.facet_counts.side_effect = [{"wing_a": 5, "wing_b": 2}, {"wing_b": 2}]
+        col.facet_counts.return_value = {
+            "wing_a": 5,
+            "wing_b": 2,
+        }
         monkeypatch.setattr(mcp, "_get_collection", lambda: col)
         result = mcp.tool_list_wings()
 
-        assert result == {"wings": {"wing_a": 5}}
-        assert [c.args for c in col.facet_counts.call_args_list] == [("wing",), ("wing",)]
-        assert col.facet_counts.call_args_list[1].kwargs == {"where": {"room": "_registry"}}
+        assert result == {
+            "wings": {
+                "wing_a": 5,
+                "wing_b": 2,
+            }
+        }
+        col.facet_counts.assert_called_once_with("wing")
 
     def test_tool_list_rooms_uses_metadata_facets(self, monkeypatch):
 

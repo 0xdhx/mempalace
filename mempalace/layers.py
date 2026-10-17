@@ -229,6 +229,46 @@ def _without_bookkeeping(docs, metas) -> tuple[list, list]:
     return [d for d, _ in kept], [m for _, m in kept]
 
 
+# Ceiling on how far a query widens past bookkeeping rows to fill a page.
+_MAX_QUERY_POOL = 1000
+
+
+def _get_drawer_rows(col, kwargs: dict, n: int) -> tuple[list, list]:
+    """Page ``col.get`` until ``n`` drawers that are not bookkeeping rows, or the scope ends."""
+    docs, metas = [], []
+    offset = 0
+    page = max(n, 1)
+    while len(docs) < n:
+        batch = col.get(**kwargs, limit=page, offset=offset)
+        batch_docs = batch.get("documents") or []
+        kept_docs, kept_metas = _without_bookkeeping(batch_docs, batch.get("metadatas") or [])
+        docs.extend(kept_docs)
+        metas.extend(kept_metas)
+        if len(batch_docs) < page:
+            break
+        offset += len(batch_docs)
+    return docs[:n], metas[:n]
+
+
+def _query_drawer_rows(col, kwargs: dict, n: int) -> list:
+    """``(doc, meta, distance)`` for the ``n`` nearest drawers, widening the
+    pool while bookkeeping rows leave it short."""
+    pool = max(n, 1)
+    while True:
+        results = col.query(**kwargs, n_results=pool)
+        rows = list(
+            zip(
+                _first_or_empty(results, "documents"),
+                _first_or_empty(results, "metadatas"),
+                _first_or_empty(results, "distances"),
+            )
+        )
+        kept = [row for row in rows if not is_bookkeeping(row[1])]
+        if len(kept) >= n or len(rows) < pool or pool >= _MAX_QUERY_POOL:
+            return kept[:n]
+        pool = min(pool * 4, _MAX_QUERY_POOL)
+
+
 def recent_read_failure(exc: Exception) -> str:
     """The wake-up line for a recent-memories read that failed."""
     return (
@@ -427,18 +467,14 @@ class Layer2:
 
         where = build_where_filter(wing, room)
 
-        kwargs = {"include": ["documents", "metadatas"], "limit": n_results}
+        kwargs = {"include": ["documents", "metadatas"]}
         if where:
             kwargs["where"] = where
 
         try:
-            results = col.get(**kwargs)
+            docs, metas = _get_drawer_rows(col, kwargs, n_results)
         except Exception as e:
             return f"Retrieval error: {e}"
-
-        docs, metas = _without_bookkeeping(
-            results.get("documents", []), results.get("metadatas", [])
-        )
 
         if not docs:
             label = f"wing={wing}" if wing else ""
@@ -487,28 +523,14 @@ class Layer3:
 
         where = build_where_filter(wing, room)
 
-        kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
+        kwargs = {"query_texts": [query], "include": ["documents", "metadatas", "distances"]}
         if where:
             kwargs["where"] = where
 
         try:
-            results = col.query(**kwargs)
+            rows = _query_drawer_rows(col, kwargs, n_results)
         except Exception as e:
             return f"Search error: {e}"
-
-        rows = [
-            (doc, meta, dist)
-            for doc, meta, dist in zip(
-                _first_or_empty(results, "documents"),
-                _first_or_empty(results, "metadatas"),
-                _first_or_empty(results, "distances"),
-            )
-            if not is_bookkeeping(meta)
-        ]
 
         if not rows:
             return "No results found."
@@ -551,33 +573,23 @@ class Layer3:
 
         where = build_where_filter(wing, room)
 
-        kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
+        kwargs = {"query_texts": [query], "include": ["documents", "metadatas", "distances"]}
         if where:
             kwargs["where"] = where
 
         try:
-            results = col.query(**kwargs)
+            rows = _query_drawer_rows(col, kwargs, n_results)
         except Exception:
             return []
 
         metric = _metric_for_collection(col)
         hits = []
-        for doc, meta, dist in zip(
-            _first_or_empty(results, "documents"),
-            _first_or_empty(results, "metadatas"),
-            _first_or_empty(results, "distances"),
-        ):
+        for doc, meta, dist in rows:
             # ChromaDB may return None for doc/meta when a drawer's HNSW entry
             # exists but its metadata/document rows haven't been materialized
             # (partial-flush states, mid-delete, schema upgrade boundaries).
             # Degrade gracefully — the hit still appears with real distance;
             # storage fields show their fallback where content is missing.
-            if is_bookkeeping(meta):
-                continue
             meta = meta or {}
             doc = doc or ""
             hits.append(
