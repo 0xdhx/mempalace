@@ -8,7 +8,15 @@ vector already stored, so that pass costs reads, not embeddings.
 import pytest
 
 import mempalace.backends.embedding_wrapper as embedding_wrapper
-from mempalace.palace import NORMALIZE_VERSION, file_already_mined, get_collection
+import mempalace.embedding as embedding_mod
+from mempalace.palace import (
+    NORMALIZE_VERSION,
+    _reusable_vector,
+    file_already_mined,
+    get_aaak_collection,
+    get_closets_collection,
+    get_collection,
+)
 
 
 def _write_chat(path, turns):
@@ -127,3 +135,102 @@ def test_reused_vector_still_drops_a_key_the_new_metadata_lacks(tmp_path, embedd
     assert embedded == []
     for _, meta, _ in _palace_rows(palace).values():
         assert "stale_key" not in meta
+
+
+def _paragraphs(texts):
+    return "\n\n".join(f"{text} " + "verbatim words " * 40 for text in texts)
+
+
+def _mine_project(src, palace):
+    from mempalace import miner
+
+    miner.mine(str(src), palace, wing_override="proj", agent="test")
+
+
+def _project_with_llm_closet_and_summaries(tmp_path, texts):
+    src = (tmp_path / "proj").resolve()
+    src.mkdir()
+    doc = src / "notes.md"
+    doc.write_text(_paragraphs(texts), encoding="utf-8")
+    palace = str(tmp_path / "palace")
+    _mine_project(src, palace)
+    drawer_ids = get_collection(palace).get(where={"source_file": str(doc)})["ids"]
+    assert len(drawer_ids) == len(texts)
+    get_closets_collection(palace).upsert(
+        ids=["closet_llm_notes"],
+        documents=["deploy plan|alice|→" + drawer_ids[0]],
+        metadatas=[{"source_file": str(doc), "generated_by": "llm:test-model"}],
+    )
+    get_aaak_collection(palace).upsert(
+        ids=drawer_ids,
+        documents=[f"0:SUMMARY|{i}" for i in range(len(drawer_ids))],
+        metadatas=[{"source_file": str(doc), "kind": "aaak"} for _ in drawer_ids],
+    )
+    return src, doc, palace, drawer_ids
+
+
+def test_bump_remine_of_an_unchanged_project_file_keeps_its_llm_closet_and_summaries(
+    tmp_path, embedded
+):
+    src, doc, palace, drawer_ids = _project_with_llm_closet_and_summaries(
+        tmp_path, ["alpha", "beta", "gamma"]
+    )
+    _age_stamps(palace)
+    embedded.clear()
+    _mine_project(src, palace)
+
+    assert embedded == []
+    closets = get_closets_collection(palace).get(where={"source_file": str(doc)})
+    assert "closet_llm_notes" in closets["ids"]
+    assert sorted(get_aaak_collection(palace).get()["ids"]) == sorted(drawer_ids)
+    assert file_already_mined(get_collection(palace), str(doc), check_mtime=True)
+
+
+def test_bump_remine_drops_only_the_summary_of_the_chunk_that_changed(tmp_path, embedded):
+    src, doc, palace, drawer_ids = _project_with_llm_closet_and_summaries(
+        tmp_path, ["alpha", "beta", "gamma"]
+    )
+    got = get_collection(palace).get(ids=drawer_ids, include=["documents"])
+    before = dict(zip(got["ids"], got["documents"]))
+    _age_stamps(palace)
+    doc.write_text(_paragraphs(["alpha", "BETA CHANGED", "gamma"]), encoding="utf-8")
+    embedded.clear()
+    _mine_project(src, palace)
+
+    after = get_collection(palace).get(ids=drawer_ids, include=["documents"])
+    changed = [
+        drawer_id
+        for drawer_id, text in zip(after["ids"], after["documents"])
+        if before.get(drawer_id) != text
+    ]
+    assert len(changed) == 1
+    drawer_texts = set(after["documents"])
+    assert [text for text in embedded if text in drawer_texts] == [
+        text for drawer_id, text in zip(after["ids"], after["documents"]) if drawer_id in changed
+    ]
+    kept = get_aaak_collection(palace).get()["ids"]
+    assert sorted(kept) == sorted(set(drawer_ids) - set(changed))
+
+
+def test_a_stored_vector_of_another_dimension_is_embedded_again(tmp_path, embedded, monkeypatch):
+    src = (tmp_path / "chats").resolve()
+    src.mkdir()
+    _write_chat(src / "chat.txt", range(2))
+    palace = str(tmp_path / "palace")
+    _mine(src, palace)
+    count = len(embedded)
+
+    _age_stamps(palace)
+    monkeypatch.setattr(embedding_mod, "probe_dimension", lambda *a, **k: 7)
+    embedded.clear()
+    _mine(src, palace)
+
+    assert len(embedded) == count
+
+
+def test_reusable_vector_needs_the_current_dimension():
+    assert _reusable_vector([0.1, 0.2], 2)
+    assert not _reusable_vector([], 2)
+    assert not _reusable_vector(None, 2)
+    assert not _reusable_vector([0.1, 0.2, 0.3], 2)
+    assert not _reusable_vector([0.1, 0.2], 0)

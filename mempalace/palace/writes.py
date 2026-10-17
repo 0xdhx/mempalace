@@ -44,12 +44,30 @@ def _source_file_delete_ids(collection, source_file: str, extract_mode: Optional
     return ids
 
 
+class FiledDrawers(int):
+    """How many drawers :func:`write_file_drawers` wrote.
+
+    ``unchanged`` is true for a pruning re-file that stored every drawer
+    under its old id with its old text and removed nothing, so the file's
+    closets and AAAK summaries still describe it.
+    """
+
+    unchanged = False
+
+
+def _reusable_vector(vector, dimension: int) -> bool:
+    return vector is not None and dimension > 0 and len(vector) == dimension
+
+
 def _split_unchanged(collection, batch: list) -> tuple:
     """Split ``batch`` into rows to embed and rows whose stored vector still fits.
 
     A drawer stored under the same id with the same text and the same
     embedding title keeps its vector, so re-filing text that did not change
-    embeds nothing. Returns ``(to_embed, reuse, reuse_vectors)``.
+    embeds nothing. The vector must also have the current embedder's
+    dimension: Milvus returns an empty one for a row without a vector, and
+    ``set-embedder --force`` can leave vectors of another size behind.
+    Returns ``(to_embed, reuse, reuse_vectors)``.
 
     Chroma keeps the metadata keys an upsert omits, so there a key the
     re-filed drawer no longer has is sent as ``None``, which removes it;
@@ -73,16 +91,18 @@ def _split_unchanged(collection, batch: list) -> tuple:
         for drawer_id, doc, meta, vector in zip(ids, documents, metadatas, vectors)
     }
     merges = getattr(collection, "upsert_merges_metadata", False) is True
+    dimension = None
     to_embed, reuse, reuse_vectors = [], [], []
     for drawer_id, doc, meta in batch:
         old_doc, old_meta, vector = stored.get(drawer_id, (None, {}, None))
         if merges:
             meta = {**dict.fromkeys(set(old_meta) - set(meta)), **meta}
-        if (
-            vector is not None
-            and old_doc == doc
-            and _metadata_title(old_meta) == _metadata_title(meta)
-        ):
+        same = old_doc == doc and _metadata_title(old_meta) == _metadata_title(meta)
+        if same and dimension is None:
+            from ..embedding import probe_dimension
+
+            dimension = probe_dimension()
+        if same and _reusable_vector(vector, dimension):
             reuse.append((drawer_id, doc, meta))
             reuse_vectors.append(vector)
         else:
@@ -129,10 +149,11 @@ def write_file_drawers(
     a skip marker that must not take the last good text with it.
 
     ``aaak_col`` is the palace's AAAK collection, if ``compress`` made one.
-    A pruning re-file deletes the file's summaries there, since they quote
-    text the file no longer has.
+    A pruning re-file deletes the summaries of drawers it rewrote or removed,
+    since they quote text the file no longer has; drawers whose text did not
+    change keep theirs.
 
-    Returns the number of drawers written. Raises
+    Returns a :class:`FiledDrawers` count of the drawers written. Raises
     :class:`StaleDrawerPurgeFailed` when the stale drawers could not be
     removed; an error in :data:`MINE_ABORTS` (a dead backend) propagates as is.
     """
@@ -140,6 +161,7 @@ def write_file_drawers(
         total = len(drawers)
         drawers = [(i, doc, {**meta, "chunk_total": total + 1}) for i, doc, meta in drawers]
     written = []
+    rewritten = []
     for start in range(0, len(drawers), DRAWER_UPSERT_BATCH_SIZE):
         batch = drawers[start : start + DRAWER_UPSERT_BATCH_SIZE]
         assert_no_collisions([(drawer_id, meta) for drawer_id, _, meta in batch], collection)
@@ -147,8 +169,9 @@ def write_file_drawers(
         _upsert(collection, reuse, embeddings=reuse_vectors)
         _upsert(collection, to_embed)
         written += reuse + to_embed
+        rewritten += [drawer_id for drawer_id, _, _ in to_embed]
     if not prune:
-        return len(written)
+        return FiledDrawers(len(written))
 
     fresh = {drawer_id for drawer_id, _, _ in drawers}
     try:
@@ -166,9 +189,9 @@ def write_file_drawers(
             f"stale-drawer purge failed for {source_file!r} ({exc!r}); the new drawers "
             "stay marked unfinished and the next mine retries"
         ) from exc
-    if aaak_col is not None:
+    if aaak_col is not None and (rewritten or stale):
         try:
-            purge_aaak_rows(aaak_col, source_file=source_file)
+            purge_aaak_rows(aaak_col, drawer_ids=rewritten + stale)
         except MINE_ABORTS:
             raise
         except Exception:
@@ -179,4 +202,6 @@ def write_file_drawers(
             ids=[drawer_id for drawer_id, _, _ in batch],
             metadatas=[{**meta, "chunk_total": total} for _, _, meta in batch],
         )
-    return len(written)
+    filed = FiledDrawers(len(written))
+    filed.unchanged = bool(written) and not rewritten and not stale
+    return filed
