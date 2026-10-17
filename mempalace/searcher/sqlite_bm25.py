@@ -194,7 +194,7 @@ def _bm25_only_via_sqlite(
     try:
         # FTS5 MATCH expects whitespace-separated tokens. Drop tokens
         # shorter than 3 chars (trigram tokenizer can't match them).
-        tokens = [t for t in _tokenize(query) if len(t) >= 3]
+        tokens = [t for t in tokenize(query) if len(t) >= 3]
         candidate_ids: list[int] = []
         candidates_truncated = False
         use_recency_fallback = not tokens
@@ -355,7 +355,7 @@ def _bm25_only_via_sqlite(
 
     # Local BM25 over the candidate set.
     docs = [c["text"] for c in candidates]
-    bm25_raw = _bm25_scores(query, docs, stop_words=stop_words)
+    bm25_raw = bm25_scores(query, docs, stop_words=stop_words)
     max_bm25 = max(bm25_raw) if bm25_raw else 0.0
     for c, raw in zip(candidates, bm25_raw):
         c["bm25_score"] = round(raw, 3)

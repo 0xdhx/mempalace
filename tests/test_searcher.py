@@ -410,21 +410,21 @@ class TestBM25NoneSafety:
     """
 
     def test_tokenize_handles_none(self):
-        from mempalace.searcher import _tokenize
+        from mempalace.lexical import tokenize
 
-        assert _tokenize(None) == []
+        assert tokenize(None) == []
 
     def test_tokenize_handles_empty_string(self):
-        from mempalace.searcher import _tokenize
+        from mempalace.lexical import tokenize
 
-        assert _tokenize("") == []
+        assert tokenize("") == []
 
     def test_bm25_scores_does_not_crash_on_none_documents(self):
         """A ``None`` mixed into the corpus must yield score 0.0 for that doc
         and finite scores for the rest, not raise AttributeError."""
-        from mempalace.searcher import _bm25_scores
+        from mempalace.lexical import bm25_scores
 
-        scores = _bm25_scores(
+        scores = bm25_scores(
             "postgres migration", ["postgres migration done", None, "kafka rebalance"]
         )
         assert len(scores) == 3
@@ -808,16 +808,16 @@ class TestSearchCLI:
 
 def test_tokenize_default_keeps_all_tokens():
     """Without stop_words, behaviour matches the pre-i18n tokenizer."""
-    from mempalace.searcher import _tokenize
+    from mempalace.lexical import tokenize
 
-    assert _tokenize("The cat sat on the mat") == ["the", "cat", "sat", "on", "the", "mat"]
+    assert tokenize("The cat sat on the mat") == ["the", "cat", "sat", "on", "the", "mat"]
 
 
 def test_tokenize_filters_stop_words():
     """When stop_words is given, matching tokens are dropped."""
-    from mempalace.searcher import _tokenize
+    from mempalace.lexical import tokenize
 
-    tokens = _tokenize("The cat sat on the mat", stop_words=frozenset({"the", "on"}))
+    tokens = tokenize("The cat sat on the mat", stop_words=frozenset({"the", "on"}))
     assert "the" not in tokens
     assert "on" not in tokens
     assert tokens == ["cat", "sat", "mat"]
@@ -825,21 +825,21 @@ def test_tokenize_filters_stop_words():
 
 def test_tokenize_stop_words_empty_is_no_op():
     """Empty frozenset is the same as default — full backwards compat."""
-    from mempalace.searcher import _tokenize
+    from mempalace.lexical import tokenize
 
-    assert _tokenize("hello world", stop_words=frozenset()) == _tokenize("hello world")
+    assert tokenize("hello world", stop_words=frozenset()) == tokenize("hello world")
 
 
 def test_bm25_scores_filters_stop_words_from_query_and_docs():
     """BM25 with a stop-words set uses the filtered vocabulary on both sides."""
-    from mempalace.searcher import _bm25_scores
+    from mempalace.lexical import bm25_scores
 
     query = "the quick fox"
     docs = ["the quick fox", "the lazy dog"]
     stop_words = frozenset({"the"})
 
-    filtered = _bm25_scores(query, docs, stop_words=stop_words)
-    unfiltered = _bm25_scores(query, docs)
+    filtered = bm25_scores(query, docs, stop_words=stop_words)
+    unfiltered = bm25_scores(query, docs)
 
     # Both should rank the first doc higher than the second (fox + quick match).
     assert filtered[0] > filtered[1]
@@ -850,9 +850,9 @@ def test_bm25_scores_filters_stop_words_from_query_and_docs():
 
 def test_bm25_scores_all_stopwords_query_returns_zeros():
     """If every query term is a stop word, BM25 short-circuits to all-zero."""
-    from mempalace.searcher import _bm25_scores
+    from mempalace.lexical import bm25_scores
 
-    scores = _bm25_scores(
+    scores = bm25_scores(
         "the and of", ["a doc", "another"], stop_words=frozenset({"the", "and", "of"})
     )
     assert scores == [0.0, 0.0]
@@ -860,9 +860,9 @@ def test_bm25_scores_all_stopwords_query_returns_zeros():
 
 def test_bm25_scores_all_stopword_docs_returns_zero_vector():
     """Every doc emptied by stop-word filter yields zero scores without divide errors."""
-    from mempalace.searcher import _bm25_scores
+    from mempalace.lexical import bm25_scores
 
-    scores = _bm25_scores("fox", ["the the the", "the the"], stop_words=frozenset({"the", "fox"}))
+    scores = bm25_scores("fox", ["the the the", "the the"], stop_words=frozenset({"the", "fox"}))
     assert scores == [0.0, 0.0]
 
 
@@ -1000,7 +1000,7 @@ def test_resolve_stop_words_none_reflects_config_change_between_calls(monkeypatc
 
 
 def test_bm25_only_via_sqlite_forwards_stop_words_to_bm25_scores(monkeypatch, tmp_path):
-    """`_bm25_only_via_sqlite` must pass `stop_words` into `_bm25_scores`.
+    """`_bm25_only_via_sqlite` must pass `stop_words` into `bm25_scores`.
 
     Without this, vector-disabled (#1222) palaces silently lose stop-word
     filtering on the BM25 fallback path.
@@ -1008,13 +1008,13 @@ def test_bm25_only_via_sqlite_forwards_stop_words_to_bm25_scores(monkeypatch, tm
     from mempalace import searcher
 
     captured = {}
-    real_bm25 = searcher._bm25_scores
+    real_bm25 = searcher.bm25_scores
 
     def _spy(query, docs, **kwargs):
         captured["stop_words"] = kwargs.get("stop_words")
         return real_bm25(query, docs, **kwargs)
 
-    monkeypatch.setattr(searcher, "_bm25_scores", _spy)
+    monkeypatch.setattr(searcher, "bm25_scores", _spy)
 
     # Build a minimal chroma.sqlite3 with one matching drawer so the scoring
     # path is reached. Schema mirrors what `_bm25_only_via_sqlite` reads:

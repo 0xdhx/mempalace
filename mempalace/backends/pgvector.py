@@ -48,6 +48,7 @@ from urllib import parse as urlparse
 
 import numpy as np
 
+from ..lexical import bm25_scores
 from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
 from ._remote_common import (
     RemoteMarkerMixin,
@@ -94,7 +95,6 @@ class _ConnectionLost(Exception):
 _DEFAULT_DSN = "postgresql://localhost:5432/mempalace"
 _MARKER_FILENAME = "pgvector_backend.json"
 _MAX_IDENTIFIER = 63  # Postgres identifier byte limit.
-_TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
 # Shared-namespace normalization (see _shared_namespace_slug): separators that
 # fold to "_", and the character set the result must then consist of.
 _SHARED_NAMESPACE_SEPARATOR_RE = re.compile(r"[\s\-./:_]+")
@@ -124,48 +124,6 @@ def _utcnow() -> str:
 
 def _json_dumps(obj: Any) -> str:
     return json.dumps(obj or {}, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-
-
-def _tokenize(text: str) -> list[str]:
-    if not text:
-        return []
-    return _TOKEN_RE.findall(text.lower())
-
-
-def _bm25_scores(query: str, documents: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
-    query_terms = set(_tokenize(query))
-    n_docs = len(documents)
-    if not query_terms or n_docs == 0:
-        return [0.0] * n_docs
-
-    tokenized = [_tokenize(d) for d in documents]
-    doc_lens = [len(toks) for toks in tokenized]
-    if not any(doc_lens):
-        return [0.0] * n_docs
-    avgdl = sum(doc_lens) / n_docs or 1.0
-
-    df = {term: 0 for term in query_terms}
-    for toks in tokenized:
-        for term in set(toks) & query_terms:
-            df[term] += 1
-
-    idf = {term: np.log((n_docs - df[term] + 0.5) / (df[term] + 0.5) + 1.0) for term in query_terms}
-    scores = []
-    for toks, dl in zip(tokenized, doc_lens):
-        if dl == 0:
-            scores.append(0.0)
-            continue
-        tf: dict[str, int] = {}
-        for token in toks:
-            if token in query_terms:
-                tf[token] = tf.get(token, 0) + 1
-        score = 0.0
-        for term, freq in tf.items():
-            num = freq * (k1 + 1)
-            den = freq + k1 * (1 - b + b * dl / avgdl)
-            score += float(idf[term]) * num / den
-        scores.append(score)
-    return scores
 
 
 def _validate_where(where: Optional[dict]) -> None:
@@ -1536,7 +1494,7 @@ class PgVectorCollection(BaseCollection):
         pushdown = None if _requires_local_filter(where) else where
         rows = self._scroll(where=pushdown, with_embedding=False)
         rows = [row for row in rows if _matches_where(row["metadata"], where)]
-        scores = _bm25_scores(query, [row["document"] for row in rows])
+        scores = bm25_scores(query, [row["document"] for row in rows])
         hits = [
             LexicalHit(
                 id=row["id"],

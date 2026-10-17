@@ -22,6 +22,7 @@ from urllib import error as urlerror, parse as urlparse, request as urlrequest
 
 import numpy as np
 
+from ..lexical import bm25_scores, tokenize
 from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
 from ..version import __version__
 from ._remote_common import (
@@ -58,7 +59,6 @@ _PAYLOAD_ID = "mempalace_id"
 _PAYLOAD_DOCUMENT = "document"
 _PAYLOAD_METADATA = "metadata"
 _POINT_NAMESPACE = uuid.UUID("c06c3fc7-5c14-4dc4-84c2-24a5f72d8dc1")
-_TOKEN_RE = re.compile(r"\w{2,}", re.UNICODE)
 # Page size for Qdrant's /points/scroll cursor. 4096 (up from the original
 # 256) cuts REST round-trips ~16x for any full-collection walk.
 # Qdrant's own docs suggest larger scroll batches are safe, and this is well
@@ -79,48 +79,6 @@ _SUPPORTED_OPERATORS = frozenset(
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def _tokenize(text: str) -> list[str]:
-    if not text:
-        return []
-    return _TOKEN_RE.findall(text.lower())
-
-
-def _bm25_scores(query: str, documents: list[str], k1: float = 1.5, b: float = 0.75) -> list[float]:
-    query_terms = set(_tokenize(query))
-    n_docs = len(documents)
-    if not query_terms or n_docs == 0:
-        return [0.0] * n_docs
-
-    tokenized = [_tokenize(d) for d in documents]
-    doc_lens = [len(toks) for toks in tokenized]
-    if not any(doc_lens):
-        return [0.0] * n_docs
-    avgdl = sum(doc_lens) / n_docs or 1.0
-
-    df = {term: 0 for term in query_terms}
-    for toks in tokenized:
-        for term in set(toks) & query_terms:
-            df[term] += 1
-
-    idf = {term: np.log((n_docs - df[term] + 0.5) / (df[term] + 0.5) + 1.0) for term in query_terms}
-    scores = []
-    for toks, dl in zip(tokenized, doc_lens):
-        if dl == 0:
-            scores.append(0.0)
-            continue
-        tf: dict[str, int] = {}
-        for token in toks:
-            if token in query_terms:
-                tf[token] = tf.get(token, 0) + 1
-        score = 0.0
-        for term, freq in tf.items():
-            num = freq * (k1 + 1)
-            den = freq + k1 * (1 - b + b * dl / avgdl)
-            score += float(idf[term]) * num / den
-        scores.append(score)
-    return scores
 
 
 def _validate_where(where: Optional[dict]) -> None:
@@ -653,7 +611,7 @@ def _combine_filters(*filters: Optional[dict]) -> Optional[dict]:
 
 
 def _text_any_filter(query: str) -> Optional[dict]:
-    tokens = _tokenize(query)
+    tokens = tokenize(query)
     if not tokens:
         return None
     return {"must": [{"key": _PAYLOAD_DOCUMENT, "match": {"text_any": " ".join(tokens)}}]}
@@ -1128,7 +1086,7 @@ class QdrantCollection(BaseCollection):
         if not text_filter_success:
             rows = self._scroll_all(qdrant_filter=q_filter, with_vector=False)
         rows = [row for row in rows if _matches_where(row["metadata"], where)]
-        scores = _bm25_scores(query, [row["document"] for row in rows])
+        scores = bm25_scores(query, [row["document"] for row in rows])
         hits = [
             LexicalHit(
                 id=row["id"],
