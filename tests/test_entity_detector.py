@@ -682,6 +682,16 @@ def test_scan_for_detection_fallback_to_all_readable(tmp_path):
     assert ".py" in extensions or ".js" in extensions
 
 
+def test_scan_for_detection_never_samples_mempalace_project_files(tmp_path):
+    """The rooms and entities a previous ``mempalace init`` wrote are not
+    source prose; sampling them made a second init detect different names."""
+    (tmp_path / "notes.md").write_text("Alice met Bob.")
+    for name in ("mempalace.yaml", "mempalace.yml", "mempal.yaml", "entities.json"):
+        (tmp_path / name).write_text("people: [Carol]")
+    names = {f.name for f in scan_for_detection(str(tmp_path))}
+    assert names == {"notes.md"}
+
+
 def test_scan_for_detection_max_files(tmp_path):
     """Caps to max_files."""
     for i in range(20):
