@@ -17,6 +17,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   names no backend, init now writes the one `MEMPALACE_BACKEND` selects. This is
   the one setting init takes from the environment; it never replaces a backend
   `config.json` already names, and an unknown name is reported and skipped.
+- **The next mine re-reads every source once.** The drawer normalization
+  version moves to 3, so each mined file reads as stale and is filed again
+  through the write-then-prune path. Drawers whose text comes out the same
+  keep their stored embedding, so the pass mostly costs reading files, not
+  embedding them. A file whose text did not change also keeps its closets,
+  LLM-generated ones included, and its AAAK summaries; in a changed file only
+  the summaries of rewritten or removed drawers go. What changes: user turns
+  are stored as written instead of spell-corrected, ChatGPT exports follow the
+  branch the conversation ended on, lossy parsing steps are stamped in
+  `transforms`, a conversation is filed under every file that holds it (files
+  once skipped as duplicates get their own drawers), and non-UTF-8 sources
+  keep their exact bytes.
 - **The HTTP MCP server requires a bearer token on every bind, loopback
   included.** With no `--token` or `MEMPALACE_MCP_HTTP_TOKEN`, `mempalace serve`
   and `mempalace-mcp --transport http` reuse or create the palace's token at
