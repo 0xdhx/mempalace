@@ -3147,10 +3147,18 @@ def _apply_max_seq_id_plan(
 ) -> None:
     """Back up, rewrite and verify ``max_seq_id``; the caller holds the lease."""
     _poisoned, plan = _plan_max_seq_id_repair(db_path, progress=lambda _msg: None, **plan_args)
+    before = {seg_id: old for seg_id, old, _new in plan}
+    after = {seg_id: new for seg_id, _old, new in plan}
+    if (before, after) != (result["before"], result["after"]):
+        # Another writer moved the palace between the report and the lease.
+        result["plan_changed"] = True
+        if plan:
+            progress("  The plan changed once the palace was locked; applying:")
+            for seg_id, old_val, new_val in plan:
+                progress(f"    {seg_id}  {old_val}  ->  {new_val}")
+    result["before"], result["after"] = before, after
     if not plan:
         return
-    result["before"] = {seg_id: old for seg_id, old, _new in plan}
-    result["after"] = {seg_id: new for seg_id, _old, new in plan}
 
     if backup:
         import glob

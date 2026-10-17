@@ -1913,6 +1913,54 @@ def test_max_seq_id_backup_keeps_an_uncheckpointed_wal(tmp_path):
         assert conn.execute("SELECT v FROM late_write").fetchall() == [("still in the WAL",)]
 
 
+def _plan_changes_under_lock(monkeypatch, second_plan):
+    """Return the real plan for the report, then ``second_plan(real)`` under the lease."""
+    real_plan = repair._plan_max_seq_id_repair
+    calls = []
+
+    def plan(db_path, **kwargs):
+        poisoned, steps = real_plan(db_path, **kwargs)
+        calls.append(steps)
+        if len(calls) == 1:
+            return poisoned, steps
+        return poisoned, second_plan(steps)
+
+    monkeypatch.setattr(repair, "_plan_max_seq_id_repair", plan)
+
+
+def test_max_seq_id_clears_the_report_when_nothing_is_left_under_the_lock(tmp_path, monkeypatch):
+    palace = str(tmp_path / "palace")
+    _seed_poisoned_max_seq_id(palace)
+    before = _max_seq_rows(palace)
+    _plan_changes_under_lock(monkeypatch, lambda steps: [])
+
+    result = repair.repair_max_seq_id(palace, assume_yes=True)
+
+    assert result["segment_repaired"] == []
+    assert result["before"] == {} and result["after"] == {}
+    assert result["plan_changed"] is True
+    assert result["backup"] is None
+    assert _max_seq_rows(palace) == before
+
+
+def test_max_seq_id_reports_a_plan_that_changed_under_the_lock(tmp_path, monkeypatch):
+    palace = str(tmp_path / "palace")
+    seg = _seed_poisoned_max_seq_id(palace)
+    _plan_changes_under_lock(
+        monkeypatch, lambda steps: [(sid, old, new + 5) for sid, old, new in steps]
+    )
+    lines = []
+
+    result = repair.repair_max_seq_id(palace, assume_yes=True, progress=lines.append)
+
+    expected = seg["drawers_meta_max"] + 5
+    assert result["plan_changed"] is True
+    assert result["after"][seg["drawers_meta"]] == expected
+    assert _max_seq_rows(palace)[seg["drawers_meta"]] == expected
+    changed_at = lines.index("  The plan changed once the palace was locked; applying:")
+    assert any(f"->  {expected}" in line for line in lines[changed_at:])
+
+
 def test_max_seq_id_reports_through_the_progress_callback(tmp_path, capsys):
     palace = str(tmp_path / "palace")
     _seed_poisoned_max_seq_id(palace)
