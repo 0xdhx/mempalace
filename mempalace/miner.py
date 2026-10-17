@@ -1985,7 +1985,10 @@ def process_file(
         # gone, so a re-mine that ends up with zero filed drawers must still
         # end up with zero closets, not stale ones dangling on deleted drawer
         # IDs (see #24). Only the closet rebuild itself is conditional on
-        # there being new drawers to point at.
+        # there being new drawers to point at. A re-file that changed nothing
+        # keeps the closets it has, including LLM-generated ones.
+        if getattr(drawers_added, "unchanged", False):
+            closets_col = None
         if closets_col:
             purge_file_closets(closets_col, source_file)
         if closets_col and drawers_added > 0:
@@ -2009,7 +2012,7 @@ def process_file(
                 "wing": wing,
                 "room": room,
                 "source_file": source_file,
-                "drawer_count": drawers_added,
+                "drawer_count": int(drawers_added),
                 "filed_at": datetime.now().isoformat(),
                 "normalize_version": NORMALIZE_VERSION,
             }

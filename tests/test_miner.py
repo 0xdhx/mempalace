@@ -1722,8 +1722,10 @@ def test_process_file_leaves_a_failed_write_marked_unfinished(tmp_path, monkeypa
             self.upsert_calls = 0
             self.deleted_sources = []
 
-        def get(self, where=None, limit=None, offset=0, include=None):
+        def get(self, ids=None, where=None, limit=None, offset=0, include=None):
             records = self.records
+            if ids is not None:
+                records = [record for record in records if record["id"] in ids]
             if where and "source_file" in where:
                 records = [
                     record
@@ -3527,8 +3529,8 @@ def _prefetch_cases_palace(tmp_path):
         # 2 drawers short of 3 is a partial pass.
         *drawers("mixed_totals", 1, source_mtime=mtime["mixed_totals"], chunk_total=2),
         *drawers("mixed_totals", 1, source_mtime=mtime["mixed_totals"], chunk_total=3),
-        # A string total cannot prove completeness -> not mined.
-        *drawers("text_total", 1, source_mtime=mtime["text_total"], chunk_total="1"),
+        # A total that is not a number cannot prove completeness -> not mined.
+        *drawers("text_total", 1, source_mtime=mtime["text_total"], chunk_total="one"),
     ]
     col.add(
         ids=[f"d{i}" for i in range(len(rows))],
@@ -3723,9 +3725,17 @@ def test_prefetch_mined_set_reads_mixed_totals_the_same_in_any_order(totals):
 
 
 def test_prefetch_mined_set_leaves_an_unprovable_source_to_the_per_file_check():
-    col = _RowsCollection(_exchange_rows("s.jsonl", "1"))
+    col = _RowsCollection(_exchange_rows("s.jsonl", "one"))
     assert prefetch_mined_set(col, extract_mode="exchange") == {}
     assert file_already_mined(col, "s.jsonl", extract_mode="exchange") is False
+
+
+def test_a_legacy_numeric_string_total_reads_as_a_number():
+    # Rows written before typed metadata may hold "1" for chunk_total; both
+    # checks read it as 1 instead of re-mining the file forever.
+    col = _RowsCollection(_exchange_rows("s.jsonl", "1"))
+    assert prefetch_mined_set(col, extract_mode="exchange") == {"s.jsonl": 1.0}
+    assert file_already_mined(col, "s.jsonl", extract_mode="exchange") is True
 
 
 @pytest.mark.parametrize("totals", [(None, "x"), ("x", None)])

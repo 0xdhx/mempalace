@@ -17,6 +17,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   names no backend, init now writes the one `MEMPALACE_BACKEND` selects. This is
   the one setting init takes from the environment; it never replaces a backend
   `config.json` already names, and an unknown name is reported and skipped.
+- **The next mine re-reads every source once.** The drawer normalization
+  version moves to 3, so each mined file reads as stale and is filed again
+  through the write-then-prune path. Drawers whose text comes out the same
+  keep their stored embedding, so the pass mostly costs reading files, not
+  embedding them. A file whose text did not change also keeps its closets,
+  LLM-generated ones included, and its AAAK summaries; in a changed file only
+  the summaries of rewritten or removed drawers go. What changes: user turns
+  are stored as written instead of spell-corrected, ChatGPT exports follow the
+  branch the conversation ended on, lossy parsing steps are stamped in
+  `transforms`, a conversation is filed under every file that holds it (files
+  once skipped as duplicates get their own drawers), and non-UTF-8 sources
+  keep their exact bytes.
+- **The HTTP MCP server requires a bearer token on every bind, loopback
+  included.** With no `--token` or `MEMPALACE_MCP_HTTP_TOKEN`, `mempalace serve`
+  and `mempalace-mcp --transport http` reuse or create the palace's token at
+  `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace` clients
+  already look, so the CLI, hooks and stdio proxy keep working unchanged. Anything
+  else that calls a loopback `/mcp` directly now needs `Authorization: Bearer
+  <token>`, or start the server with `--no-token` (loopback only). The token is
+  no longer printed at startup; the path is.
 - **A loopback HTTP MCP server needs no token; anything reachable from another
   machine does.** `mempalace serve` and `mempalace-mcp --transport http` on
   `127.0.0.1`, `::1` or `localhost` serve local clients with no header, as
@@ -92,6 +112,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Re-ingesting a diary no longer deletes the day before writing it.** A diary
+  rebuild now goes through the same write-then-prune path as the miners, so a
+  failed write keeps the previous entries and a failed prune is retried on the
+  next ingest instead of leaving removed entries behind for good. Two diary
+  files whose names start with the same date, in one wing, map to the same
+  drawer ids; ingest now stops with a `CollisionError` naming both files
+  instead of letting one silently overwrite the other. Rename one, or ingest
+  them into separate wings. The collision check no longer treats a source
+  re-filing its own drawer at a moved `chunk_index` as a collision.
 - **A failed dimension probe no longer erases a recorded embedder dimension.**
   `mempalace palace set-embedder` and repair record the embedder in the palace
   sidecar. When the model's dimension probe failed, they wrote a dimension of 0
@@ -104,6 +133,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   changing anything when another writer holds the palace. Its backup is taken
   through SQLite's backup API, so writes still in the WAL are part of it. The
   same applies to the max_seq_id check that runs before a repair rebuild.
+- **Graph tools no longer report an unreadable palace as an empty one.**
+  `traverse`, `find_tunnels` and explicit `create_tunnel` used to treat any
+  failure to open the palace (a lock, a corrupt index) as "no rooms", and an
+  explicit tunnel was let through when its room check failed. A palace that
+  does not exist yet is still an empty graph, and any other failure, while
+  opening the palace or reading its drawers, returns "palace could not be
+  read" instead. Graph reads ask for a read-only open: on sqlite_exact that
+  is a read-only connection; on Chroma it creates no files and skips the HNSW
+  thread pin, but chromadb's own client still updates its bookkeeping when it
+  opens a palace, so drawers and their metadata are left as they were rather
+  than the file bytes.
+- **Search says when it rewrote your query.** The `sanitizer` block on a
+  sanitized `mempalace_search` result now carries `truncated` and
+  `replaced_lone_surrogates`, and a query whose only change was a replaced
+  lone surrogate is reported as sanitized. `original_length` counts the
+  query as sent. `mempalace search` on the command line and the Hermes
+  search tool now sanitize the same way: the CLI notes the rewrite on stderr,
+  and Hermes returns the same `sanitizer` block.
+- **Drawer bookkeeping fields are stored as numbers, flags and ISO text.**
+  `chunk_index`, `chunk_total`, `line_start`, `line_end`, `entry_index` and
+  the version stamps are stored as integers, `source_mtime` and
+  `compression_ratio` as floats, `is_sentinel` as a boolean, and `filed_at`
+  / `created_at` datetimes as ISO text, whatever form a writer passed. Range
+  filters such as `{"chunk_index": {"$gt": 9}}` compare numbers instead of
+  text, and the already-mined check reads legacy rows that hold `"1"` as 1
+  instead of re-mining them. A value that does not parse, or an integer too
+  big for 64 bits, is stored as given. Hallways, room proposals and sync no
+  longer treat an old row whose `is_sentinel` is `"false"` as a sentinel.
+
 - **Embedding a single string gives one vector.** The MiniLM and
   OpenAI-compatible embedding functions treated a bare string as a list of
   characters and returned one vector per character. Every embedding function

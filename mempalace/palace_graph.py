@@ -36,7 +36,7 @@ from .fsio import atomic_write_json as _atomic_write_json
 from .fsio import read_json_for_update as _read_json_for_update
 from .palace import get_collection as _get_palace_collection
 from .palace import mine_lock
-from .backends.base import BaseCollection
+from .backends.base import BaseCollection, PalaceNotFoundError
 
 logger = logging.getLogger("mempalace_graph")
 
@@ -184,16 +184,35 @@ def invalidate_graph_cache():
         _graph_cache_time = 0.0
 
 
+class GraphUnavailable(RuntimeError):
+    """The palace exists but its drawers could not be read.
+
+    A palace with no drawers collection yet is not this error: the graph is
+    empty. A lock, a corrupt database or any other failure is, so a caller
+    can say the palace is unavailable instead of reporting no rooms.
+    """
+
+    def __init__(self, palace_path=None):
+        where = f" at {palace_path}" if palace_path else ""
+        super().__init__(f"palace{where} could not be read")
+
+
 def _get_collection(config=None):
+    """The drawers collection opened read-only, or ``None`` when the palace
+    or its drawers collection does not exist yet."""
     config = config or MempalaceConfig()
     try:
         return _get_palace_collection(
             config.palace_path,
             collection_name=config.collection_name,
             create=False,
+            read_only=True,
         )
-    except Exception:
+    except PalaceNotFoundError:
         return None
+    except Exception as exc:
+        logger.warning("Graph read of the palace at %s failed", config.palace_path, exc_info=True)
+        raise GraphUnavailable(config.palace_path) from exc
 
 
 def _iter_all_metadata(col):
@@ -258,28 +277,33 @@ def build_graph(col=None, config=None):
 
     room_data = defaultdict(lambda: {"wings": set(), "halls": set(), "count": 0, "dates": set()})
 
-    for meta in _iter_all_metadata(col):
-        # ChromaDB can return ``None`` for drawers without metadata
-        # (legacy data, partial writes — upstream #1020 territory).
-        # Skip these silently rather than crash the whole graph
-        # build — a single None drawer shouldn't take down /stats
-        # or any caller of build_graph for the entire palace. Caught
-        # 2026-04-25 by palace-daemon's verify-routes.sh smoke test
-        # against the canonical 151K palace. Closes the same gap as
-        # upstream #999 / fork PR #1094 in a different read path.
-        if meta is None:
-            continue
-        room = meta.get("room", "")
-        wing = meta.get("wing", "")
-        hall = meta.get("hall", "")
-        date = meta.get("date", "")
-        if room and wing:
-            room_data[room]["wings"].add(wing)
-            if hall:
-                room_data[room]["halls"].add(hall)
-            if date:
-                room_data[room]["dates"].add(date)
-            room_data[room]["count"] += 1
+    try:
+        for meta in _iter_all_metadata(col):
+            # ChromaDB can return ``None`` for drawers without metadata
+            # (legacy data, partial writes — upstream #1020 territory).
+            # Skip these silently rather than crash the whole graph
+            # build — a single None drawer shouldn't take down /stats
+            # or any caller of build_graph for the entire palace. Caught
+            # 2026-04-25 by palace-daemon's verify-routes.sh smoke test
+            # against the canonical 151K palace. Closes the same gap as
+            # upstream #999 / fork PR #1094 in a different read path.
+            if meta is None:
+                continue
+            room = meta.get("room", "")
+            wing = meta.get("wing", "")
+            hall = meta.get("hall", "")
+            date = meta.get("date", "")
+            if room and wing:
+                room_data[room]["wings"].add(wing)
+                if hall:
+                    room_data[room]["halls"].add(hall)
+                if date:
+                    room_data[room]["dates"].add(date)
+                room_data[room]["count"] += 1
+    except Exception as exc:
+        palace_path = (config or MempalaceConfig()).palace_path
+        logger.warning("Graph read of the palace at %s failed", palace_path, exc_info=True)
+        raise GraphUnavailable(palace_path) from exc
 
     # Build edges from rooms that span multiple wings
     edges = []
@@ -597,27 +621,20 @@ def _require_name(value: str, field: str) -> str:
 
 
 def _check_room_exists(wing: str, room: str, col) -> bool:
-    """Check if at least one drawer exists for the given wing/room in ChromaDB."""
+    """Check if at least one drawer exists for the given wing/room.
+
+    ``col`` is ``None`` only for a palace with no drawers yet, where there is
+    nothing to check against. A read that fails raises :class:`GraphUnavailable`
+    rather than letting an unverified tunnel through.
+    """
     if col is None:
-        # If collection is unreachable, can't verify, so allow.
-        logger.debug(
-            "ChromaDB collection not reachable, skipping room existence validation for %s/%s",
-            wing,
-            room,
-        )
         return True
     try:
         results = col.get(where={"$and": [{"wing": wing}, {"room": room}]}, limit=1, include=[])
-        return len(results["ids"]) > 0
-    except Exception:
-        # If query fails, assume it's a temporary issue or permissions, and allow.
-        logger.warning(
-            "Error checking room existence in ChromaDB for %s/%s; allowing tunnel creation.",
-            wing,
-            room,
-            exc_info=True,
-        )
-        return True
+    except Exception as exc:
+        logger.warning("Room check for %s/%s failed", wing, room, exc_info=True)
+        raise GraphUnavailable() from exc
+    return len(results["ids"]) > 0
 
 
 # Per-thread map of open tunnel batches, keyed by the normalized tunnel file.

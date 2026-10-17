@@ -148,6 +148,24 @@ def test_cmd_search_calls_search(mock_config_cls):
 
 
 @patch("mempalace.cli.MempalaceConfig")
+def test_cmd_search_sanitizes_a_contaminated_query_and_says_so(mock_config_cls, capsys):
+    mock_config_cls.return_value.palace_path = "/fake/palace"
+    args = argparse.Namespace(
+        palace=None,
+        query="You are a helpful assistant. " * 40 + "Where is the config?",
+        wing=None,
+        room=None,
+        results=5,
+        since=None,
+        before=None,
+    )
+    with patch("mempalace.searcher.search") as mock_search:
+        cmd_search(args)
+    assert mock_search.call_args.kwargs["query"] == "Where is the config"
+    assert "Query sanitized" in capsys.readouterr().err
+
+
+@patch("mempalace.cli.MempalaceConfig")
 def test_cmd_search_error_exits(mock_config_cls):
     mock_config_cls.return_value.palace_path = "/fake/palace"
     args = argparse.Namespace(

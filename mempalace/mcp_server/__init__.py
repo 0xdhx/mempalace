@@ -123,7 +123,7 @@ from ..embedding import (  # noqa: E402
     model_error_result,
 )
 from ..date_window import filed_at_in_window, parse_date_bound  # noqa: E402
-from ..query_sanitizer import sanitize_query  # noqa: E402
+from ..query_sanitizer import sanitize_query, sanitizer_report  # noqa: E402
 from ..source_identity import identity_metadata  # noqa: E402
 from ..searcher import (  # noqa: E402
     SearchError,
@@ -134,6 +134,7 @@ from ..searcher import (  # noqa: E402
     search_memories,
 )
 from ..palace_graph import (  # noqa: E402
+    GraphUnavailable,
     traverse,
     find_tunnels,
     graph_stats,

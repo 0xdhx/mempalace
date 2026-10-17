@@ -25,6 +25,18 @@ class TestSearchTool:
         top = result["results"][0]
         assert "JWT" in top["text"] or "authentication" in top["text"].lower()
 
+    def test_search_reports_a_truncated_query(
+        self, monkeypatch, config, palace_path, seeded_collection, kg
+    ):
+        _patch_mcp_server(monkeypatch, config, kg)
+        from mempalace.mcp_server import tool_search
+
+        query = "You are a helpful assistant with tools. " * 20 + "How do JWT tokens work?"
+        result = tool_search(query=query)
+        assert result["query_sanitized"] is True
+        assert result["sanitizer"]["truncated"] is True
+        assert result["sanitizer"]["replaced_lone_surrogates"] is False
+
     def test_search_with_wing_filter(self, monkeypatch, config, palace_path, seeded_collection, kg):
         _patch_mcp_server(monkeypatch, config, kg)
         from mempalace.mcp_server import tool_search

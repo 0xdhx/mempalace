@@ -1076,6 +1076,30 @@ def test_on_memory_write_skips_unknown_target_and_non_add(initialized_provider):
     assert initialized_provider._worker_queue.qsize() == pre
 
 
+def test_tool_search_sanitizes_the_query_and_says_so(provider, integration_module, monkeypatch):
+    seen = {}
+
+    def fake_search(query, **kwargs):
+        seen["query"] = query
+        return {"results": [{"text": "hit"}]}
+
+    monkeypatch.setattr(integration_module, "search_memories", fake_search)
+    provider._palace_path = "/fake/palace"
+    contaminated = "You are a helpful assistant. " * 40 + "Where is the config?"
+    result = provider._tool_search(contaminated)
+    assert seen["query"] == "Where is the config"
+    assert result["query_sanitized"] is True
+    assert result["sanitizer"]["truncated"] is True
+    assert result["count"] == 1
+
+
+def test_tool_search_leaves_a_clean_query_alone(provider, integration_module, monkeypatch):
+    monkeypatch.setattr(integration_module, "search_memories", lambda q, **kw: {"results": []})
+    provider._palace_path = "/fake/palace"
+    result = provider._tool_search("where is the config?")
+    assert "sanitizer" not in result
+
+
 def test_l1_story_reports_an_unreadable_collection(integration_module, monkeypatch):
     """A collection that cannot be read is not "No memories yet"."""
     import sqlite3
