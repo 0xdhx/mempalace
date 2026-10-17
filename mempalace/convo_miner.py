@@ -45,6 +45,7 @@ from .palace import (
     mine_lock,
     mine_palace_lock,
     mine_yield_point,
+    open_aaak_collection,
     palace_write_serial,
     prefetch_mined_set,
     print_files_failed,
@@ -658,6 +659,7 @@ def _file_chunks_locked(
     source_dir_ino=None,
     source_mtime: Optional[float] = None,
     transforms: str = "",
+    aaak_col=None,
 ):
     """Lock the source file and replace its drawers in this extraction mode.
 
@@ -728,7 +730,7 @@ def _file_chunks_locked(
             )
             drawers.append((drawer_id, chunk["content"], meta))
         drawers_added = write_file_drawers(
-            collection, source_file, drawers, extract_mode=extract_mode
+            collection, source_file, drawers, extract_mode=extract_mode, aaak_col=aaak_col
         )
     return drawers_added, room_counts_delta, False
 
@@ -1012,6 +1014,7 @@ def _mine_convos_impl(
         palace_path,
         dry_run=dry_run,
     )
+    aaak_col = None if dry_run else open_aaak_collection(palace_path)
 
     # Bulk pre-fetch already-mined source_file -> stored mtime in one
     # paginated pass instead of `len(files)` separate WHERE-source_file
@@ -1143,6 +1146,7 @@ def _mine_convos_impl(
                 source_dir_ino=source_directory_identity(filepath),
                 source_mtime=source_mtime,
                 transforms=normalize_run.transforms,
+                aaak_col=aaak_col,
             )
             if skipped:
                 files_skipped += 1

@@ -110,44 +110,49 @@ def _closet_boosts(closets_col, *, query: str, n_results: int, where: dict) -> d
     exact-cosine scan over the closet collection — closets are pointer
     lines, so BM25 is the better signal anyway. Vector closet distances are
     returned on the cosine scale whatever metric the closet collection uses.
-    """
-    boosts: dict = {}
-    n_hits = max(1, n_results * 2)
-    if "supports_lexical_search" in _backend_capabilities(closets_col):
-        result = closets_col.lexical_search(query=query, n_results=n_hits, where=where or None)
-        hits = getattr(result, "hits", None) or []
-        for rank, hit in enumerate(hits):
-            meta = hit.metadata or {}
-            source = meta.get("source_file", "")
-            if source and source not in boosts:
-                preview = (hit.document or "")[:200]
-                boosts[source] = (rank, 0.0, preview)
-        return boosts
 
-    ckwargs = {
-        "query_texts": [query],
-        "n_results": n_hits,
-        "include": ["documents", "metadatas", "distances"],
-    }
-    if where:
-        ckwargs["where"] = where
-    closet_results = closets_col.query(**ckwargs)
-    closet_metric = _metric_for_collection(closets_col)
-    for rank, (cdoc, cmeta, cdist) in enumerate(
-        zip(
-            _first_or_empty(closet_results, "documents"),
-            _first_or_empty(closet_results, "metadatas"),
-            _first_or_empty(closet_results, "distances"),
-        )
-    ):
-        cmeta = cmeta or {}
-        source = cmeta.get("source_file", "")
-        if source and source not in boosts:
-            boosts[source] = (
-                rank,
-                _cosine_scale_distance(cdist, closet_metric),
-                (cdoc or "")[:200],
+    AAAK summaries an older ``compress`` left in the closets are dropped
+    before ranking, and the window is widened once if they crowded it.
+    """
+    lexical = "supports_lexical_search" in _backend_capabilities(closets_col)
+    closet_metric = None if lexical else _metric_for_collection(closets_col)
+
+    def fetch(n_hits):
+        """``(document, metadata, distance)`` per hit, in rank order."""
+        if lexical:
+            result = closets_col.lexical_search(query=query, n_results=n_hits, where=where or None)
+            return [
+                (hit.document, hit.metadata, 0.0) for hit in getattr(result, "hits", None) or []
+            ]
+        ckwargs = {
+            "query_texts": [query],
+            "n_results": n_hits,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            ckwargs["where"] = where
+        closet_results = closets_col.query(**ckwargs)
+        return [
+            (cdoc, cmeta, _cosine_scale_distance(cdist, closet_metric))
+            for cdoc, cmeta, cdist in zip(
+                _first_or_empty(closet_results, "documents"),
+                _first_or_empty(closet_results, "metadatas"),
+                _first_or_empty(closet_results, "distances"),
             )
+        ]
+
+    n_hits = max(1, n_results * 2)
+    rows = fetch(n_hits)
+    closets = [row for row in rows if not is_aaak_row(row[1])]
+    if len(closets) < len(rows) and len(rows) >= n_hits:
+        rows = fetch(n_hits * 4)
+        closets = [row for row in rows if not is_aaak_row(row[1])]
+
+    boosts: dict = {}
+    for rank, (doc, meta, distance) in enumerate(closets):
+        source = (meta or {}).get("source_file", "")
+        if source and source not in boosts:
+            boosts[source] = (rank, distance, (doc or "")[:200])
     return boosts
 
 
