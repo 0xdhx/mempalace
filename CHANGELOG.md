@@ -52,6 +52,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Embedding a single string gives one vector.** The MiniLM and
+  OpenAI-compatible embedding functions treated a bare string as a list of
+  characters and returned one vector per character. Every embedding function
+  now reads a bare string as one document.
+- **A failed embedding dimension probe is retried.** When the embedder could
+  not answer the first probe (a local server still starting, a model still
+  loading), the dimension was cached as unknown for the rest of the process, so
+  a later identity record, such as the one a repair writes, kept no dimension.
+  Only a successful probe is cached now, and the first failure for a model is
+  logged as a warning.
 - **Mining no longer turns bytes that are not UTF-8 into U+FFFD.** Project,
   conversation, diary and sweep ingest decoded files as UTF-8 and replaced
   anything else with the replacement character, so a cp1252 file lost its
@@ -60,9 +70,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   exactly, with only the stray bytes held as lone surrogates, so `café` stays
   searchable; search results, exports and every MCP transport carry those
   bytes intact. Any other file decodes as windows-1252, with every byte
-  mapped. A drawer whose source was
-  not plain UTF-8 carries `source_encoding` (`utf-8-sig`,
-  `utf-8+surrogateescape`, `utf-8-sig+surrogateescape` or `windows-1252`), and
+  mapped. A drawer whose source was not plain UTF-8 carries
+  `source_encoding` (`utf-8-sig`, `utf-8+surrogateescape`,
+  `utf-8-sig+surrogateescape` or `windows-1252`), and
   `fsio.encode_source(text, source_encoding)` gives the source bytes back.
   The encoding-repair script (`scripts/mempalace_repair_encoding.py`) leaves
   those drawers alone. Drawers filed before this release keep their
