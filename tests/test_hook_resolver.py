@@ -38,7 +38,13 @@ def _write_executable(path: Path, content: str) -> None:
 
 
 def _recorder(args_file: Path, stdin_file: Path, *, python: bool) -> str:
-    probe = 'if [ "$1" = "-c" ]; then\n  exit 0\nfi\n' if python else ""
+    # A python stub answers the `-c` import check and records only the launch,
+    # whose code calls run_module, minus the `-c <code>` pair.
+    probe = (
+        'if [ "$1" = "-c" ]; then\n  case "$2" in *run_module*) shift 2 ;; *) exit 0 ;; esac\nfi\n'
+        if python
+        else ""
+    )
     return (
         "#!/bin/sh\n"
         f"{probe}"
@@ -68,11 +74,8 @@ def _run(script: Path, args: list, payload: str, bin_dir: Path) -> subprocess.Co
 
 
 @needs_bash
-@pytest.mark.parametrize(
-    ("runner", "expected_prefix"),
-    [("mempalace", ""), ("python3", "-m mempalace "), ("python", "-m mempalace ")],
-)
-def test_codex_hook_forwards_through_the_resolver(tmp_path, runner, expected_prefix):
+@pytest.mark.parametrize("runner", ["mempalace", "python3", "python"])
+def test_codex_hook_forwards_through_the_resolver(tmp_path, runner):
     args_file = tmp_path / "args.txt"
     stdin_file = tmp_path / "stdin.json"
     bin_dir = tmp_path / "bin"
@@ -86,9 +89,7 @@ def test_codex_hook_forwards_through_the_resolver(tmp_path, runner, expected_pre
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "{}\n"
-    assert args_file.read_text(encoding="utf-8") == (
-        f"{expected_prefix}hook run --hook stop --harness codex"
-    )
+    assert args_file.read_text(encoding="utf-8") == "hook run --hook stop --harness codex"
     assert stdin_file.read_text(encoding="utf-8") == payload
 
 
@@ -100,6 +101,73 @@ def test_codex_hook_reports_a_missing_mempalace(tmp_path):
     assert result.returncode == 1
     assert result.stdout == ""
     assert "could not find a runnable mempalace command or module" in result.stderr
+
+
+_EVIL = "import pathlib\npathlib.Path(__file__).with_name('HIJACKED').write_text('x')\n"
+
+
+def _plant_mempalace(project: Path, layout: str) -> Path:
+    """A project directory whose ``mempalace`` would hijack an import from the cwd."""
+    project.mkdir()
+    if layout == "module":
+        (project / "mempalace.py").write_text(_EVIL, encoding="utf-8")
+        return project / "HIJACKED"
+    pkg = project / "mempalace"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text(_EVIL, encoding="utf-8")
+    return pkg / "HIJACKED"
+
+
+@needs_bash
+@pytest.mark.skipif(os.name == "nt", reason="runs the real interpreter through bash; POSIX only")
+@pytest.mark.parametrize("layout", ["module", "package"])
+def test_resolver_ignores_a_mempalace_in_the_project_directory(tmp_path, layout):
+    import sys
+
+    project = tmp_path / "project"
+    marker = _plant_mempalace(project, layout)
+    env = os.environ.copy()
+    env.pop("PYTHONSAFEPATH", None)
+    env["MEMPAL_PYTHON"] = sys.executable
+    env["HOME"] = str(tmp_path / "home")
+    (tmp_path / "home").mkdir()
+    result = subprocess.run(
+        [BASH, str(RESOLVER), "--hook", "stop", "--harness", "claude-code"],
+        input="{}",
+        text=True,
+        capture_output=True,
+        cwd=project,
+        env=env,
+        timeout=120,
+    )
+    assert not marker.exists(), f"the project's mempalace ran: {result.stderr!r}"
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("layout", ["module", "package"])
+def test_child_mine_launcher_ignores_a_mempalace_in_the_cwd(tmp_path, layout):
+    """The mines a hook spawns start in the project directory too. With
+    PYTHONSAFEPATH unset, as on Python 3.9 and 3.10, the launcher itself must
+    keep the cwd off sys.path."""
+    import sys
+
+    from mempalace.hooks_cli import _SAFE_MAIN
+
+    project = tmp_path / "project"
+    marker = _plant_mempalace(project, layout)
+    env = os.environ.copy()
+    env.pop("PYTHONSAFEPATH", None)
+    result = subprocess.run(
+        [sys.executable, "-c", _SAFE_MAIN, "--version"],
+        text=True,
+        capture_output=True,
+        cwd=project,
+        env=env,
+        timeout=120,
+    )
+    assert not marker.exists(), f"the project's mempalace ran: {result.stderr!r}"
+    assert result.returncode == 0, result.stderr
+    assert "mempalace" in (result.stdout + result.stderr).lower()
 
 
 @needs_bash
