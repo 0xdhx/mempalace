@@ -382,6 +382,8 @@ def search_memories(
         doc = doc or ""
         if stored_drawer_id:
             measured[stored_drawer_id] = dist
+        if is_bookkeeping(meta, stored_drawer_id):
+            continue
         gate = _candidate_out_of_scope(dist, meta, max_distance, since_dt, before_dt, metric)
         if gate == "distance":
             stats["filtered_by_max_distance"] = stats.get("filtered_by_max_distance", 0) + 1

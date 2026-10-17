@@ -18,7 +18,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Final, Literal, Optional, TypedDict
 
-from .metadata_types import is_sentinel
+from .metadata_types import is_bookkeeping
 from .miner import is_gitignored, load_gitignore_matcher
 from .palace import (
     MineAlreadyRunning,
@@ -512,11 +512,7 @@ def _is_bookkeeping_row(meta: dict, drawer_id: str) -> bool:
     a real file and goes when the file does. Widening it would keep those
     sentinels for good instead.
     """
-    if _is_registry_row(meta, drawer_id):
-        return True
-    if is_sentinel(meta):
-        return True
-    return bool(drawer_id) and drawer_id.startswith("sentinel_")
+    return is_bookkeeping(meta, drawer_id)
 
 
 def _source_holds_nothing(col, source) -> bool:

@@ -191,6 +191,7 @@ def cmd_serve(args):
 def cmd_compress(args):
     """Compress drawers in a wing using AAAK Dialect."""
     from ..dialect import Dialect
+    from ..metadata_types import is_bookkeeping
     from ..palace import AAAK_COLLECTION_NAME, get_aaak_collection, move_aaak_out_of_closets
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
@@ -244,9 +245,11 @@ def cmd_compress(args):
         batch_docs = batch.get("documents", [])
         if not batch_docs:
             break
-        docs.extend(batch_docs)
-        metas.extend(batch.get("metadatas", []))
-        ids.extend(batch.get("ids", []))
+        for doc, meta, doc_id in zip(batch_docs, batch.get("metadatas", []), batch.get("ids", [])):
+            if not is_bookkeeping(meta, doc_id):
+                docs.append(doc)
+                metas.append(meta)
+                ids.append(doc_id)
         offset += len(batch_docs)
         if len(batch_docs) < _BATCH:
             break

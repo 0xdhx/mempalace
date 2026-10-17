@@ -159,6 +159,7 @@ def _cli_ranked_hits(
     hits = [
         {"text": doc or "", "distance": float(dist), "metadata": meta or {}}
         for doc, meta, dist in zip(docs, metas, dists)
+        if not is_bookkeeping(meta)
     ]
     vector_weight, bm25_weight = _resolve_hybrid_rank_weights()
     hits = _hybrid_rank(

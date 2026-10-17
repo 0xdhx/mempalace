@@ -61,6 +61,7 @@ def _tool_status_via_sqlite() -> dict:
             conn.close()
     except _sqlite3.Error:
         logger.exception("tool_status sqlite fallback read failed")
+    total -= rooms.pop(REGISTRY_ROOM, 0)
 
     result = {
         "total_drawers": total,
@@ -143,7 +144,8 @@ def _sqlite_taxonomy():
         for room, n in room_counts.items():
             rkey = _norm(room)
             dest[rkey] = dest.get(rkey, 0) + n
-    result = total, normalized
+    normalized, registry_rows = without_registry_room(normalized)
+    result = total - registry_rows, normalized
     _taxonomy_cache = (cache_key, result, fingerprint)
     # Stamp once the query is done: stamped at the start, a query slower than
     # the TTL (a full GROUP BY on a multi-million-drawer palace) stored an
@@ -282,6 +284,45 @@ def _chroma_room_wing_hall_counts():
     return rows
 
 
+def _drop_registry_facets(col, wings=None, rooms=None) -> int:
+    """Take the convo miner's registry rows out of facet tallies; return how many."""
+    try:
+        by_wing = col.facet_counts("wing", where={"room": REGISTRY_ROOM})
+    except Exception:
+        logger.debug("registry facet count failed", exc_info=True)
+        by_wing = {}
+    if wings is not None:
+        for w, n in by_wing.items():
+            left = wings.get(w, 0) - n
+            if left > 0:
+                wings[w] = left
+            else:
+                wings.pop(w, None)
+    if rooms is not None:
+        rooms.pop(REGISTRY_ROOM, None)
+    return sum(by_wing.values())
+
+
+def _tally_wings_rooms(all_meta, wings=None, rooms=None, taxonomy=None) -> int:
+    """Count drawers by wing and room, leaving out bookkeeping rows."""
+    total = 0
+    for m in all_meta:
+        m = m or {}
+        if is_bookkeeping(m):
+            continue
+        total += 1
+        w = m.get("wing", "unknown")
+        r = m.get("room", "unknown")
+        if wings is not None:
+            wings[w] = wings.get(w, 0) + 1
+        if rooms is not None:
+            rooms[r] = rooms.get(r, 0) + 1
+        if taxonomy is not None:
+            dest = taxonomy.setdefault(w, {})
+            dest[r] = dest.get(r, 0) + 1
+    return total
+
+
 def tool_status():
     _ensure_sqlite_integrity_status()
     if _sqlite_integrity_errors:
@@ -365,6 +406,7 @@ def tool_status():
                         rooms["unknown"] = rooms.get("unknown", 0) + unknown_rooms
                 except (TypeError, ValueError):
                     pass
+                result["total_drawers"] = count - _drop_registry_facets(col, wings, rooms)
 
             except Exception as e:
                 logger.warning(
@@ -372,21 +414,11 @@ def tool_status():
                 )
                 rooms.clear()
                 wings.clear()
-                all_meta = _get_cached_metadata(col)
-                for m in all_meta:
-                    m = m or {}
-                    w = m.get("wing", "unknown")
-                    r = m.get("room", "unknown")
-                    wings[w] = wings.get(w, 0) + 1
-                    rooms[r] = rooms.get(r, 0) + 1
+                result["total_drawers"] = _tally_wings_rooms(
+                    _get_cached_metadata(col), wings, rooms
+                )
         else:
-            all_meta = _get_cached_metadata(col)
-            for m in all_meta:
-                m = m or {}
-                w = m.get("wing", "unknown")
-                r = m.get("room", "unknown")
-                wings[w] = wings.get(w, 0) + 1
-                rooms[r] = rooms.get(r, 0) + 1
+            result["total_drawers"] = _tally_wings_rooms(_get_cached_metadata(col), wings, rooms)
     except Exception as e:
         logger.exception("tool_status metadata fetch failed")
         result["error"] = str(e)
@@ -452,17 +484,14 @@ def tool_list_wings():
                     wings["unknown"] = wings.get("unknown", 0) + unknown_wings
             except (TypeError, ValueError):
                 pass
+            _drop_registry_facets(col, wings=wings)
         except Exception as e:
             if _supports_metadata_facets(col):
                 logger.warning(
                     "Failed to fetch metadata facets, falling back to client-side loop: %s", e
                 )
             wings.clear()
-            all_meta = _get_cached_metadata(col)
-            for m in all_meta:
-                m = m or {}
-                w = m.get("wing", "unknown")
-                wings[w] = wings.get(w, 0) + 1
+            _tally_wings_rooms(_get_cached_metadata(col), wings=wings)
     except Exception as e:
         logger.exception("tool_list_wings metadata fetch failed")
         result["error"] = str(e)
@@ -507,17 +536,14 @@ def tool_list_rooms(wing: str = None):
                     rooms["unknown"] = rooms.get("unknown", 0) + unknown_rooms
             except (TypeError, ValueError):
                 pass
+            rooms.pop(REGISTRY_ROOM, None)
         except Exception as e:
             if _supports_metadata_facets(col):
                 logger.warning(
                     "Failed to fetch metadata facets, falling back to client-side loop: %s", e
                 )
             rooms.clear()
-            all_meta = _fetch_all_metadata(col, where=where)
-            for m in all_meta:
-                m = m or {}
-                r = m.get("room", "unknown")
-                rooms[r] = rooms.get(r, 0) + 1
+            _tally_wings_rooms(_fetch_all_metadata(col, where=where), rooms=rooms)
     except Exception as e:
         logger.exception("tool_list_rooms metadata fetch failed")
         result["error"] = str(e)
@@ -558,20 +584,13 @@ def tool_get_taxonomy():
                     except (TypeError, ValueError):
                         pass
                     temp_taxonomy[wing] = room_counts
-                taxonomy.update(temp_taxonomy)
+                taxonomy.update(without_registry_room(temp_taxonomy)[0])
         except Exception as e:
             if _supports_metadata_facets(col):
                 logger.warning(
                     "Failed to fetch metadata facets, falling back to client-side loop: %s", e
                 )
-            all_meta = _get_cached_metadata(col)
-            for m in all_meta:
-                m = m or {}
-                w = m.get("wing", "unknown")
-                r = m.get("room", "unknown")
-                if w not in taxonomy:
-                    taxonomy[w] = {}
-                taxonomy[w][r] = taxonomy[w].get(r, 0) + 1
+            _tally_wings_rooms(_get_cached_metadata(col), taxonomy=taxonomy)
     except Exception as e:
         logger.exception("tool_get_taxonomy metadata fetch failed")
         result["error"] = str(e)

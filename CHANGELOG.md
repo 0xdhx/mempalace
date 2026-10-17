@@ -97,6 +97,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Bookkeeping rows stay out of what you see.** The convo miner files a
+  `_registry` row for a transcript with no chunks, and the format miner a
+  sentinel for a document that extracted to nothing. Search (vector, union and
+  the BM25 fallback, MCP and CLI), `list_drawers`, wake-up and the L2/L3
+  layers, status, wing/room listings and the taxonomy, export and `compress`
+  now leave them out; the mining checks still read them.
+- **Chat transcripts keep their own blank lines and Gemini messages join as
+  written.** Claude Code messages used to have every run of three or more
+  blank lines collapsed, even where no tool chrome was stripped; they now keep
+  them, and where stripping chrome collapses a run the drawer carries
+  `whitespace_collapse_internal`. Gemini messages split into several text parts
+  were joined with spaces (JSON) or newlines (JSONL); the parts now join with
+  nothing between them, the way Gemini's own clients read a message. Both
+  apply on the re-read the version bump above already schedules.
 - **Re-ingesting a diary no longer deletes the day before writing it.** A diary
   rebuild now goes through the same write-then-prune path as the miners, so a
   failed write keeps the previous entries and a failed prune is retried on the

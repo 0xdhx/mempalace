@@ -26,6 +26,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from .config import MempalaceConfig
+from .metadata_types import is_bookkeeping
 from .search_util import (
     _distance_to_similarity,
     _first_or_empty,
@@ -195,7 +196,7 @@ def fetch_recent_window(
                     deadline,
                     no_retry,
                 )
-                return list(result.documents or []), list(result.metadatas or [])
+                return _without_bookkeeping(result.documents or [], result.metadatas or [])
             except missing:
                 pass  # capability missing — page it manually
 
@@ -217,9 +218,15 @@ def fetch_recent_window(
             offset += len(batch_docs)
             if len(batch_docs) < batch_size or len(docs) >= max_scan:
                 break
-        return docs, metas
+        return _without_bookkeeping(docs, metas)
     except palace_missing:
         return [], []
+
+
+def _without_bookkeeping(docs, metas) -> tuple[list, list]:
+    """Drop registry rows and sentinels: they track sources, they hold no memory."""
+    kept = [(d, m) for d, m in zip(docs, metas) if not is_bookkeeping(m)]
+    return [d for d, _ in kept], [m for _, m in kept]
 
 
 def recent_read_failure(exc: Exception) -> str:
@@ -429,8 +436,9 @@ class Layer2:
         except Exception as e:
             return f"Retrieval error: {e}"
 
-        docs = results.get("documents", [])
-        metas = results.get("metadatas", [])
+        docs, metas = _without_bookkeeping(
+            results.get("documents", []), results.get("metadatas", [])
+        )
 
         if not docs:
             label = f"wing={wing}" if wing else ""
@@ -492,16 +500,22 @@ class Layer3:
         except Exception as e:
             return f"Search error: {e}"
 
-        docs = _first_or_empty(results, "documents")
-        metas = _first_or_empty(results, "metadatas")
-        dists = _first_or_empty(results, "distances")
+        rows = [
+            (doc, meta, dist)
+            for doc, meta, dist in zip(
+                _first_or_empty(results, "documents"),
+                _first_or_empty(results, "metadatas"),
+                _first_or_empty(results, "distances"),
+            )
+            if not is_bookkeeping(meta)
+        ]
 
-        if not docs:
+        if not rows:
             return "No results found."
 
         metric = _metric_for_collection(col)
         lines = [f'## L3 — SEARCH RESULTS for "{query}"']
-        for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists), 1):
+        for i, (doc, meta, dist) in enumerate(rows, 1):
             meta = meta or {}
             doc = doc or ""
             similarity = round(_distance_to_similarity(dist, metric), 3)
@@ -562,6 +576,8 @@ class Layer3:
             # (partial-flush states, mid-delete, schema upgrade boundaries).
             # Degrade gracefully — the hit still appears with real distance;
             # storage fields show their fallback where content is missing.
+            if is_bookkeeping(meta):
+                continue
             meta = meta or {}
             doc = doc or ""
             hits.append(

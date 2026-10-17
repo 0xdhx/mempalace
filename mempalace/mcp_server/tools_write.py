@@ -1368,7 +1368,8 @@ def tool_list_drawers(
         where = build_where_filter(wing, room) or None
 
         def make_page(ids, metadatas):
-            drawers = _collapse_drawer_rows(ids, [], metadatas)
+            kept = [(i, m) for i, m in zip(ids, metadatas) if not is_bookkeeping(m, i)]
+            drawers = _collapse_drawer_rows([i for i, _ in kept], [], [m for _, m in kept])
             if since_dt is not None or before_dt is not None:
                 drawers = [
                     d
