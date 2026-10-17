@@ -85,6 +85,18 @@ def test_aliases_cover_the_old_cursor_bytes_rule():
     assert "caf_-notes" in wing_aliases("café_notes")
 
 
+def test_aliases_skip_the_cursor_rule_when_it_drops_a_whole_word():
+    # `日本_api` would reduce to `api`: an unrelated project, or a category wing.
+    assert not {"api", "wing_api"} & set(wing_aliases("日本_api"))
+    assert not {"x", "wing_x"} & set(wing_aliases("日本-x"))
+    assert set(wing_aliases("日本_api")) == {
+        "日本_api",
+        "wing_日本_api",
+        "日本-api",
+        "wing_日本-api",
+    }
+
+
 def test_aliases_of_a_workstation_wing_include_the_old_home_diary_wing():
     home = normalize_wing_name(Path.home().name)
     for wing in WORKSTATION_WINGS:

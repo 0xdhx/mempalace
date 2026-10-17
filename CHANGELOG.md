@@ -25,13 +25,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `list_rooms`, `diary_read`, wake-up, `compress`, `sync` and closet
   regeneration also matches the older spellings: `wing_<slug>`, the
   hyphenated slug, the old Cursor rule (every byte outside `[a-z0-9_-]`
-  written as `_`, so `café_notes` also reads `caf_notes`), any stored wing
-  whose name slugs to the same thing (`c_tool` reads `c++tool`), and, for the
-  workstation wing, the `wing_<user>` wing home-directory diaries used. Two
-  things to know: `list_wings`, `status` and the taxonomy still show one
-  project under each raw spelling it was filed with, until those drawers are
-  moved; and because the old Cursor rule wrote dots as `_`, a filter on
-  `my.app` also returns a separate `my_app` project's drawers.
+  written as `_`, so `café_notes` also reads `caf_notes`; skipped when it
+  would drop a whole word, as `日本_api` → `api`), any stored wing whose name
+  slugs to the same thing (`c_tool` reads `c++tool`; the palace's first
+  10,000 wing names are checked), and, for the workstation wing, the
+  `wing_<user>` wing home-directory diaries used. Two things to know:
+  `list_wings`, `status` and the taxonomy still show one project under each
+  raw spelling it was filed with, until those drawers are moved; and because
+  the old Cursor rule wrote dots as `_`, a filter on `my.app` also returns a
+  separate `my_app` project's drawers.
 
 - **Every hook wrapper now picks its interpreter the same way.** The Claude
   Code plugin's Stop and PreCompact hooks now honour `MEMPAL_PYTHON`, and the

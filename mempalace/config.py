@@ -101,7 +101,10 @@ def wing_aliases(wing: str, known=()) -> list:
     bare = wing[len("wing_") :] if wing.startswith("wing_") else wing
     slug = normalize_wing_name(bare)
     hyphens = slug.replace("_", "-")
-    variants = [slug, hyphens, _cursor_wing_slug(slug), _cursor_wing_slug(hyphens)]
+    variants = [slug, hyphens]
+    # Only when every word keeps a character: `日本_api` was never `api`.
+    if all(_cursor_wing_slug(word) for word in re.split(r"[_-]", slug) if word):
+        variants += [_cursor_wing_slug(slug), _cursor_wing_slug(hyphens)]
     names = [wing]
     for variant in variants:
         if not variant:
