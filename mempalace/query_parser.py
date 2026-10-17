@@ -682,7 +682,7 @@ def parse_query_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C
         if "/" in loc:
             w, r = loc.split("/", 1)
             return "follow_tunnels", {"wing": w, "room": r}
-        elif len(tokens) >= 3:
+        if len(tokens) >= 3:
             return "follow_tunnels", {"wing": tokens[1], "room": tokens[2]}
         raise QueryParseError("FOLLOW requires wing and room")
 
