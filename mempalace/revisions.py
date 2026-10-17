@@ -14,6 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from .stored_text import dumps_internal
+
 _REVISION_FILENAME = "drawer_revisions.jsonl"
 
 
@@ -45,7 +47,7 @@ def append_drawer_revision(
         "metadata": metadata or {},
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
-    line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+    line = dumps_internal(record, default=str) + "\n"
     with _revisions_lock(path):
         if _ends_mid_line(path):
             line = "\n" + line  # a crash tore the last append; start a fresh line

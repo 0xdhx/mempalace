@@ -385,6 +385,17 @@ class TestProxyLoop:
 
     _PING = '{"jsonrpc": "2.0", "id": 2, "method": "ping"}'
 
+    def test_a_stray_byte_from_the_hub_reaches_the_client_as_u_fffd(self, monkeypatch):
+        """The hub answers the proxy exactly; the proxy's own client gets
+        U+FFFD, because some clients' JSON parsers reject a lone surrogate."""
+
+        def stray(base_url, headers, request, palace_path):
+            content = [{"type": "text", "text": "café \udcff"}]
+            return {"jsonrpc": "2.0", "id": request["id"], "result": {"content": content}}
+
+        (out,) = self._run(monkeypatch, [self._PING], stray)
+        assert out["result"]["content"][0]["text"] == "café �"
+
     @pytest.mark.parametrize(
         ("line", "rejected_with"),
         [('{"jsonrpc": "2.0", "id": 1, ', json.JSONDecodeError), ("[" * 100000, RecursionError)],

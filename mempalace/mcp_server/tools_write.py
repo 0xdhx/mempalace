@@ -1265,12 +1265,37 @@ def tool_sync(project_dir: str = None, wing: str = None, apply: bool = False):
             _invalidate_overview_caches()
 
 
-def tool_get_drawer(drawer_id: str):
+def _with_source_bytes(payload: dict) -> dict:
+    """Add the drawer's exact source bytes, base64, when it names an encoding.
+
+    A client shows a stray source byte as U+FFFD; these bytes are what the
+    source held for this drawer's text (newlines as read, in text mode).
+    """
+    import base64
+
+    from ..fsio import encode_source
+
+    encoding = payload.get("metadata", {}).get("source_encoding")
+    if not encoding:
+        return payload
+    try:
+        raw = encode_source(payload["content"], encoding)
+    except (UnicodeEncodeError, ValueError):
+        # The text no longer fits the stamp (a drawer edited before stamps
+        # were dropped on update); the drawer still comes back.
+        payload["source_bytes_note"] = f"content is not representable as {encoding}"
+        return payload
+    payload["source_bytes_base64"] = base64.b64encode(raw).decode("ascii")
+    return payload
+
+
+def tool_get_drawer(drawer_id: str, include_source_bytes: bool = False):
     """Fetch a single logical drawer by ID."""
+    finish = _with_source_bytes if include_source_bytes else (lambda payload: payload)
     try:
         record = _sqlite_logical_drawer_record(drawer_id)
         if record is not None:
-            return _drawer_payload(record)
+            return finish(_drawer_payload(record))
     except Exception as e:
         return {"error": str(e)}
 
@@ -1282,7 +1307,7 @@ def tool_get_drawer(drawer_id: str):
         record = _collection_logical_drawer_record(col, drawer_id)
         if record is None:
             return {"error": f"Drawer not found: {drawer_id}"}
-        return _drawer_payload(record)
+        return finish(_drawer_payload(record))
     except Exception as e:
         return {"error": str(e)}
 
@@ -1456,6 +1481,22 @@ def tool_list_drawers(
         return {"error": str(e)}
 
 
+# Stamps that say how the source file was read. Text a caller writes into a
+# drawer did not come from that file, so they no longer describe it.
+_SOURCE_READ_KEYS = ("source_encoding", "transforms")
+
+
+def _drop_source_read_stamps(col, meta: dict) -> None:
+    for key in _SOURCE_READ_KEYS:
+        if key not in meta:
+            continue
+        if getattr(col, "upsert_merges_metadata", False) is True:
+            # Chroma keeps a key the write leaves out; None removes it.
+            meta[key] = None
+        else:
+            del meta[key]
+
+
 def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, room: str = None):
     """Update an existing logical drawer's content and/or metadata."""
     global _metadata_cache
@@ -1483,6 +1524,8 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
                 return {"success": False, "error": str(e)}
 
         new_meta = dict(old_meta)
+        if content is not None:
+            _drop_source_read_stamps(col, new_meta)
 
         if wing is not None:
             try:

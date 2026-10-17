@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import MempalaceConfig
+from .fsio import decode_source, encoding_metadata
 from .miner import _extract_entities_for_metadata
 from .palace import (
     build_closet_lines,
@@ -149,7 +150,7 @@ def ingest_diaries(
     closets_created = 0
 
     for diary_path in diary_files:
-        text = diary_path.read_text(encoding="utf-8", errors="replace")
+        text, source_encoding = decode_source(diary_path.read_bytes(), universal_newlines=True)
         if len(text.strip()) < 50:
             continue
 
@@ -165,7 +166,7 @@ def ingest_diaries(
         prev_hash = prev_entry.get("content_hash")
         prev_size = prev_entry.get("size", 0)
         curr_size = len(text)
-        curr_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        curr_hash = hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
         if not force:
             if prev_hash is not None:
                 if curr_hash == prev_hash:
@@ -203,6 +204,7 @@ def ingest_diaries(
             # Which directory this diary was read from, so ``sync`` decides an
             # ingested drawer by the same reading as a mined one (#2320).
             base_meta.update(identity_metadata(source_file))
+            base_meta.update(encoding_metadata(source_encoding))
             if entities:
                 base_meta["entities"] = entities
 

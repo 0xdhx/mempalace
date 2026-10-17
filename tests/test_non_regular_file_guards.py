@@ -717,7 +717,8 @@ def test_read_text_no_follow_still_reads_a_large_regular_file_whole(tmp_path):
     with hard_timeout(TIMEOUT_SECONDS, "_read_text_no_follow on a 2 MB file"):
         result = _read_text_no_follow(regular, tmp_path)
     assert result is not None
-    content, mtime = result
+    content, mtime, encoding = result
+    assert encoding == "utf-8"
     assert content == payload
     assert mtime == os.path.getmtime(regular)
 
@@ -1244,7 +1245,8 @@ def test_read_text_no_follow_retries_when_a_lease_break_returns_eagain(tmp_path,
     with hard_timeout(TIMEOUT_SECONDS, "_read_text_no_follow under an injected EAGAIN"):
         result = _read_text_no_follow(target, tmp_path)
     assert result is not None
-    content, mtime = result
+    content, mtime, encoding = result
+    assert encoding == "utf-8"
     assert content == payload
     assert mtime == os.path.getmtime(target)
     # An unrelated open must not affect the retry count (CI runs other workers).

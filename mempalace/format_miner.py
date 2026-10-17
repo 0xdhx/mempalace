@@ -42,7 +42,7 @@ install message (SKIP_NO_MARKITDOWN or SKIP_NO_STRIPRTF), not a crash.
     5.  Empty file                    → SKIP_EMPTY
     6.  Permission denied             → SKIP_PERMISSION
     7.  Broken symlink                → SKIP_BROKEN_SYMLINK
-    8.  Dirty encoding                → recovered via decode_robust
+    8.  Dirty encoding                → recovered via fsio.decode_source
     9.  Windows path semantics        → pathlib throughout
     10. MarkItDown internal crash     → SKIP_EXTRACTION_ERROR
     11. Network / sync timeout        → SKIP_NETWORK_TIMEOUT
@@ -90,6 +90,7 @@ from .palace import (
 # mempalace.format_miner.<name>. Lazy imports inside functions would not
 # expose these as attributes of this module, breaking the test seams.
 from .config import MempalaceConfig, normalize_wing_name
+from .fsio import decode_source
 from .ids import ID_RECIPE, make_drawer_id_from_chunk
 from .source_identity import identity_metadata, source_directory_identity
 from .miner import (
@@ -103,7 +104,6 @@ __all__ = [
     "SUPPORTED_FORMATS",
     "DEFAULT_MAX_FILE_SIZE",
     "ExtractionStatus",
-    "decode_robust",
     "is_icloud_dataless",
     "extract_text",
     "scan_formats",
@@ -195,32 +195,6 @@ _TRANSIENT_MISSING_DEP_STATUSES = frozenset(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Encoding fallback — same pattern as the terminal-session normalizer
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-def decode_robust(raw: bytes) -> str:
-    """Decode bytes to text without raising on dirty encodings.
-
-    Strategy: UTF-8 first (the clean case). On failure, try CP1252 (handles
-    legacy smart-quote bytes 0x91-0x9F that surface in older Office docs).
-    Final fallback is UTF-8 with ``errors='replace'`` so no byte is ever
-    lost — only made visible as the replacement char.
-    """
-    if not raw:
-        return ""
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        pass
-    try:
-        return raw.decode("cp1252")
-    except UnicodeDecodeError:
-        pass
-    return raw.decode("utf-8", errors="replace")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # iCloud cloud-only file detection
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -303,7 +277,7 @@ def _extract_via_striprtf(path: Path) -> Optional[str]:
         raise
 
     raw = path.read_bytes()
-    source = decode_robust(raw)
+    source, _encoding = decode_source(raw)
     text = rtf_to_text(source)
     if not isinstance(text, str):
         return None
