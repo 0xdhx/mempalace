@@ -1173,40 +1173,6 @@ class PgVectorCollection(BaseCollection):
         self._client.upsert_rows(self._table, rows)
         self._backend._write_marker(self._palace, self._config)
 
-    def update(self, *, ids, documents=None, metadatas=None, embeddings=None):
-        if documents is None and metadatas is None and embeddings is None:
-            raise ValueError("update requires at least one of documents, metadatas, embeddings")
-        n = len(ids)
-        for label, value in (
-            ("documents", documents),
-            ("metadatas", metadatas),
-            ("embeddings", embeddings),
-        ):
-            if value is not None and len(value) != n:
-                raise ValueError(f"{label} length {len(value)} does not match ids length {n}")
-        existing = self.get(ids=ids, include=["documents", "metadatas", "embeddings"])
-        by_id = {
-            rid: (existing.documents[i], existing.metadatas[i], existing.embeddings[i])
-            for i, rid in enumerate(existing.ids)
-            if existing.embeddings is not None
-        }
-        out_ids, out_docs, out_metas, out_embeddings = [], [], [], []
-        for idx, doc_id in enumerate(ids):
-            if doc_id not in by_id:
-                continue
-            prev_doc, prev_meta, prev_embedding = by_id[doc_id]
-            out_ids.append(doc_id)
-            out_docs.append(documents[idx] if documents is not None else prev_doc)
-            meta = dict(prev_meta or {})
-            if metadatas is not None:
-                meta.update(metadatas[idx] or {})
-            out_metas.append(meta)
-            out_embeddings.append(embeddings[idx] if embeddings is not None else prev_embedding)
-        if out_ids:
-            self.upsert(
-                documents=out_docs, ids=out_ids, metadatas=out_metas, embeddings=out_embeddings
-            )
-
     def _query_local_exact(
         self, *, query_embeddings, n_results, where, where_document, include
     ) -> QueryResult:
