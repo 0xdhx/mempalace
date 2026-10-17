@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from mempalace._env import env_float, env_str, parse_bool
 from mempalace._proc import pid_alive as _pid_alive
 from mempalace.config import MempalaceConfig, normalize_wing_name
 from mempalace.fsio import decode_source
@@ -352,14 +353,9 @@ def _mine_slot_timeout_secs() -> float:
     Reads ``MEMPALACE_MINE_TIMEOUT_HOURS`` from the environment (float).
     Returns 0 if the env var is set to 0 or is not parseable.
     """
-    raw = os.environ.get(_MINE_TIMEOUT_HOURS_ENV, "")
-    if raw:
-        try:
-            hours = float(raw)
-            return max(0.0, hours) * 3600
-        except ValueError:
-            return 0.0
-    return _MINE_TIMEOUT_HOURS_DEFAULT * 3600
+    if env_str(_MINE_TIMEOUT_HOURS_ENV) is None:
+        return _MINE_TIMEOUT_HOURS_DEFAULT * 3600
+    return max(0.0, env_float(_MINE_TIMEOUT_HOURS_ENV, 0.0)) * 3600
 
 
 def _pid_file_for_cmd(cmd: list[str]) -> Path:
@@ -1502,7 +1498,7 @@ def hook_stop(data: dict, harness: str):
     # Silent mode saves directly without returning {"decision":"block"}, so there's
     # no loop to prevent — and Claude Code's plugin dispatch sets this flag on every
     # fire after the first, which would otherwise suppress all subsequent auto-saves.
-    if str(stop_hook_active).lower() in ("true", "1", "yes"):
+    if parse_bool(stop_hook_active):
         # Safe default: assume silent mode on any config-read failure so saves
         # proceed rather than being silently dropped. Silent mode is the default
         # (v3.3.0+), so if we can't read config, behave as if it's still on.
