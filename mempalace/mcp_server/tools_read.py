@@ -285,7 +285,13 @@ def _chroma_room_wing_hall_counts():
 
 
 def _drop_registry_facets(col, wings=None, rooms=None) -> int:
-    """Take the convo miner's registry rows out of facet tallies; return how many."""
+    """Take the convo miner's registry rows out of facet tallies; return how many.
+
+    With ``rooms`` already tallied, a palace without a registry room costs no
+    extra query.
+    """
+    if rooms is not None and REGISTRY_ROOM not in rooms:
+        return 0
     try:
         by_wing = col.facet_counts("wing", where={"room": REGISTRY_ROOM})
     except Exception:
