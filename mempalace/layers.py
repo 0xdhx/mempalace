@@ -181,7 +181,7 @@ def fetch_recent_window(
     palace_missing = _palace_missing()
     no_retry = missing + (palace_missing,)
     deadline = None if budget is None else time.monotonic() + budget
-    where = {"wing": wing} if wing else None
+    where = build_where_filter(wing, col=col) or None
     try:
         getter = getattr(col, "get_recent", None)
         if getter is not None:
@@ -471,7 +471,7 @@ class Layer2:
         except Exception as exc:
             return _read_open_failure(exc)
 
-        where = build_where_filter(wing, room)
+        where = build_where_filter(wing, room, col=col)
 
         kwargs = {"include": ["documents", "metadatas"]}
         if where:
@@ -530,7 +530,7 @@ class Layer3:
         except Exception as exc:
             return _read_open_failure(exc)
 
-        where = build_where_filter(wing, room)
+        where = build_where_filter(wing, room, col=col)
 
         kwargs = {"query_texts": [query], "include": ["documents", "metadatas", "distances"]}
         if where:
@@ -580,7 +580,7 @@ class Layer3:
             print(_read_open_failure(exc), file=sys.stderr)
             return []
 
-        where = build_where_filter(wing, room)
+        where = build_where_filter(wing, room, col=col)
 
         kwargs = {"query_texts": [query], "include": ["documents", "metadatas", "distances"]}
         if where:

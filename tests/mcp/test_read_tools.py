@@ -642,7 +642,7 @@ with mine_palace_lock(sys.argv[1]):
         scan = filtered_scans[0]
         assert "substr(m.key, 1, 7) != 'chroma:'" in scan
         assert scan.count("JOIN embedding_metadata") >= 2, scan
-        assert "string_value = " in scan or "string_value = ?" in scan
+        assert "string_value IN (" in scan
 
         # The page's documents are fetched by id, not by re-reading everything.
         doc_reads = [
@@ -892,9 +892,10 @@ class TestMetadataFacets:
 
         from unittest.mock import call
 
+        wing = {"wing": {"$in": ["engineering", "wing_engineering"]}}
         assert col.facet_counts.call_args_list == [
-            call("room", where={"wing": "engineering"}),
-            call("wing", where={"wing": "engineering"}),
+            call("room", where=wing),
+            call("wing", where=wing),
         ]
 
     def test_tool_get_taxonomy_uses_metadata_facets(self, monkeypatch):

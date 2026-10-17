@@ -29,20 +29,23 @@ class TestBuildWhereFilter:
     """build_where_filter composes a ChromaDB where clause from optional
     wing / room / source_file constraints (#1815). ChromaDB needs a ``$and``
     only when ≥2 clauses are present; a single clause is returned bare and
-    zero clauses yield an empty filter."""
+    zero clauses yield an empty filter. A wing matches every spelling its
+    project was filed under."""
+
+    WING = {"wing": {"$in": ["backend", "wing_backend"]}}
 
     def test_no_filters_returns_empty(self):
         assert build_where_filter() == {}
 
     def test_wing_only(self):
-        assert build_where_filter(wing="backend") == {"wing": "backend"}
+        assert build_where_filter(wing="backend") == self.WING
 
     def test_room_only(self):
         assert build_where_filter(room="auth") == {"room": "auth"}
 
     def test_wing_and_room(self):
         assert build_where_filter(wing="backend", room="auth") == {
-            "$and": [{"wing": "backend"}, {"room": "auth"}]
+            "$and": [self.WING, {"room": "auth"}]
         }
 
     def test_source_file_only(self):
@@ -50,7 +53,7 @@ class TestBuildWhereFilter:
 
     def test_wing_and_source_file(self):
         assert build_where_filter(wing="backend", source_file="auth.py") == {
-            "$and": [{"wing": "backend"}, {"source_file": "auth.py"}]
+            "$and": [self.WING, {"source_file": "auth.py"}]
         }
 
     def test_room_and_source_file(self):
@@ -60,7 +63,7 @@ class TestBuildWhereFilter:
 
     def test_wing_room_and_source_file(self):
         assert build_where_filter(wing="backend", room="auth", source_file="auth.py") == {
-            "$and": [{"wing": "backend"}, {"room": "auth"}, {"source_file": "auth.py"}]
+            "$and": [self.WING, {"room": "auth"}, {"source_file": "auth.py"}]
         }
 
 

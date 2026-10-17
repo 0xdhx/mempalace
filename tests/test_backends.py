@@ -958,6 +958,9 @@ def test_chroma_get_recent_matches_exact_order_from_sqlite(tmp_path, monkeypatch
         {"wing": "rare"},
         {"$and": [{"room": "x"}, {"wing": {"$eq": "b"}}]},
         {"wing": "missing"},
+        # A wing with its old spellings (wing_aliases).
+        {"wing": {"$in": ["rare", "missing", "b"]}},
+        {"$and": [{"wing": {"$in": ["a", "rare"]}}, {"room": "y"}]},
     ]
     exact = {
         repr(where): BaseCollection.get_recent(col, limit=10_000, where=where) for where in wheres

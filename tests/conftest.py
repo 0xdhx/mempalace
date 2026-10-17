@@ -296,6 +296,10 @@ def _reset_mcp_cache(monkeypatch):
         except (ImportError, AttributeError):
             pass
 
+        from mempalace import search_util
+
+        search_util._known_wings_cache.clear()
+
         # Release chromadb clients opened through the backend layer. Many tests
         # reach the store via palace.get_collection() (sweep, repair, CLI, ...),
         # which caches one PersistentClient per palace_path on the long-lived

@@ -61,6 +61,7 @@ from .palace import (
     purge_file_closets,
     upsert_closet_lines,
 )
+from .search_util import palace_wing_aliases
 
 MAX_CONTENT_CHARS = 30000
 MAX_OUTPUT_TOKENS = 1500
@@ -283,6 +284,8 @@ def _regenerate_closets_owned(
     # SQLite's SQLITE_MAX_VARIABLE_NUMBER (32766) on large palaces and
     # crashes inside chromadb.
     by_source: dict = {}
+    # A wing reads every spelling its project was filed under.
+    wings = set(palace_wing_aliases(wing, drawers_col)) if wing else None
     batch_size = 5000
     offset = 0
     while offset < total:
@@ -294,7 +297,7 @@ def _regenerate_closets_owned(
             meta = meta or {}
             source = meta.get("source_file", "unknown")
             w = meta.get("wing", "")
-            if wing and w != wing:
+            if wings is not None and w not in wings:
                 continue
             if source not in by_source:
                 by_source[source] = {"drawer_ids": [], "content": [], "meta": meta}

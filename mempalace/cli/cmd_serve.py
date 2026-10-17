@@ -228,8 +228,11 @@ def cmd_compress(args):
     if col is None:
         sys.exit(1)
 
+    from ..search_util import build_where_filter
+
+    # A wing reads every spelling its project was filed under.
+    where = build_where_filter(args.wing, col=col) or None
     # Query drawers in batches to avoid SQLite variable limit (~999)
-    where = {"wing": args.wing} if args.wing else None
     _BATCH = 500
     docs, metas, ids = [], [], []
     offset = 0

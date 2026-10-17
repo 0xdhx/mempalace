@@ -80,9 +80,14 @@ def _pick_fts_candidates(
     The trigram index matches inside words, and the first matches in storage
     order were the oldest substring hits. A scope filter matching few drawers
     is read directly (``row_filter`` refers to ``e.id``) instead of ranking
-    the palace-wide match set (``fts_filter``).
+    the palace-wide match set (``fts_filter``). ``scope`` maps a key to the
+    values it may hold.
     """
-    equalities = [(key, encode_filter(value)) for key, value in scope.items() if value]
+    equalities = [
+        (key, tuple(encode_filter(value) for value in values))
+        for key, values in scope.items()
+        if values
+    ]
     candidate_ids = _filtered_candidate_rows(
         conn,
         collection_name,
@@ -146,12 +151,18 @@ def _bm25_only_via_sqlite(
         from ..config import get_configured_collection_name
 
         collection_name = get_configured_collection_name()
+    wing_names = wing_aliases(wing, chroma_known_wings(palace_path)) if wing else []
+    scope = {
+        "wing": wing_names,
+        "room": [room] if room else [],
+        "source_file": [source_file] if source_file else [],
+    }
 
     def _metadata_filter_sql(row_id_expr: str) -> tuple[str, list[str]]:
         clauses = []
         params = []
-        for key, value in (("wing", wing), ("room", room), ("source_file", source_file)):
-            if not value:
+        for key, values in scope.items():
+            if not values:
                 continue
             clauses.append(
                 f"""
@@ -165,11 +176,11 @@ def _bm25_only_via_sqlite(
                         CAST(mf.int_value AS TEXT),
                         CAST(mf.float_value AS TEXT),
                         CAST(mf.bool_value AS TEXT)
-                      ) = ?
+                      ) IN ({",".join("?" * len(values))})
                 )
                 """
             )
-            params.extend([key, encode_filter(value)])
+            params.extend([key, *(encode_filter(value) for value in values)])
         for op, sql_bound in _window_sql_prefilters(since_dt, before_dt):
             clauses.append(
                 f"""
@@ -206,7 +217,7 @@ def _bm25_only_via_sqlite(
                     collection_name,
                     query,
                     max_candidates=max_candidates,
-                    scope={"wing": wing, "room": room, "source_file": source_file},
+                    scope=scope,
                     fts_filter=(filter_sql, filter_params),
                     row_filter=_metadata_filter_sql("e.id"),
                     stop_words=stop_words,
@@ -317,11 +328,12 @@ def _bm25_only_via_sqlite(
     # Apply wing/room filters in Python (FTS5 candidates may include
     # entries from other wings).
     candidates = []
+    wings = set(wing_names)
     for d in drawers.values():
         text, meta = decode_record(d["text"], d["metadata"])
         if is_bookkeeping(meta, d["_stored_drawer_id"]):
             continue
-        if wing and meta.get("wing") != wing:
+        if wings and meta.get("wing") not in wings:
             continue
         if room and meta.get("room") != room:
             continue
@@ -422,7 +434,7 @@ def _merge_bm25_union_candidates(
     """
     stats = {} if stats is None else stats
     known_distances = known_distances or {}
-    where = build_where_filter(wing, room, source_file)
+    where = build_where_filter(wing, room, source_file, col=drawers_col)
     try:
         lexical = drawers_col.lexical_search(
             query=query,

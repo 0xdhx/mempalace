@@ -103,12 +103,14 @@ from ..backends.chroma import (  # noqa: E402
 from ..collision_scan import assert_no_collisions  # noqa: E402
 from ..config import (  # noqa: E402
     MempalaceConfig,
+    normalize_wing_name,
     sanitize_content,
     sanitize_iso_temporal,
     sanitize_kg_value,
     sanitize_name,
     sqlite_read_uri,
     strip_lone_surrogates,
+    wing_aliases,
 )
 from ..date_window import filed_at_in_window, parse_date_bound  # noqa: E402
 from ..embedding import (  # noqa: E402
@@ -137,6 +139,7 @@ from ..palace_graph import (  # noqa: E402
     traverse,
 )
 from ..query_sanitizer import sanitize_query, sanitizer_report  # noqa: E402
+from ..search_util import chroma_known_wings, known_wings  # noqa: E402
 from ..searcher import (  # noqa: E402
     SearchError,
     _distance_to_similarity,

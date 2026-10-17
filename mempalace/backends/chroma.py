@@ -695,13 +695,17 @@ def _fts_candidate_rows(
     return out
 
 
+def _marks(values) -> str:
+    return ",".join("?" * len(values))
+
+
 def _filtered_candidate_rows(
     conn,
     collection_name: str,
     query: str,
     *,
     limit: Optional[int],
-    equalities: list[tuple[str, str]],
+    equalities: list[tuple[str, tuple]],
     filter_sql: str = "",
     filter_params: Iterable = (),
     stop_words: frozenset = frozenset(),
@@ -710,8 +714,9 @@ def _filtered_candidate_rows(
 
     Ranking every full-text match and testing the filter on each took seconds
     for a ten-drawer wing, because the match set is the whole palace for a
-    common term. When the smallest of ``equalities`` (string metadata
-    equalities, checked by one count on the ``(key, string_value)`` index)
+    common term. When the smallest of ``equalities`` (``(key, values)``
+    string metadata matches, checked by one count on the
+    ``(key, string_value)`` index)
     matches at most ``_FTS_FILTER_DRIVEN_MAX`` drawers, this reads just those
     drawers' text, keeps the ones the trigram index would match (any term of
     three or more characters as a case-insensitive substring), newest first,
@@ -723,13 +728,15 @@ def _filtered_candidate_rows(
         return None
     sizes = [
         conn.execute(
-            "SELECT COUNT(*) FROM embedding_metadata WHERE key = ? AND string_value = ?", pair
+            "SELECT COUNT(*) FROM embedding_metadata"
+            f" WHERE key = ? AND string_value IN ({_marks(values)})",
+            (key, *values),
         ).fetchone()[0]
-        for pair in equalities
+        for key, values in equalities
     ]
     if min(sizes) > _FTS_FILTER_DRIVEN_MAX:
         return None
-    key, value = equalities[sizes.index(min(sizes))]
+    key, values = equalities[sizes.index(min(sizes))]
     row_ids = [
         row[0]
         for row in conn.execute(
@@ -738,11 +745,11 @@ def _filtered_candidate_rows(
             CROSS JOIN embeddings e ON e.id = w.id
             JOIN segments s ON e.segment_id = s.id
             JOIN collections c ON s.collection = c.id
-            WHERE w.key = ? AND w.string_value = ? AND c.name = ?
+            WHERE w.key = ? AND w.string_value IN ({_marks(values)}) AND c.name = ?
             {filter_sql}
             ORDER BY e.id DESC
             """,
-            (key, value, collection_name, *filter_params),
+            (key, *values, collection_name, *filter_params),
         )
     ]
     texts: dict[int, str] = {}
@@ -1663,12 +1670,13 @@ def _sqlite_collection_has_rows(palace_path: str, collection_name: str) -> Optio
         return None
 
 
-def _string_equalities(where: Optional[dict]) -> Optional[list[tuple[str, str]]]:
-    """``where`` as ``[(key, value), ...]`` string equalities, or ``None``.
+def _string_equalities(where: Optional[dict]) -> Optional[list[tuple[str, tuple]]]:
+    """``where`` as ``[(key, (value, ...)), ...]`` string matches, or ``None``.
 
-    Accepts ``None``, ``{"k": "v"}``, ``{"k": {"$eq": "v"}}`` and an ``$and``
-    of those. ``None`` means the filter has another shape (or a non-string
-    value), which the sqlite readers below do not evaluate.
+    Accepts ``None``, ``{"k": "v"}``, ``{"k": {"$eq": "v"}}``,
+    ``{"k": {"$in": ["v", ...]}}`` and an ``$and`` of those. ``None`` means
+    the filter has another shape (or a non-string value), which the sqlite
+    readers below do not evaluate.
     """
     if not where:
         return []
@@ -1676,7 +1684,7 @@ def _string_equalities(where: Optional[dict]) -> Optional[list[tuple[str, str]]]
         clauses = where["$and"]
         if not isinstance(clauses, list):
             return None
-        pairs: list[tuple[str, str]] = []
+        pairs: list[tuple[str, tuple]] = []
         for clause in clauses:
             sub = _string_equalities(clause) if isinstance(clause, dict) else None
             if sub is None or len(sub) != 1:
@@ -1690,9 +1698,16 @@ def _string_equalities(where: Optional[dict]) -> Optional[list[tuple[str, str]]]
         return None
     if isinstance(value, dict) and set(value) == {"$eq"}:
         value = value["$eq"]
+    if isinstance(value, dict) and set(value) == {"$in"}:
+        values = value["$in"]
+        if not isinstance(values, list) or not values:
+            return None
+        if not all(isinstance(v, str) for v in values):
+            return None
+        return [(key, tuple(values))]
     if not isinstance(value, str):
         return None
-    return [(key, value)]
+    return [(key, (value,))]
 
 
 def _sqlite_metadata_value(sval, ival, fval, bval):
@@ -1715,25 +1730,26 @@ def _sqlite_recent_records(
     collection_name: str,
     *,
     limit: int,
-    equalities: list[tuple[str, str]],
+    equalities: list[tuple[str, tuple]],
     order_field: str,
 ) -> Optional[list[tuple[str, str, Optional[dict]]]]:
     """``(id, document, metadata)`` for the newest ``limit`` records, from chroma.sqlite3.
 
     Newest first by ``order_field`` as text, records without a non-empty string
     value last in storage order: the order :func:`recency_sort_key` defines.
-    ``equalities`` filter on string metadata. ``None`` when the database is
-    missing or the read fails, so the caller can fall back to Chroma.
+    ``equalities`` filter on string metadata, each key matching any of its
+    values. ``None`` when the database is missing or the read fails, so the
+    caller can fall back to Chroma.
     """
     db_path = os.path.join(palace_path, "chroma.sqlite3")
     if not os.path.isfile(db_path):
         return None
     filter_sql = "".join(
         " AND EXISTS (SELECT 1 FROM embedding_metadata w"
-        " WHERE w.id = e.id AND w.key = ? AND w.string_value = ?)"
-        for _ in equalities
+        f" WHERE w.id = e.id AND w.key = ? AND w.string_value IN ({_marks(values)}))"
+        for _, values in equalities
     )
-    filter_params = [part for pair in equalities for part in pair]
+    filter_params = [part for key, values in equalities for part in (key, *values)]
     # METADATA only. A VECTOR-segment row (HNSW bookkeeping, or a future
     # chroma that stores one) is not a drawer; joining it returns a ghost
     # with empty document and metadata. Same predicate as the other sqlite
@@ -1753,20 +1769,21 @@ def _sqlite_recent_records(
             # matching rows and order them here.
             sizes = [
                 conn.execute(
-                    "SELECT COUNT(*) FROM embedding_metadata WHERE key = ? AND string_value = ?",
-                    pair,
+                    "SELECT COUNT(*) FROM embedding_metadata"
+                    f" WHERE key = ? AND string_value IN ({_marks(values)})",
+                    (key, *values),
                 ).fetchone()[0]
-                for pair in equalities
+                for key, values in equalities
             ]
             filter_driven = bool(sizes) and min(sizes) <= _RECENT_FILTER_DRIVEN_MAX
             if filter_driven:
                 drive = sizes.index(min(sizes))
-                drive_key, drive_value = equalities[drive]
+                drive_key, drive_values = equalities[drive]
                 rest = equalities[:drive] + equalities[drive + 1 :]
                 rest_sql = "".join(
                     " AND EXISTS (SELECT 1 FROM embedding_metadata w2"
-                    " WHERE w2.id = w.id AND w2.key = ? AND w2.string_value = ?)"
-                    for _ in rest
+                    f" WHERE w2.id = w.id AND w2.key = ? AND w2.string_value IN ({_marks(values)}))"
+                    for _, values in rest
                 )
                 rows = conn.execute(
                     f"""
@@ -1776,15 +1793,15 @@ def _sqlite_recent_records(
                     JOIN segments s ON e.segment_id = s.id AND s.scope = 'METADATA'
                     JOIN collections c ON s.collection = c.id
                     LEFT JOIN embedding_metadata o ON o.id = w.id AND o.key = ?
-                    WHERE w.key = ? AND w.string_value = ? AND c.name = ?
+                    WHERE w.key = ? AND w.string_value IN ({_marks(drive_values)}) AND c.name = ?
                     {rest_sql}
                     """,
                     (
                         order_field,
                         drive_key,
-                        drive_value,
+                        *drive_values,
                         collection_name,
-                        *[part for pair in rest for part in pair],
+                        *[part for key, values in rest for part in (key, *values)],
                     ),
                 ).fetchall()
                 rows.sort(key=lambda r: r[0])
@@ -1851,6 +1868,34 @@ def _sqlite_recent_records(
             conn.close()
     except sqlite3.Error:
         return None
+
+
+def sqlite_wing_names(palace_path: str, limit: int = 10_000) -> Optional[list[str]]:
+    """Every distinct string ``wing`` in ``chroma.sqlite3``, or ``None``.
+
+    Steps through the ``(key, string_value)`` index one value at a time, so
+    the read costs one index seek per wing, not a scan of every drawer. Spans
+    every collection in the database: callers use it to recognise spellings
+    of a wing, not to count drawers. ``None`` when the database is missing
+    or the read fails.
+    """
+    db_path = os.path.join(palace_path, "chroma.sqlite3")
+    if not os.path.isfile(db_path):
+        return None
+    sql = "SELECT MIN(string_value) FROM embedding_metadata WHERE key = 'wing'"
+    try:
+        conn = open_palace_reader(db_path)
+        try:
+            names: list[str] = []
+            row = conn.execute(sql).fetchone()
+            while row and row[0] is not None and len(names) < limit:
+                names.append(row[0])
+                row = conn.execute(sql + " AND string_value > ?", (row[0],)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return [decode_value(name) for name in names]
 
 
 def _sqlite_wing_room_counts(
@@ -2141,9 +2186,10 @@ def not_bookkeeping_sql(conn, row_id: str = "e.id") -> str:
 def _equality_filters(where: Optional[dict]) -> Optional[dict]:
     """Flatten ``tool_list_drawers``-shaped ``where`` into ``{key: value}``.
 
-    Supports equality on ``wing``/``room`` and an ``$and`` of those. Returns
-    ``None`` for anything else so the caller falls back to ``col.get`` paging
-    rather than silently answering a filter it did not apply.
+    Supports equality or ``$in`` (a tuple value) on ``wing``/``room`` and an
+    ``$and`` of those. Returns ``None`` for anything else so the caller falls
+    back to ``col.get`` paging rather than silently answering a filter it did
+    not apply.
     """
     if not where:
         return {}
@@ -2163,6 +2209,11 @@ def _equality_filters(where: Optional[dict]) -> Optional[dict]:
     for key, val in clauses:
         if key not in ("wing", "room"):
             return None
+        if isinstance(val, dict):
+            values = val.get("$in")
+            if list(val) != ["$in"] or not isinstance(values, (list, tuple)):
+                return None
+            val = tuple(values)
         filters[key] = val
     return filters
 
@@ -2238,14 +2289,16 @@ def sqlite_list_id_metadata(
             joins = []
             params: list = []
             for idx, (key, val) in enumerate(sorted(filters.items())):
-                if not isinstance(val, str):
+                values = val if isinstance(val, tuple) else (val,)
+                if not values or not all(isinstance(v, str) for v in values):
                     continue
                 alias = f"f{idx}"
                 joins.append(
                     f"JOIN embedding_metadata {alias} ON {alias}.id = e.id "
-                    f"AND {alias}.key = ? AND {alias}.string_value = ?"
+                    f"AND {alias}.key = ? AND {alias}.string_value IN "
+                    f"({', '.join('?' * len(values))})"
                 )
-                params.extend([key, encode_filter(val)])
+                params.extend([key, *(encode_filter(v) for v in values)])
             params.append(collection_name)
             rows = conn.execute(
                 f"""
@@ -2298,7 +2351,10 @@ def sqlite_list_id_metadata(
     metas: list[dict] = []
     for doc_id in order:
         meta = decode_record(None, by_id[doc_id])[1]
-        if any(meta.get(key) != val for key, val in filters.items()):
+        if any(
+            meta.get(key) not in (val if isinstance(val, tuple) else (val,))
+            for key, val in filters.items()
+        ):
             continue
         ids.append(doc_id)
         metas.append(meta)
@@ -2484,7 +2540,7 @@ def sqlite_diary_rows(
     collection_name: str,
     *,
     agent_name: str,
-    wing: str = "",
+    wing=(),
     limit: int = 10,
 ) -> Optional[tuple[int, list[tuple[str, Optional[str], dict]]]]:
     """Count physical diary rows and hydrate only the newest ``limit`` rows.
@@ -2496,14 +2552,15 @@ def sqlite_diary_rows(
     Queued writes ahead of the metadata watermark also require Chroma's
     recovery path. A missing stored document remains ``None`` as it does in
     Chroma's get. ``limit`` is bounded to the diary API's range of 1..100.
+    ``wing`` is one wing or a list of wings, any of which matches.
     """
     db_path = os.path.join(palace_path, "chroma.sqlite3")
     if not os.path.isfile(db_path) or not isinstance(limit, int):
         return None
     limit = max(1, min(limit, 100))
     equalities = [("room", "diary"), ("agent", encode_filter(agent_name))]
-    if wing:
-        equalities.append(("wing", encode_filter(wing)))
+    wings = [wing] if isinstance(wing, str) else list(wing or ())
+    wings = [encode_filter(w) for w in wings if w]
     try:
         conn = open_palace_reader(db_path)
         try:
@@ -2533,6 +2590,12 @@ def sqlite_diary_rows(
                 " WHERE w.id = f.id AND w.key = ? AND w.string_value = ?)"
                 for _ in remaining
             )
+            if wings:
+                filters += (
+                    " AND EXISTS (SELECT 1 FROM embedding_metadata w"
+                    " WHERE w.id = f.id AND w.key = 'wing'"
+                    f" AND w.string_value IN ({', '.join('?' * len(wings))}))"
+                )
             scope = f"""
                 FROM embedding_metadata f
                 CROSS JOIN embeddings e ON e.id = f.id
@@ -2546,6 +2609,7 @@ def sqlite_diary_rows(
                 *equalities[drive],
                 collection_id,
                 *[part for pair in remaining for part in pair],
+                *wings,
             ]
             unsupported_timestamp = "(stamp.id IS NOT NULL AND stamp.string_value IS NULL)"
             if conn.execute(
@@ -3574,7 +3638,10 @@ class ChromaCollection(BaseCollection):
                 self._palace_path,
                 self._collection.name,
                 limit=limit,
-                equalities=[(key, encode_filter(value)) for key, value in equalities],
+                equalities=[
+                    (key, tuple(encode_filter(value) for value in values))
+                    for key, values in equalities
+                ],
                 order_field=order_field,
             )
         if records is None:

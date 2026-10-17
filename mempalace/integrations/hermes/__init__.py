@@ -81,6 +81,7 @@ from mempalace.knowledge_graph import KnowledgeGraph
 from mempalace.layers import Layer0, fetch_recent_window, recent_read_failure
 from mempalace.palace import MineAlreadyRunning, get_collection
 from mempalace.query_sanitizer import sanitize_query, sanitizer_report
+from mempalace.search_util import build_where_filter
 from mempalace.searcher import search_memories
 
 # When this plugin is loaded by Hermes, ``agent.memory_provider`` is on the
@@ -1463,7 +1464,8 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             col = self._collection
         if col is None:
             return {"error": "MemPalace not initialized"}
-        metas, truncated = self._scan_metadatas(col, where={"wing": wing})
+        where = build_where_filter(wing, col=col)
+        metas, truncated = self._scan_metadatas(col, where=where)
         rooms: Dict[str, int] = {}
         for m in metas:
             r = (m or {}).get("room", "unknown")
