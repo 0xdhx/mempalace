@@ -24,12 +24,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from datetime import datetime, timezone
 from typing import Iterable, Optional
 
 from .config import MempalaceConfig
 from .fsio import atomic_write_json
+from .llm_client import parse_json_reply
 
 NORMALIZE_SCHEMA_VERSION = 1
 DEFAULT_VOCABULARY = (
@@ -89,20 +89,6 @@ def _user_prompt(facts: list[dict], vocabulary: Iterable[str]) -> str:
     return "\n".join(lines)
 
 
-def _json_object(text: str) -> dict:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            raise ValueError("LLM response held no JSON object") from None
-        return json.loads(match.group(0))
-
-
 def _humanize_prefix(obj: str, old_predicate: str) -> str:
     """``remediated_h1 ...`` → ``remediated h1 ...``: models tend to paste the old
     predicate verbatim at the front of the rewritten object."""
@@ -131,7 +117,7 @@ def plan_normalize(
     response = provider.classify(
         _PLAN_SYSTEM, _user_prompt(facts, vocabulary), json_mode=True, think=False
     )
-    data = _json_object(response.text)
+    data = parse_json_reply(response.text)
     proposals = data.get("facts") if isinstance(data, dict) else data
     if not isinstance(proposals, list):
         raise ValueError("LLM response JSON has no 'facts' list")

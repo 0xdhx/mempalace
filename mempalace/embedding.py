@@ -842,17 +842,11 @@ class OpenAICompatEmbeddingFunction:
         return self(input)
 
     def __call__(self, input):  # noqa: A002 — ChromaDB EF protocol uses `input`
-        import http.client
-        import json
-        from urllib.error import HTTPError, URLError
-        from urllib.request import Request, urlopen
+        from mempalace.llm_client import LLMError, post_json
 
-        headers = {
-            "Content-Type": "application/json",
-            # Some hosted (Cloudflare-fronted) endpoints 403 the default
-            # ``Python-urllib`` User-Agent — send our own.
-            "User-Agent": f"mempalace/{__version__}",
-        }
+        # Some hosted (Cloudflare-fronted) endpoints 403 the default
+        # ``Python-urllib`` User-Agent — send our own.
+        headers = {"User-Agent": f"mempalace/{__version__}"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
 
@@ -863,14 +857,9 @@ class OpenAICompatEmbeddingFunction:
             # encoding_format=float is explicit so a server that defaults to
             # base64 doesn't hand back strings we'd mis-parse as vectors.
             payload = {"model": self._model, "input": batch, "encoding_format": "float"}
-            req = Request(self._url, data=json.dumps(payload).encode("utf-8"), headers=headers)
             try:
-                with urlopen(req, timeout=_EF_API_TIMEOUT) as resp:
-                    data = json.loads(resp.read())
-            # ValueError covers an invalid/missing URL scheme and json.JSONDecodeError;
-            # http.client.HTTPException covers low-level protocol faults (BadStatusLine,
-            # IncompleteRead) common with local/overloaded servers.
-            except (HTTPError, URLError, OSError, http.client.HTTPException, ValueError) as e:
+                data = post_json(self._url, payload, headers, timeout=_EF_API_TIMEOUT)
+            except LLMError as e:
                 raise EmbeddingAPIError(
                     f"Embedding API request to {self._url} failed: {e}. Check that the "
                     f"server is reachable and MEMPALACE_EMBEDDING_API_URL / embedding_api_url "

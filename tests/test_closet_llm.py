@@ -146,7 +146,7 @@ class TestCallLLM:
                 }
             )
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen):
             parsed, usage = _call_llm(cfg, "/tmp/test.md", "w", "r", "content body")
 
         assert parsed["topics"] == ["postgres"]
@@ -171,7 +171,7 @@ class TestCallLLM:
                 }
             )
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen):
             _call_llm(cfg, "/tmp/x", "w", "r", "c")
 
         assert "authorization" not in captured_headers
@@ -188,7 +188,7 @@ class TestCallLLM:
                 }
             )
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen):
             parsed, _ = _call_llm(cfg, "/tmp/x", "w", "r", "c")
         assert parsed == {"topics": ["t1"], "quotes": [], "summary": ""}
 
@@ -204,7 +204,7 @@ class TestCallLLM:
             )
 
         with (
-            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen),
             patch("mempalace.closet_llm.time.sleep"),
         ):
             parsed, _ = _call_llm(cfg, "/tmp/x", "w", "r", "c")
@@ -224,7 +224,7 @@ class TestCallLLM:
             )
 
         with (
-            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen),
             patch("mempalace.closet_llm.time.sleep"),
         ):
             parsed, _ = _call_llm(cfg, "/tmp/x", "w", "r", "c")
@@ -376,7 +376,7 @@ with mine_palace_lock(sys.argv[1]):
                 }
             )
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen):
             result = regenerate_closets(palace, cfg=cfg)
 
         assert result["processed"] == 1 and result["failed"] == 0
@@ -466,7 +466,7 @@ with mine_palace_lock(sys.argv[1]):
             patch.object(closet_llm_mod, "get_closets_collection", return_value=fake_closets),
             patch.object(closet_llm_mod, "purge_file_closets", return_value=None),
             patch.object(closet_llm_mod, "upsert_closet_lines", return_value=None),
-            patch("urllib.request.urlopen", side_effect=fake_urlopen),
+            patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen),
         ):
             result = regenerate_closets(palace, cfg=cfg, dry_run=True)
 
@@ -600,7 +600,7 @@ with mine_palace_lock(sys.argv[1]):
                 }
             )
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen):
             regenerate_closets(palace, cfg=cfg)
 
         closets = get_closets_collection(palace)
@@ -625,7 +625,7 @@ class TestNoSilentExternal:
             raise AssertionError("contacted a generic LLM_ENDPOINT")
 
         cfg = LLMConfig()
-        with patch("urllib.request.urlopen", side_effect=boom):
+        with patch("mempalace.llm_client.urlopen", side_effect=boom):
             parsed, usage = _call_llm(cfg, "notes.md", "w", "r", "drawer text")
         assert parsed is None and usage is None
         assert cfg.missing()
@@ -651,7 +651,7 @@ class TestNoSilentExternal:
         def boom(*_args, **_kwargs):
             raise AssertionError("contacted a non-local endpoint")
 
-        with patch("urllib.request.urlopen", side_effect=boom):
+        with patch("mempalace.llm_client.urlopen", side_effect=boom):
             parsed, _usage = _call_llm(cfg, "notes.md", "w", "r", "secret drawer text")
             result = regenerate_closets("/tmp/does-not-matter", cfg=cfg)
         assert parsed is None
@@ -677,7 +677,7 @@ class TestNoSilentExternal:
                 }
             )
 
-        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen):
             parsed, _usage = _call_llm(cfg, "notes.md", "w", "r", "drawer text")
         assert called["url"] == "https://api.openai.com/v1/chat/completions"
         assert parsed["topics"] == ["t"]

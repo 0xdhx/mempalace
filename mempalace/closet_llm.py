@@ -41,15 +41,17 @@ added to pyproject — uses stdlib urllib.
 import contextlib
 import json
 import os
-import re
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from datetime import datetime
 from typing import Optional
 
-from .llm_client import endpoint_is_local, external_use_accepted_by_env, json_request_body
+from .llm_client import (
+    endpoint_is_local,
+    external_use_accepted_by_env,
+    parse_json_reply,
+    post_json,
+)
 from .palace import (
     NORMALIZE_VERSION,
     get_closets_collection,
@@ -164,45 +166,29 @@ def _call_llm(cfg: LLMConfig, source_file: str, wing: str, room: str, content: s
     if lang_instruction and "english" not in lang_instruction.lower():
         prompt += f"\n\nLanguage instruction: {lang_instruction}"
 
-    body = json_request_body(
-        {
-            "model": cfg.model,
-            "max_tokens": MAX_OUTPUT_TOKENS,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-    )
-
-    headers = {"Content-Type": "application/json"}
-    if cfg.key:
-        headers["Authorization"] = f"Bearer {cfg.key}"
-
+    body = {
+        "model": cfg.model,
+        "max_tokens": MAX_OUTPUT_TOKENS,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    headers = {"Authorization": f"Bearer {cfg.key}"} if cfg.key else {}
     url = f"{cfg.endpoint}/chat/completions"
 
     for attempt in range(3):
         try:
-            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT_S) as resp:
-                raw = resp.read().decode("utf-8")
-            payload = json.loads(raw)
-
-            text = payload["choices"][0]["message"]["content"].strip()
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
-            parsed = json.loads(text)
+            payload = post_json(url, body, headers, timeout=HTTP_TIMEOUT_S)
+            parsed = parse_json_reply(payload["choices"][0]["message"]["content"], expect=dict)
             return parsed, payload.get("usage")
-        except json.JSONDecodeError:
-            if attempt < 2:
-                time.sleep(2**attempt)
-                continue
-            return None, None
-        except urllib.error.HTTPError as e:
-            # 429 / 503 = retry with backoff
-            if e.code in (429, 503) and attempt < 2:
-                time.sleep(2**attempt)
-                continue
-            return None, None
         except Exception as e:
-            if "rate" in str(e).lower() and attempt < 2:
+            # Retry a reply with no usable JSON, a malformed response, a 429/503,
+            # or anything that names a rate limit; give up on the rest.
+            retry = (
+                isinstance(e, ValueError)
+                or isinstance(e.__cause__, json.JSONDecodeError)
+                or getattr(e, "status", None) in (429, 503)
+                or "rate" in str(e).lower()
+            )
+            if retry and attempt < 2:
                 time.sleep(2**attempt)
                 continue
             return None, None
