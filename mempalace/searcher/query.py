@@ -68,6 +68,7 @@ def _query_drawers_with_filter_fallback(
         raw_docs = _first_or_empty(raw, "documents")
         raw_ids = _aligned_query_ids(raw, len(raw_docs))
         fids, fdocs, fmetas, fdists = [], [], [], []
+        wings = set(wing_aliases(wing)) if wing else None
         for stored_drawer_id, doc, meta, dist in zip(
             raw_ids,
             raw_docs,
@@ -75,7 +76,7 @@ def _query_drawers_with_filter_fallback(
             _first_or_empty(raw, "distances"),
         ):
             meta = meta or {}
-            if wing and meta.get("wing") != wing:
+            if wings and meta.get("wing") not in wings:
                 continue
             if room and meta.get("room") != room:
                 continue

@@ -31,7 +31,7 @@ def tool_diary_write(agent_name: str, entry: str, topic: str = "general", wing: 
     if wing:
         wing = sanitize_name(wing)
     else:
-        wing = f"wing_{agent_name.replace(' ', '_')}"
+        wing = f"wing_{normalize_wing_name(agent_name) or agent_name}"
     room = "diary"
     col = _get_collection(create=True)
     if not col:
@@ -178,7 +178,7 @@ def _sqlite_diary_read(agent_name: str, last_n: int, wing: str):
             _config.palace_path,
             _config.collection_name,
             agent_name=agent_name,
-            wing=wing,
+            wing=wing_aliases(wing) if wing else "",
             limit=last_n,
         )
         if result is None:
@@ -208,9 +208,11 @@ def tool_diary_read(agent_name: str, last_n: int = 10, wing: str = ""):
 
     When ``wing`` is provided, reads only from that wing. When ``wing``
     is empty or omitted, returns entries from every wing this agent has
-    written to. Diary writes from hooks land in project-derived wings
-    (``wing_<project>``), so requiring a specific wing on read would
-    silo those entries from agent-initiated reads.
+    written to. Diary writes from hooks land in the project's wing, so
+    requiring a specific wing on read would silo those entries from
+    agent-initiated reads. A wing matches every spelling its project was
+    filed under (``wing_aliases``), so entries written under an older slug
+    are still read.
 
     Note: ``agent_name`` is normalized to lowercase before filtering so
     that reads are case-insensitive. Entries written under
@@ -236,7 +238,7 @@ def tool_diary_read(agent_name: str, last_n: int = 10, wing: str = ""):
     # empty-string-as-no-filter convention, for LLM ergonomics).
     conditions = [{"room": "diary"}, {"agent": agent_name}]
     if wing:
-        conditions.insert(0, {"wing": wing})
+        conditions.insert(0, {"wing": {"$in": wing_aliases(wing)}})
 
     try:
         where = {"$and": conditions}

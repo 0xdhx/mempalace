@@ -25,11 +25,14 @@ def build_where_filter(wing: str = None, room: str = None, source_file: str = No
     """Build a ChromaDB where filter from optional wing/room/source_file.
 
     ChromaDB needs a ``$and`` only when ≥2 clauses are present; a single
-    clause is returned bare and zero clauses yield an empty filter.
+    clause is returned bare and zero clauses yield an empty filter. A wing
+    matches every spelling its project was filed under (``wing_aliases``).
     """
+    from .config import wing_aliases
+
     clauses = []
     if wing:
-        clauses.append({"wing": wing})
+        clauses.append({"wing": {"$in": wing_aliases(wing)}})
     if room:
         clauses.append({"room": room})
     if source_file:

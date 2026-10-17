@@ -642,7 +642,7 @@ with mine_palace_lock(sys.argv[1]):
         scan = filtered_scans[0]
         assert "substr(m.key, 1, 7) != 'chroma:'" in scan
         assert scan.count("JOIN embedding_metadata") >= 2, scan
-        assert "string_value = " in scan or "string_value = ?" in scan
+        assert "string_value IN (" in scan
 
         # The page's documents are fetched by id, not by re-reading everything.
         doc_reads = [

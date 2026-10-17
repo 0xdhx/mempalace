@@ -10,6 +10,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **A project now has one wing, whichever tool files into it.** Wing names
+  come from one slug rule (lower case, spaces and hyphens become `_`), used by
+  `mempalace init`, the miners, the diary, and the Claude Code, Codex, Cursor
+  and Antigravity hooks. A session's diary checkpoints now land in the same
+  wing as its transcript and as `mempalace mine` of the project, for example
+  `my_app` instead of `wing_my_app`; a session started in the home directory
+  files both into the machine's workstation wing. Cursor's hooks now turn
+  hyphens into `_` like every other producer, and an agent's default diary wing
+  slugs the same way (`wing_cursor_ide`). Existing drawers are not renamed: a
+  wing filter in search, `list_drawers`, `diary_read` and wake-up also matches
+  the older spellings (`wing_<slug>`, the hyphenated slug, and dots written as
+  `_`), so drawers filed before the upgrade stay in the same results.
+
 - **Every hook wrapper now picks its interpreter the same way.** The Claude
   Code plugin's Stop and PreCompact hooks now honour `MEMPAL_PYTHON`, and the
   Codex plugin hook now falls back to `python3` or `python` when `mempalace`

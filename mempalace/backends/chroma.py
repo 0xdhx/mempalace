@@ -2224,9 +2224,10 @@ def not_bookkeeping_sql(conn, row_id: str = "e.id") -> str:
 def _equality_filters(where: Optional[dict]) -> Optional[dict]:
     """Flatten ``tool_list_drawers``-shaped ``where`` into ``{key: value}``.
 
-    Supports equality on ``wing``/``room`` and an ``$and`` of those. Returns
-    ``None`` for anything else so the caller falls back to ``col.get`` paging
-    rather than silently answering a filter it did not apply.
+    Supports equality or ``$in`` (a tuple value) on ``wing``/``room`` and an
+    ``$and`` of those. Returns ``None`` for anything else so the caller falls
+    back to ``col.get`` paging rather than silently answering a filter it did
+    not apply.
     """
     if not where:
         return {}
@@ -2246,6 +2247,11 @@ def _equality_filters(where: Optional[dict]) -> Optional[dict]:
     for key, val in clauses:
         if key not in ("wing", "room"):
             return None
+        if isinstance(val, dict):
+            values = val.get("$in")
+            if list(val) != ["$in"] or not isinstance(values, (list, tuple)):
+                return None
+            val = tuple(values)
         filters[key] = val
     return filters
 
@@ -2321,14 +2327,16 @@ def sqlite_list_id_metadata(
             joins = []
             params: list = []
             for idx, (key, val) in enumerate(sorted(filters.items())):
-                if not isinstance(val, str):
+                values = val if isinstance(val, tuple) else (val,)
+                if not values or not all(isinstance(v, str) for v in values):
                     continue
                 alias = f"f{idx}"
                 joins.append(
                     f"JOIN embedding_metadata {alias} ON {alias}.id = e.id "
-                    f"AND {alias}.key = ? AND {alias}.string_value = ?"
+                    f"AND {alias}.key = ? AND {alias}.string_value IN "
+                    f"({', '.join('?' * len(values))})"
                 )
-                params.extend([key, encode_filter(val)])
+                params.extend([key, *(encode_filter(v) for v in values)])
             params.append(collection_name)
             rows = conn.execute(
                 f"""
@@ -2381,7 +2389,10 @@ def sqlite_list_id_metadata(
     metas: list[dict] = []
     for doc_id in order:
         meta = decode_record(None, by_id[doc_id])[1]
-        if any(meta.get(key) != val for key, val in filters.items()):
+        if any(
+            meta.get(key) not in (val if isinstance(val, tuple) else (val,))
+            for key, val in filters.items()
+        ):
             continue
         ids.append(doc_id)
         metas.append(meta)
@@ -2567,7 +2578,7 @@ def sqlite_diary_rows(
     collection_name: str,
     *,
     agent_name: str,
-    wing: str = "",
+    wing=(),
     limit: int = 10,
 ) -> Optional[tuple[int, list[tuple[str, Optional[str], dict]]]]:
     """Count physical diary rows and hydrate only the newest ``limit`` rows.
@@ -2579,14 +2590,15 @@ def sqlite_diary_rows(
     Queued writes ahead of the metadata watermark also require Chroma's
     recovery path. A missing stored document remains ``None`` as it does in
     Chroma's get. ``limit`` is bounded to the diary API's range of 1..100.
+    ``wing`` is one wing or a list of wings, any of which matches.
     """
     db_path = os.path.join(palace_path, "chroma.sqlite3")
     if not os.path.isfile(db_path) or not isinstance(limit, int):
         return None
     limit = max(1, min(limit, 100))
     equalities = [("room", "diary"), ("agent", encode_filter(agent_name))]
-    if wing:
-        equalities.append(("wing", encode_filter(wing)))
+    wings = [wing] if isinstance(wing, str) else list(wing or ())
+    wings = [encode_filter(w) for w in wings if w]
     try:
         conn = open_palace_reader(db_path)
         try:
@@ -2616,6 +2628,12 @@ def sqlite_diary_rows(
                 " WHERE w.id = f.id AND w.key = ? AND w.string_value = ?)"
                 for _ in remaining
             )
+            if wings:
+                filters += (
+                    " AND EXISTS (SELECT 1 FROM embedding_metadata w"
+                    " WHERE w.id = f.id AND w.key = 'wing'"
+                    f" AND w.string_value IN ({', '.join('?' * len(wings))}))"
+                )
             scope = f"""
                 FROM embedding_metadata f
                 CROSS JOIN embeddings e ON e.id = f.id
@@ -2629,6 +2647,7 @@ def sqlite_diary_rows(
                 *equalities[drive],
                 collection_id,
                 *[part for pair in remaining for part in pair],
+                *wings,
             ]
             unsupported_timestamp = "(stamp.id IS NOT NULL AND stamp.string_value IS NULL)"
             if conn.execute(

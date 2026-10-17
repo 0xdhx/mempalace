@@ -317,11 +317,12 @@ def _bm25_only_via_sqlite(
     # Apply wing/room filters in Python (FTS5 candidates may include
     # entries from other wings).
     candidates = []
+    wings = set(wing_aliases(wing)) if wing else None
     for d in drawers.values():
         text, meta = decode_record(d["text"], d["metadata"])
         if is_bookkeeping(meta, d["_stored_drawer_id"]):
             continue
-        if wing and meta.get("wing") != wing:
+        if wings and meta.get("wing") not in wings:
             continue
         if room and meta.get("room") != room:
             continue
