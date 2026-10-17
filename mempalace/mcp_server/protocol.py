@@ -4,8 +4,13 @@ if __name__ != "mempalace.mcp_server":
 
 
 def _internal_tool_error(
-    req_id, tool_name: str, exc: BaseException = None, include_message: bool = True
+    req_id, tool_name: str, exc: BaseException = None, include_message: bool = False
 ) -> dict:
+    """A -32000 reply naming the exception class; its text only when asked.
+
+    ``str(exc)`` can carry paths and internals, so a client sees it only for an
+    input refusal (ValueError) or on an internal path such as the daemon.
+    """
     logger.exception(f"Tool error in {tool_name}")
     error: dict = {"code": -32000, "message": "Internal tool error"}
     if exc is not None:
@@ -743,14 +748,20 @@ class ToolArgumentError(ValueError):
 
 _BOOL_WORDS = {"true": True, "yes": True, "on": True, "1": True}
 _BOOL_WORDS.update({"false": False, "no": False, "off": False, "0": False})
-_INT_TEXT = re.compile(r"[+-]?\d+")
+_INT_TEXT = re.compile(r"[+-]?[0-9]+")
+# Array/object arguments sent as JSON text are parsed only up to this size.
+_JSON_TEXT_LIMIT = 1_000_000
 
 
 def _as_integer(value, schema, where):
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    elif isinstance(value, str) and _INT_TEXT.fullmatch(value.strip()):
-        value = int(value.strip())
+    try:
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        elif isinstance(value, str) and _INT_TEXT.fullmatch(value.strip()):
+            value = int(value.strip())
+    except (ValueError, OverflowError):
+        # Past Python's integer-string digit limit.
+        raise ToolArgumentError(f"'{where}' is too large") from None
     if isinstance(value, bool) or not isinstance(value, int):
         raise ToolArgumentError(f"'{where}' must be an integer")
     return value
@@ -792,9 +803,11 @@ def _as_container(value, schema, where):
     expected = schema["type"]
     container = list if expected == "array" else dict
     if isinstance(value, str):
+        if len(value) > _JSON_TEXT_LIMIT:
+            raise ToolArgumentError(f"'{where}' is too large to read as an {expected}")
         try:
             parsed = json.loads(value)
-        except ValueError:
+        except (ValueError, RecursionError):
             parsed = None
         if isinstance(parsed, container):
             value = parsed

@@ -92,17 +92,62 @@ def test_token_helper_creates_0600_and_reuses(isolated_home):
     assert token2 == token1  # stable across restarts
 
 
-def test_token_helper_takes_over_an_empty_file_left_by_a_crash(isolated_home, monkeypatch):
+@pytest.mark.parametrize("leftover", [b"", b"\xff\xfe\x00bad"], ids=["empty", "not-utf8"])
+def test_token_helper_replaces_a_file_left_by_a_crash(isolated_home, leftover):
     palace = str(isolated_home / "palace")
     path = server_token_path(palace)
     path.parent.mkdir(parents=True)
-    path.write_text("")
-    monkeypatch.setattr("mempalace.server_registry.time.sleep", lambda s: None)
+    path.write_bytes(leftover)
 
     token, created = load_or_create_server_token(palace)
 
     assert token and created is True
     assert path.read_text().strip() == token
+
+
+@pytest.mark.skipif(not hasattr(os, "symlink"), reason="needs symlinks")
+def test_token_helper_never_writes_through_a_symlink(isolated_home):
+    palace = str(isolated_home / "palace")
+    path = server_token_path(palace)
+    path.parent.mkdir(parents=True)
+    victim = isolated_home / "victim.txt"
+    victim.write_text("")
+    try:
+        os.symlink(str(victim), str(path))
+    except OSError:
+        pytest.skip("symlink creation not permitted here")
+
+    token, _created = load_or_create_server_token(palace)
+
+    assert victim.read_text() == ""
+    assert not path.is_symlink()
+    assert path.read_text().strip() == token
+
+
+@pytest.mark.parametrize("leftover", [None, b""], ids=["fresh", "empty-leftover"])
+def test_concurrent_starts_settle_on_the_token_on_disk(isolated_home, leftover):
+    import subprocess
+    import sys
+
+    palace = str(isolated_home / "palace")
+    path = server_token_path(palace)
+    if leftover is not None:
+        path.parent.mkdir(parents=True)
+        path.write_bytes(leftover)
+    child = (
+        "import sys;from mempalace import server_registry as s;"
+        "print(s.load_or_create_server_token(sys.argv[1])[0])"
+    )
+    env = dict(os.environ, HOME=str(isolated_home), USERPROFILE=str(isolated_home))
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", child, palace], env=env, stdout=subprocess.PIPE, text=True
+        )
+        for _ in range(6)
+    ]
+    tokens = {p.communicate(timeout=120)[0].strip() for p in procs}
+
+    assert tokens == {path.read_text().strip()}
 
 
 def test_loopback_serve_requires_the_stored_token_by_default(isolated_home, capture_exec, capsys):

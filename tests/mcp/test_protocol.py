@@ -1434,8 +1434,9 @@ class TestStructuredErrors:
         assert "data" not in err
 
     def test_internal_tool_error_with_exc_includes_structured_data(self):
-        """When exc is supplied, the error body must include data.error_class
-        and data.message so callers can distinguish error types (#1552)."""
+        """When exc is supplied, the error body carries data.error_class so
+        callers can distinguish error types (#1552); the exception text only
+        when the caller asks for it."""
         from mempalace.mcp_server import _internal_tool_error
 
         exc = RuntimeError("chromadb cold init wedge")
@@ -1443,12 +1444,34 @@ class TestStructuredErrors:
             raise exc
         except RuntimeError:
             resp = _internal_tool_error("req-2", "mempalace_add_drawer", exc)
+            internal = _internal_tool_error("req-2", "x", exc, include_message=True)
 
         err = resp["error"]
         assert err["code"] == -32000
-        assert "data" in err
-        assert err["data"]["error_class"] == "RuntimeError"
-        assert "chromadb cold init wedge" in err["data"]["message"]
+        assert err["data"] == {"error_class": "RuntimeError"}
+        assert "chromadb cold init wedge" in internal["error"]["data"]["message"]
+
+    def test_light_server_tool_error_hides_the_exception_text(self, monkeypatch):
+        from mempalace import mcp_light_server
+
+        def boom(arguments):
+            raise OSError("C:/secret/path is locked")
+
+        monkeypatch.setitem(mcp_light_server.LIGHT_TOOLS["palace_query"], "handler", boom)
+        monkeypatch.setattr(
+            mcp_light_server.mcp_server, "_mcp_tool_preflight_refusal", lambda *a, **k: None
+        )
+        resp = mcp_light_server.handle_light_request(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "palace_query", "arguments": {"target": "status"}},
+            }
+        )
+
+        assert resp["error"]["data"] == {"error_class": "OSError"}
+        assert "secret" not in json.dumps(resp)
 
     def test_internal_tool_error_exception_dispatch_passes_exc(self, monkeypatch):
         """handle_request's Exception branch must pass exc to _internal_tool_error."""

@@ -63,7 +63,15 @@ follow a restarted hub — without touching their config. Set
 `MEMPALACE_HUB_FORWARD=0` to opt out.
 
 Local agents that speak HTTP natively can also connect directly to
-`http://127.0.0.1:8765/mcp`.
+`http://127.0.0.1:8765/mcp` with the hub's bearer token, whose path `serve`
+prints at startup:
+
+```bash
+claude mcp add --transport http mempalace http://127.0.0.1:8765/mcp \
+  --header "Authorization: Bearer $(cat ~/.mempalace/server/<key>/token)"
+```
+
+(The stdio route above needs no token: it reads the same file itself.)
 
 ## 3. Bring in remote machines
 

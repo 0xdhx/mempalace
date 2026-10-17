@@ -96,6 +96,10 @@ def test_values_are_coerced_to_the_declared_type(received, arguments, expected):
         ({"ids": "a,b"}, "'ids' must be an array"),
         ({"ids": ["a", {"b": 1}]}, "'ids[1]' must be a string"),
         ({"metadata": [1]}, "'metadata' must be an object"),
+        ({"limit": "9" * 5000}, "'limit' is too large"),
+        ({"limit": "١٢"}, "'limit' must be an integer"),
+        ({"ids": "[" * 100000}, "'ids' must be an array"),
+        ({"ids": '["' + "a" * 1_000_001 + '"]'}, "'ids' is too large to read as an array"),
     ],
 )
 def test_a_value_outside_the_schema_is_refused_before_the_handler(received, arguments, fragment):

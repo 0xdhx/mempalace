@@ -828,7 +828,9 @@ def handle_light_request(request: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 },
             }
         except Exception as e:
-            return mcp_server._internal_tool_error(req_id, tool_name, e)
+            return mcp_server._internal_tool_error(
+                req_id, tool_name, e, include_message=isinstance(e, ValueError)
+            )
 
     if req_id is None:
         return None
@@ -991,7 +993,9 @@ def dispatch_light_stdio_request(request: Dict[str, Any]) -> Optional[Dict[str, 
             try:
                 resp = mcp_server._dispatch_stdio_request(forwarded)
             except Exception as exc:
-                return mcp_server._internal_tool_error(request.get("id"), underlying, exc)
+                return mcp_server._internal_tool_error(
+                    request.get("id"), underlying, exc, include_message=isinstance(exc, ValueError)
+                )
             return _postprocess_light_response(rewritten, resp)
     return handle_light_request(request)
 
