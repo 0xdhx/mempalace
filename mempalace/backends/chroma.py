@@ -32,6 +32,7 @@ from ..stored_text import (
     prepare_stored_write,
     restore_rows,
 )
+from ._filters import matches_where, validate_where
 from ._inproc_sqlite import (
     open_reader as open_palace_reader,
     open_writer as open_palace_writer,
@@ -51,7 +52,6 @@ from .base import (
     PalaceNotFoundError,
     PalaceRef,
     QueryResult,
-    UnsupportedFilterError,
     _IncludeSpec,
     initialize_last_modified_metadata,
 )
@@ -92,10 +92,6 @@ _ignore_embeddinggemma2_reconstruct_warning()
 # collection back on underneath us. (GHSA-8h77)
 _CLIENT_SETTINGS = _ChromaSettings(anonymized_telemetry=False)
 
-
-_REQUIRED_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin", "$and", "$or", "$contains"})
-_OPTIONAL_OPERATORS = frozenset({"$gt", "$gte", "$lt", "$lte"})
-_SUPPORTED_OPERATORS = _REQUIRED_OPERATORS | _OPTIONAL_OPERATORS
 
 # A healthy HNSW payload should keep link_lists.bin proportional to
 # data_level0.bin. When link_lists.bin grows orders of magnitude larger than
@@ -574,27 +570,6 @@ def _hnsw_capacity_ceiling_from_payload(palace_path: str, segment_id: str) -> Op
         return None
 
 
-def _validate_where(where: Optional[dict]) -> None:
-    """Scan a where-clause for unknown operators and raise ``UnsupportedFilterError``.
-
-    Spec (RFC 001 §1.4): silent dropping of unknown operators is forbidden.
-    """
-    if not where:
-        return
-    stack = [where]
-    while stack:
-        node = stack.pop()
-        if not isinstance(node, dict):
-            continue
-        for k, v in node.items():
-            if k.startswith("$") and k not in _SUPPORTED_OPERATORS:
-                raise UnsupportedFilterError(f"operator {k!r} not supported by chroma backend")
-            if isinstance(v, dict):
-                stack.append(v)
-            elif isinstance(v, list):
-                stack.extend(x for x in v if isinstance(x, dict))
-
-
 # Most full-text matches the candidate pickers below read, best-ranked first.
 _FTS_SCAN_CAP = 50_000
 # A metadata filter matching at most this many drawers is evaluated by reading
@@ -786,65 +761,6 @@ def _filtered_candidate_rows(
         if any(token in lowered for token in tokens):
             matching.append((row_id, text))
     return _whole_words_first(matching, tokens, limit)
-
-
-def _coerce_metadata_value(value: Any) -> Any:
-    if isinstance(value, bool):
-        return int(value)
-    return value
-
-
-def _compare_metadata(actual: Any, op: str, expected: Any) -> bool:
-    actual = _coerce_metadata_value(actual)
-    expected = _coerce_metadata_value(expected)
-    if op == "$eq":
-        return actual == expected
-    if op == "$ne":
-        return actual != expected
-    if op == "$in":
-        return actual in (expected or [])
-    if op == "$nin":
-        return actual not in (expected or [])
-    if op == "$contains":
-        return str(expected) in str(actual or "")
-    try:
-        if op == "$gt":
-            return actual > expected
-        if op == "$gte":
-            return actual >= expected
-        if op == "$lt":
-            return actual < expected
-        if op == "$lte":
-            return actual <= expected
-    except TypeError:
-        return False
-    raise UnsupportedFilterError(f"operator {op!r} not supported by chroma backend")
-
-
-def _matches_where(meta: dict, where: Optional[dict]) -> bool:
-    if not where:
-        return True
-    if not isinstance(where, dict):
-        return False
-    for key, expected in where.items():
-        if key == "$and":
-            if not all(_matches_where(meta, clause) for clause in expected or []):
-                return False
-            continue
-        if key == "$or":
-            if not any(_matches_where(meta, clause) for clause in expected or []):
-                return False
-            continue
-        if key.startswith("$"):
-            raise UnsupportedFilterError(f"operator {key!r} not supported by chroma backend")
-        actual = meta.get(key)
-        if isinstance(expected, dict):
-            for op, operand in expected.items():
-                if not _compare_metadata(actual, op, operand):
-                    return False
-        elif actual != expected:
-            return False
-    return True
 
 
 def _metadata_cell_value(sval, ival, fval, bval):
@@ -3405,8 +3321,8 @@ class ChromaCollection(BaseCollection):
         if getattr(self, "_require_embeddings", False) and query_texts is not None:
             raise ValueError("caller-vector collection requires query_embeddings")
 
-        _validate_where(where)
-        _validate_where(where_document)
+        validate_where(where)
+        validate_where(where_document)
 
         if (query_texts is None) == (query_embeddings is None):
             raise ValueError("query requires exactly one of query_texts or query_embeddings")
@@ -3486,8 +3402,8 @@ class ChromaCollection(BaseCollection):
         offset=None,
         include=None,
     ) -> GetResult:
-        _validate_where(where)
-        _validate_where(where_document)
+        validate_where(where)
+        validate_where(where_document)
 
         spec = _IncludeSpec.resolve(include, default_distances=False)
         chroma_include: list[str] = []
@@ -3533,7 +3449,7 @@ class ChromaCollection(BaseCollection):
         )
 
     def delete(self, *, ids=None, where=None):
-        _validate_where(where)
+        validate_where(where)
         kwargs: dict[str, Any] = {}
         if ids is not None:
             kwargs["ids"] = ids
@@ -3636,7 +3552,7 @@ class ChromaCollection(BaseCollection):
             and equalities is not None
             and not spec.embeddings
         ):
-            _validate_where(where)
+            validate_where(where)
             records = _sqlite_recent_records(
                 self._palace_path,
                 self._collection.name,
@@ -3671,7 +3587,7 @@ class ChromaCollection(BaseCollection):
         backend capability. The HNSW-disabled fallback in ``searcher.py`` still
         reads ``chroma.sqlite3`` directly and remains Chroma-only.
         """
-        _validate_where(where)
+        validate_where(where)
         sqlite_hits = self._lexical_search_via_sqlite(query=query, n_results=n_results, where=where)
         if sqlite_hits is not None:
             return LexicalResult(hits=sqlite_hits)
@@ -3877,7 +3793,7 @@ class ChromaCollection(BaseCollection):
             drawer = drawers.get(emb_id)
             if drawer is None:
                 continue
-            if not _matches_where(drawer["metadata"], stored_where):
+            if not matches_where(drawer["metadata"], stored_where):
                 continue
             ordered.append((emb_id, *decode_record(drawer["document"], drawer["metadata"])))
 

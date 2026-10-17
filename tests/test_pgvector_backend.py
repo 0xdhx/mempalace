@@ -6,7 +6,11 @@ import types
 from hashlib import sha256
 
 import pytest
-from _backend_conformance import assert_partition_isolation, assert_update_skips_missing_ids
+from _backend_conformance import (
+    assert_partition_isolation,
+    assert_update_skips_missing_ids,
+    assert_where_filters_conform,
+)
 
 from mempalace.backends import (
     BackendError,
@@ -17,6 +21,7 @@ from mempalace.backends import (
     available_backends,
     pgvector as pgvector_module,
 )
+from mempalace.backends._filters import matches_where
 from mempalace.backends._remote_common import as_vector_array
 from mempalace.backends.base import (
     UnsupportedCapabilityError,
@@ -24,7 +29,6 @@ from mempalace.backends.base import (
 )
 from mempalace.backends.pgvector import (
     PgVectorBackend,
-    _matches_where,
     _PgVectorClient,
     _PgVectorConfig,
     _shared_namespace_key,
@@ -77,7 +81,7 @@ class _FakePgVectorClient:
 
     def _filtered(self, table, where):
         rows = list(self.tables.get(table, {"rows": {}})["rows"].values())
-        return [row for row in rows if _matches_where(row.get("metadata") or {}, where)]
+        return [row for row in rows if matches_where(row.get("metadata") or {}, where)]
 
     def query_rows(self, table, *, vector, limit, where, with_embedding):
         self.query_calls.append(where)
@@ -125,7 +129,7 @@ class _FakePgVectorClient:
             self.id_lookups.append(list(ids))
             store = self.tables.get(table, {"rows": {}})["rows"]
             rows = [store[item] for item in ids if item in store]
-            rows = [row for row in rows if _matches_where(row.get("metadata") or {}, where)]
+            rows = [row for row in rows if matches_where(row.get("metadata") or {}, where)]
         else:
             rows = self._filtered(table, where)
         if order_field is not None:
@@ -171,7 +175,7 @@ class _FakePgVectorClient:
                 rows.pop(doc_id, None)
             return
         for doc_id, row in list(rows.items()):
-            if _matches_where(row.get("metadata") or {}, where):
+            if matches_where(row.get("metadata") or {}, where):
                 rows.pop(doc_id, None)
 
     def count_rows(self, table):
@@ -386,6 +390,13 @@ def test_pgvector_update_skips_missing_ids_conformance(tmp_path, fake_pgvector):
     ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
     col = backend.get_collection(palace=ref, collection_name="drawers", create=True)
     assert_update_skips_missing_ids(backend, col, embedding=[1.0, 0.0])
+
+
+def test_pgvector_where_filters_conformance(tmp_path, fake_pgvector):
+    backend = PgVectorBackend()
+    ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    col = backend.get_collection(palace=ref, collection_name="drawers", create=True)
+    assert_where_filters_conform(backend, col, embedding=[1.0, 0.0])
 
 
 def test_pgvector_namespace_isolation_conformance(tmp_path, fake_pgvector):
@@ -679,7 +690,7 @@ def test_pgvector_get_filtered_page_stays_on_full_scan(tmp_path, fake_pgvector):
     page = col.get(where={"wing": "x"}, limit=1, offset=1, include=["metadatas"])
 
     # A filtered get keeps the full-scan path (no LIMIT/OFFSET pushed) so the
-    # exact _matches_where re-filter runs before pagination.
+    # exact matches_where re-filter runs before pagination.
     assert client.scroll_calls == [
         {
             "where": {"wing": "x"},
@@ -799,9 +810,9 @@ def test_pgvector_get_all_metadata_skips_document_column(tmp_path, fake_pgvector
 def test_pgvector_get_all_metadata_filtered_uses_fast_path(tmp_path, fake_pgvector):
     """Filtered get_all_metadata uses the single-pass metadata-only fast path.
 
-    ``_matches_where`` only reads ``metadata``, so we keep ``with_document=False``
+    ``matches_where`` only reads ``metadata``, so we keep ``with_document=False``
     and apply the post-filter locally on the metadata dicts. SQL pushdown still
-    happens when the filter is pushdownable; the local ``_matches_where`` re-runs
+    happens when the filter is pushdownable; the local ``matches_where`` re-runs
     for array/object semantics #1840's filtered path required.
     """
     _backend, col = _collection(tmp_path)
@@ -1708,7 +1719,7 @@ def test_pgvector_facet_counts_empty_collection(tmp_path, fake_pgvector):
 
 def test_pgvector_facet_counts_passes_filter_to_sql_layer(tmp_path, fake_pgvector):
     """Pushdown filters reach the SQL layer (proves the where path goes through
-    ``_where_to_sql``, not the local ``_matches_where`` post-filter)."""
+    ``_where_to_sql``, not the local ``matches_where`` post-filter)."""
     _backend, col = _collection(tmp_path)
     col.upsert(
         ids=["1"],
