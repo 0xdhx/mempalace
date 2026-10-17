@@ -45,6 +45,7 @@ _NO_FSYNC_ERRNOS = tuple(
 # sharing violation). Readers let go quickly, so the rename is retried.
 _SHARING_WINERRORS = (5, 32)
 _REPLACE_BACKOFF = (0.01, 0.05, 0.1, 0.25, 0.5)
+_WINDOWS = os.name == "nt"
 
 
 def unlink_quietly(path: PathLike) -> None:
@@ -203,6 +204,23 @@ def _replace(tmp: str, path: Path) -> None:
                 raise
         time.sleep(delay)
     os.replace(tmp, str(path))
+
+
+def read_published_bytes(path: PathLike) -> bytes:
+    """Read a file another thread or process may be publishing over.
+
+    On Windows, opening a file at the moment ``os.replace`` renames over it
+    fails with access denied (EACCES, no ``winerror``). The window is a few
+    milliseconds, so the read is retried; other errors reach the caller.
+    """
+    for delay in _REPLACE_BACKOFF:
+        try:
+            return Path(path).read_bytes()
+        except PermissionError:
+            if not _WINDOWS:
+                raise
+        time.sleep(delay)
+    return Path(path).read_bytes()
 
 
 def _warn_in_place(path: Path, *, why: str) -> None:
