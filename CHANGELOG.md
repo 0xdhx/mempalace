@@ -97,6 +97,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Re-ingesting a diary no longer deletes the day before writing it.** A diary
+  rebuild now goes through the same write-then-prune path as the miners, so a
+  failed write keeps the previous entries and a failed prune is retried on the
+  next ingest instead of leaving removed entries behind for good. Two diary
+  files whose names start with the same date, in one wing, map to the same
+  drawer ids; ingest now stops with a `CollisionError` naming both files
+  instead of letting one silently overwrite the other. Rename one, or ingest
+  them into separate wings. The collision check no longer treats a source
+  re-filing its own drawer at a moved `chunk_index` as a collision.
 - **A failed dimension probe no longer erases a recorded embedder dimension.**
   `mempalace palace set-embedder` and repair record the embedder in the palace
   sidecar. When the model's dimension probe failed, they wrote a dimension of 0
