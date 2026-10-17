@@ -364,7 +364,12 @@ def _migrate_locked(palace_path: str, dry_run: bool = False, confirm: bool = Fal
     # Rebuild beside the palace so the swap is a same-volume rename. The
     # rebuild refuses an existing dest, so it gets a fresh name inside the
     # temp dir.
-    from .repair import RebuildCleanupError, RebuildPartialError, rebuild_from_sqlite
+    from .repair import (
+        RebuildCleanupError,
+        RebuildPartialError,
+        move_aaak_after_rebuild,
+        rebuild_from_sqlite,
+    )
 
     work_dir = tempfile.mkdtemp(prefix=".mempalace_migrate_", dir=os.path.dirname(palace_path))
     temp_palace = os.path.join(work_dir, "palace")
@@ -398,6 +403,7 @@ def _migrate_locked(palace_path: str, dry_run: bool = False, confirm: bool = Fal
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
+    move_aaak_after_rebuild(palace_path)
     print("\n  Migration complete.")
     for name, count in counts.items():
         print(f"  {name}: {count}")
