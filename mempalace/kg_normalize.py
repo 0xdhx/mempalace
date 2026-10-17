@@ -117,7 +117,7 @@ def plan_normalize(
     response = provider.classify(
         _PLAN_SYSTEM, _user_prompt(facts, vocabulary), json_mode=True, think=False
     )
-    data = parse_json_reply(response.text)
+    data = parse_json_reply(response.text, expect=(dict, list))
     proposals = data.get("facts") if isinstance(data, dict) else data
     if not isinstance(proposals, list):
         raise ValueError("LLM response JSON has no 'facts' list")

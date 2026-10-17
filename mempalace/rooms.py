@@ -250,7 +250,7 @@ def _propose_user_prompt(wing: str, samples: list[dict], max_rooms: int) -> str:
 
 def _parse_room_json(text: str) -> tuple[list[dict], list[dict]]:
     """``(rooms, assignments)`` from the LLM's answer; assignments may be empty."""
-    data = parse_json_reply(text)
+    data = parse_json_reply(text, expect=(dict, list))
     rooms = data.get("rooms") if isinstance(data, dict) else data
     if not isinstance(rooms, list):
         raise ValueError("LLM response JSON has no 'rooms' list")
@@ -260,7 +260,7 @@ def _parse_room_json(text: str) -> tuple[list[dict], list[dict]]:
 
 def _parse_room_json_assignments(text: str) -> tuple[list[dict], list[dict]]:
     """``([], assignments)`` from the follow-up call; tolerates a bare list."""
-    data = parse_json_reply(text)
+    data = parse_json_reply(text, expect=(dict, list))
     assignments = data.get("assignments") if isinstance(data, dict) else data
     return [], list(assignments) if isinstance(assignments, list) else []
 

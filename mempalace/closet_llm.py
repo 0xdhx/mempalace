@@ -178,15 +178,17 @@ def _call_llm(cfg: LLMConfig, source_file: str, wing: str, room: str, content: s
         try:
             payload = post_json(url, body, headers, timeout=HTTP_TIMEOUT_S)
             parsed = parse_json_reply(payload["choices"][0]["message"]["content"], expect=dict)
+            if not isinstance(parsed.get("topics"), list):
+                # The wrong object would purge the regex closets for nothing.
+                raise ValueError("LLM reply is not a closet object")
             return parsed, payload.get("usage")
         except Exception as e:
-            # Retry a reply with no usable JSON, a malformed response, a 429/503,
-            # or anything that names a rate limit; give up on the rest.
+            # Retry a reply with no usable closet JSON, a malformed response,
+            # or a 429/503; give up on everything else.
             retry = (
                 isinstance(e, ValueError)
                 or isinstance(e.__cause__, json.JSONDecodeError)
                 or getattr(e, "status", None) in (429, 503)
-                or "rate" in str(e).lower()
             )
             if retry and attempt < 2:
                 time.sleep(2**attempt)

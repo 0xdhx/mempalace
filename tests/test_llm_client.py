@@ -5,6 +5,7 @@ or network access. Live-provider smoke tests live outside the unit-test
 suite.
 """
 
+import io
 import json
 from unittest.mock import MagicMock, patch
 
@@ -167,16 +168,82 @@ def test_parse_json_reply_reads_every_callers_format(reply, expected):
     assert parse_json_reply(reply) == expected
 
 
+def test_parse_json_reply_prefers_an_object_over_a_stray_list_before_it():
+    reply = 'Per rule [1] here is the plan: {"facts": [{"index": 1, "object": "Acme"}]}'
+    assert parse_json_reply(reply) == {"facts": [{"index": 1, "object": "Acme"}]}
+    assert parse_json_reply(reply, expect=(dict, list)) == parse_json_reply(reply)
+
+
+def test_parse_json_reply_falls_back_to_a_list_when_no_object_parses():
+    assert parse_json_reply('prefix [{"name": "Y"}] suffix') == [{"name": "Y"}]
+
+
 def test_parse_json_reply_expect_skips_values_of_another_type():
     reply = 'Counts: [1, 2]. Result: {"user_name": null}'
     assert parse_json_reply(reply, expect=dict) == {"user_name": None}
-    assert parse_json_reply(reply) == [1, 2]
+    assert parse_json_reply(reply, expect=list) == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        # trailing comma: the nested "rooms" list must not stand in for the object
+        '{"rooms": [{"slug": "a"}], "assignments": [{"room": "a"}],}',
+        # unescaped quote: the quoted code object must not stand in for the reply
+        '{"topics": ["cfg"], "quotes": ["[User] set "{"debug": true}" in it"], "summary": "s"}',
+        # cut at the token limit, with a complete object quoted inside
+        '{"topics": ["cfg"], "quotes": ["{\\"debug\\": true}", "an unfinished quo',
+    ],
+)
+def test_parse_json_reply_never_returns_a_value_nested_in_a_failed_candidate(reply):
+    with pytest.raises(ValueError, match="held no JSON"):
+        parse_json_reply(reply, expect=dict)
 
 
 @pytest.mark.parametrize("reply", ["", "   ", "no json here", "{broken", None])
 def test_parse_json_reply_raises_when_the_reply_holds_none(reply):
     with pytest.raises(ValueError, match="held no JSON"):
         parse_json_reply(reply)
+
+
+def test_post_json_drops_the_body_of_an_auth_error():
+    from urllib.error import HTTPError
+
+    body = io.BytesIO(b'{"error": "Incorrect API key provided: sk-SECRET1234567"}')
+    err = HTTPError("http://x", 401, "Unauthorized", {}, body)
+    with patch("mempalace.llm_client.urlopen", side_effect=err):
+        with pytest.raises(LLMError) as raised:
+            post_json("http://x", {}, {}, timeout=5)
+    assert "SECRET" not in str(raised.value)
+    assert "Unauthorized" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "secret, leak",
+    [
+        ("token sk-SECRET1234567 rejected", "SECRET1234567"),
+        ("header was Bearer abc.DEF-123_xyz", "abc.DEF-123_xyz"),
+        ('{"api_key": "LONGSECRETVALUE99"}', "LONGSECRETVALUE99"),
+    ],
+)
+def test_post_json_masks_keys_in_other_error_bodies(secret, leak):
+    from urllib.error import HTTPError
+
+    err = HTTPError("http://x", 500, "Server Error", {}, io.BytesIO(secret.encode()))
+    with patch("mempalace.llm_client.urlopen", side_effect=err):
+        with pytest.raises(LLMError) as raised:
+            post_json("http://x", {}, {}, timeout=5)
+    assert leak not in str(raised.value)
+
+
+def test_post_json_masks_a_key_in_the_url():
+    from urllib.error import URLError
+
+    url = "http://x/v1?key=SECRETQUERYKEY"
+    with patch("mempalace.llm_client.urlopen", side_effect=URLError("refused")):
+        with pytest.raises(LLMError) as raised:
+            post_json(url, {}, {}, timeout=5)
+    assert "SECRETQUERYKEY" not in str(raised.value)
 
 
 # ── OllamaProvider ──────────────────────────────────────────────────────

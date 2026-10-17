@@ -7,6 +7,7 @@ These tests don't hit the network. They mock urllib to verify:
 - response parsing handles the standard chat-completions payload
 """
 
+import io
 import json
 import os
 import subprocess
@@ -191,6 +192,40 @@ class TestCallLLM:
         with patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen):
             parsed, _ = _call_llm(cfg, "/tmp/x", "w", "r", "c")
         assert parsed == {"topics": ["t1"], "quotes": [], "summary": ""}
+
+    def test_a_reply_of_the_wrong_shape_is_retried_then_dropped(self):
+        """An object without ``topics`` (a quoted code snippet, say) must never
+        replace the regex closets: it counts as a failed parse."""
+        cfg = self._make_cfg()
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req)
+            return _FakeResp({"choices": [{"message": {"content": '{"debug": true}'}}]})
+
+        with (
+            patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen),
+            patch("mempalace.closet_llm.time.sleep"),
+        ):
+            assert _call_llm(cfg, "/tmp/x", "w", "r", "c") == (None, None)
+        assert len(calls) == 3
+
+    def test_a_400_is_not_retried_even_when_its_body_mentions_generate(self):
+        from urllib.error import HTTPError
+
+        cfg = self._make_cfg()
+        calls = []
+
+        def fake_urlopen(req, timeout=None):
+            calls.append(req)
+            raise HTTPError(req.full_url, 400, "Bad Request", {}, io.BytesIO(b"cannot generate"))
+
+        with (
+            patch("mempalace.llm_client.urlopen", side_effect=fake_urlopen),
+            patch("mempalace.closet_llm.time.sleep"),
+        ):
+            assert _call_llm(cfg, "/tmp/x", "w", "r", "c") == (None, None)
+        assert len(calls) == 1
 
     def test_returns_none_on_invalid_json(self):
         cfg = self._make_cfg()

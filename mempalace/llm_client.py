@@ -304,31 +304,56 @@ def post_json(url: str, body: dict, headers: dict, timeout: float) -> dict:
             return json.loads(resp.read())
     except HTTPError as e:
         detail = ""
-        try:
-            detail = e.read().decode("utf-8", errors="replace")[:500]
-        except Exception:
-            pass
-        raise LLMError(f"HTTP {e.code} from {url}: {detail or e.reason}", status=e.code) from e
+        if e.code not in (401, 403):  # auth errors often echo the key back
+            try:
+                detail = e.read().decode("utf-8", errors="replace")[:500]
+            except Exception:
+                pass
+        message = f"HTTP {e.code} from {url}: {detail or e.reason}"
+        raise LLMError(_redact(message), status=e.code) from e
     except (URLError, OSError, http.client.HTTPException) as e:
-        raise LLMError(f"Cannot reach {url}: {e}") from e
+        raise LLMError(_redact(f"Cannot reach {url}: {e}")) from e
     except json.JSONDecodeError as e:
-        raise LLMError(f"Malformed response from {url}: {e}") from e
+        raise LLMError(_redact(f"Malformed response from {url}: {e}")) from e
     except ValueError as e:  # an invalid or missing URL scheme
-        raise LLMError(f"Cannot reach {url}: {e}") from e
+        raise LLMError(_redact(f"Cannot reach {url}: {e}")) from e
+
+
+_SECRETS = (
+    (re.compile(r"\bsk-[A-Za-z0-9_\-]{6,}"), "sk-***"),
+    (re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=\-]+"), "Bearer ***"),
+    (re.compile(r"(?i)([?&](?:api[_-]?)?key=)[^&\s]+"), r"\1***"),
+    (re.compile(r"(?i)(api[_-]?key[\"'\s]*[:=]\s*[\"']?)[A-Za-z0-9._\-]{8,}"), r"\1***"),
+)
+
+
+def _redact(text: str) -> str:
+    """Mask API keys an endpoint or URL may carry into an error message."""
+    for pattern, replacement in _SECRETS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 _FENCED = re.compile(r"```[a-zA-Z]*\s*([\s\S]*?)\s*```")
 
 
 def _json_candidates(text: str):
-    """The whole reply, then fenced blocks, then each balanced ``{...}``/``[...]``."""
+    """The whole reply, then fenced blocks, then each top-level ``{...}``/``[...]``.
+
+    A span inside an earlier span is never offered: when an outer object
+    fails to parse, an object quoted inside it must not stand in for it. A
+    span left open (a reply cut at the token limit) ends the scan.
+    """
     text = text.strip()
     if not text:
         return
     yield text
     for match in _FENCED.finditer(text):
         yield match.group(1).strip()
+    covered = 0
     for start, opener in ((i, ch) for i, ch in enumerate(text) if ch in "{["):
+        if start < covered:
+            continue
         closer = "}" if opener == "{" else "]"
         depth = 0
         in_string = escaped = False
@@ -348,24 +373,32 @@ def _json_candidates(text: str):
             elif ch == closer:
                 depth -= 1
                 if depth == 0:
-                    yield text[start : i + 1]
+                    covered = i + 1
+                    yield text[start:covered]
                     break
+        else:
+            return
 
 
-def parse_json_reply(text: str, expect: Optional[type] = None):
-    """The first JSON value in an LLM reply, of type ``expect`` when given.
+def parse_json_reply(text: str, expect=(dict, list)):
+    """The JSON value an LLM reply carries, preferring types in ``expect`` order.
 
-    Models wrap JSON in code fences or prose; this takes the reply as-is first,
-    then fenced blocks, then the first balanced object or array that parses.
-    Raises ValueError when the reply holds none.
+    Models wrap JSON in code fences or prose; candidates are the reply as-is,
+    then fenced blocks, then each top-level object or array. The first
+    candidate of the first type in ``expect`` wins, so a stray ``[1]`` in prose
+    never beats the object after it. Raises ValueError when there is none.
     """
+    kinds = expect if isinstance(expect, tuple) else (expect,)
+    values = []
     for candidate in _json_candidates(text or ""):
         try:
-            value = json.loads(candidate)
+            values.append(json.loads(candidate))
         except json.JSONDecodeError:
             continue
-        if expect is None or isinstance(value, expect):
-            return value
+    for kind in kinds:
+        for value in values:
+            if isinstance(value, kind):
+                return value
     raise ValueError("LLM response held no JSON object")
 
 

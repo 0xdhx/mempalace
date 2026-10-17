@@ -111,7 +111,7 @@ def _parse_response(text: str, expected_names: list[str]) -> dict[str, tuple[str
     slight schema variations. Falls back to matching by candidate name.
     """
     try:
-        data = parse_json_reply(text)
+        data = parse_json_reply(text, expect=(dict, list))
     except ValueError:
         return {}
 
