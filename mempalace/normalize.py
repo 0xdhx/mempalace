@@ -198,24 +198,10 @@ def normalize(filepath: str) -> str:
 
 
 def normalize_conversations(filepath: str) -> list:
-    """Like normalize(), but keeps each conversation in a bundle export as a
-    separate string instead of joining them into one.
-
-    A Claude.ai privacy export packs every conversation into a single JSON
-    file, and normalize() joins them with "\\n\\n".join(...) into one blob.
-    That collapses conversation boundaries, so content-hash dedup keyed on
-    the whole file breaks the moment the bundle is re-exported with one new
-    conversation added — the file-level hash changes even though none of
-    the existing conversations did. This returns the pieces un-joined so
-    callers can hash and dedup per conversation instead.
-
-    A ChatGPT data export is a bundle for the same reason: its
-    ``conversations.json`` is an array of conversations, so it splits per
-    conversation too.
-
-    Non-bundle formats (a single Claude Code session, plain text, ...)
-    always normalize to one conversation, so this returns a one-element
-    list for those — identical dedup granularity to before.
+    """Like normalize(), but keeps each conversation in a bundle export (a
+    Claude.ai privacy export, a ChatGPT ``conversations.json``) as a separate
+    string instead of joining them into one. Non-bundle formats normalize to a
+    one-element list.
     """
     return normalize_conversations_with_mtime(filepath)[0]
 
@@ -223,13 +209,6 @@ def normalize_conversations(filepath: str) -> list:
 def normalize_conversations_with_mtime(filepath: str) -> Tuple[list, float]:
     """``normalize_conversations`` plus the mtime of the bytes it read."""
     content, mtime = _read_transcript_file_with_mtime(filepath)
-    run = _NORMALIZE_RUN.get()
-    if run is not None and run.spellcheck:
-        token = _NORMALIZE_RUN.set(None)
-        try:
-            run.verbatim = _split_conversations(content, filepath)
-        finally:
-            _NORMALIZE_RUN.reset(token)
     return _split_conversations(content, filepath), mtime
 
 
@@ -858,9 +837,9 @@ def _try_chatgpt_export_json_split(data) -> Optional[list]:
     chunked as raw JSON: the drawers hold serialized structure sliced at
     arbitrary offsets, and every speaker turn is gone.
 
-    Each conversation is kept as its own segment rather than concatenated, so
-    per-conversation dedup survives a re-export (see ``normalize_conversations``);
-    the joined form is reached through ``_try_normalize_json``.
+    Each conversation is kept as its own segment rather than concatenated (see
+    ``normalize_conversations``); the joined form is reached through
+    ``_try_normalize_json``.
 
     Runs after ``_try_gemini_json`` and ``_try_claude_ai_json_split`` and before
     the ``_try_chatgpt_json``/``_try_continue_json``/``_try_slack_json`` loop.
@@ -1172,14 +1151,12 @@ def _format_tool_result(content, tool_name: str) -> str:
 
 class NormalizeRun:
     """What one file's parse inside ``recording_transforms`` did: the RFC 002
-    transformations it applied (``applied``), and, with spell correction on,
-    the conversations as written (``verbatim``), parsed from the same bytes so
-    callers can hash the uncorrected text."""
+    transformations it applied (``applied``) and the codec its bytes decoded
+    with (``encoding``)."""
 
     def __init__(self, spellcheck: bool):
         self.spellcheck = spellcheck
         self.applied: set = set()
-        self.verbatim: Optional[list] = None
         self.encoding = "utf-8"
 
     @property

@@ -42,6 +42,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   hit whose vector distance can't be computed is kept with `distance: null` and
   `fallback_reason: "distance_unavailable"` instead of disappearing.
 
+- **A conversation that appears in more than one file is filed under each of
+  them.** Conversation mining used to drop a conversation it had already filed
+  from another file in the same wing, so a re-exported bundle or a copied
+  transcript had no drawers of its own and anything scoped to that file missed
+  it. Each file now keeps its own drawers; re-mining a file still files nothing
+  new. Files an older palace registered as duplicates are mined again once the
+  conversation parsing version changes.
+
 ### Bug Fixes
 
 - **Mining no longer turns bytes that are not UTF-8 into U+FFFD.** Project,
