@@ -222,7 +222,6 @@ def ingest_diaries(
                     drawers,
                     prune=full_rebuild,
                     aaak_col=aaak_col,
-                    check_collisions=False,
                 )
             except StaleDrawerPurgeFailed as exc:
                 logger.warning("%s", exc)

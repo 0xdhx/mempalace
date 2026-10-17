@@ -127,3 +127,20 @@ def test_a_failed_write_keeps_the_previous_entries(diary, monkeypatch):
     assert _rows(palace, path) == before
     ingest_diaries(str(diary_dir), palace)
     assert "rewritten" in _rows(palace, path)[0][3]
+
+
+def test_two_diary_files_sharing_a_date_refuse_to_overwrite_each_other(diary):
+    from mempalace.collision_scan import CollisionError
+
+    diary_dir, palace = diary
+    first = _write(diary_dir, _entry(1))
+    ingest_diaries(str(diary_dir), palace)
+    second = diary_dir / f"{_DATE}-standup.md"
+    second.write_text(
+        f"# {_DATE}\n\n" + _entry(1, "Standup notes, not the entry."), encoding="utf-8"
+    )
+
+    with pytest.raises(CollisionError) as exc:
+        ingest_diaries(str(diary_dir), palace)
+    assert first.name in str(exc.value) and second.name in str(exc.value)
+    assert "Entry 1 body" in _rows(palace, first)[0][3]

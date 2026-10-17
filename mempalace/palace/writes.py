@@ -69,7 +69,6 @@ def write_file_drawers(
     extract_mode: Optional[str] = None,
     prune: bool = True,
     aaak_col=None,
-    check_collisions: bool = True,
 ) -> int:
     """File one source file's drawers: write the new ones, then drop the stale.
 
@@ -92,10 +91,6 @@ def write_file_drawers(
     A pruning re-file deletes the file's summaries there, since they quote
     text the file no longer has.
 
-    ``check_collisions=False`` skips the id-collision check, for a writer whose
-    ids stay put while ``chunk_index`` moves (a diary entry keeps its id when
-    an earlier entry grows).
-
     Returns the number of drawers written. Raises
     :class:`StaleDrawerPurgeFailed` when the stale drawers could not be
     removed; an error in :data:`MINE_ABORTS` (a dead backend) propagates as is.
@@ -106,8 +101,7 @@ def write_file_drawers(
     written = []
     for start in range(0, len(drawers), DRAWER_UPSERT_BATCH_SIZE):
         batch = drawers[start : start + DRAWER_UPSERT_BATCH_SIZE]
-        if check_collisions:
-            assert_no_collisions([(drawer_id, meta) for drawer_id, _, meta in batch], collection)
+        assert_no_collisions([(drawer_id, meta) for drawer_id, _, meta in batch], collection)
         batch = _clear_dropped_keys(collection, batch)
         collection.upsert(
             ids=[drawer_id for drawer_id, _, _ in batch],
