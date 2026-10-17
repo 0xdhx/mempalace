@@ -132,6 +132,24 @@ def test_layers_fill_their_page_past_bookkeeping_rows(crowded):
     assert len(Layer3(palace_path=crowded).search_raw("/chats/session_3.txt", n_results=6)) == 6
 
 
+def test_layer2_stops_its_scan_and_says_so(monkeypatch):
+    from mempalace import layers
+
+    calls = []
+
+    class _AllRegistry:
+        def get(self, **kwargs):
+            calls.append(kwargs)
+            n = kwargs["limit"]
+            meta = {"wing": "w", "room": "_registry", "ingest_mode": "registry"}
+            return {"documents": ["[registry] x"] * n, "metadatas": [meta] * n}
+
+    monkeypatch.setattr(layers, "_open_for_read", lambda _path: _AllRegistry())
+    out = layers.Layer2(palace_path="unused").retrieve(wing="w", n_results=5)
+    assert len(calls) <= 4
+    assert "stopped after scanning 2000 rows" in out
+
+
 def test_search_fills_its_page_past_bookkeeping_rows(crowded, capsys):
     from mempalace.mcp_server import tool_search
     from mempalace.searcher import search, search_memories

@@ -233,12 +233,18 @@ def _without_bookkeeping(docs, metas) -> tuple[list, list]:
 _MAX_QUERY_POOL = 1000
 
 
-def _get_drawer_rows(col, kwargs: dict, n: int) -> tuple[list, list]:
-    """Page ``col.get`` until ``n`` drawers that are not bookkeeping rows, or the scope ends."""
+def _get_drawer_rows(col, kwargs: dict, n: int, max_scan: int = 2000) -> tuple[list, list, bool]:
+    """Page ``col.get`` until ``n`` drawers that are not bookkeeping rows.
+
+    Returns ``(docs, metas, capped)``. The scan stops at the end of the scope or
+    after ``max_scan`` rows; ``capped`` says it stopped there short of ``n``.
+    """
     docs, metas = [], []
     offset = 0
-    page = max(n, 1)
+    page = max(n, 500)
     while len(docs) < n:
+        if offset >= max_scan:
+            return docs, metas, True
         batch = col.get(**kwargs, limit=page, offset=offset)
         batch_docs = batch.get("documents") or []
         kept_docs, kept_metas = _without_bookkeeping(batch_docs, batch.get("metadatas") or [])
@@ -247,7 +253,7 @@ def _get_drawer_rows(col, kwargs: dict, n: int) -> tuple[list, list]:
         if len(batch_docs) < page:
             break
         offset += len(batch_docs)
-    return docs[:n], metas[:n]
+    return docs[:n], metas[:n], False
 
 
 def _query_drawer_rows(col, kwargs: dict, n: int) -> list:
@@ -472,17 +478,20 @@ class Layer2:
             kwargs["where"] = where
 
         try:
-            docs, metas = _get_drawer_rows(col, kwargs, n_results)
+            docs, metas, capped = _get_drawer_rows(col, kwargs, n_results)
         except Exception as e:
             return f"Retrieval error: {e}"
 
+        label = f"wing={wing}" if wing else ""
+        if room:
+            label += f" room={room}" if label else f"room={room}"
+        capped_note = "  (stopped after scanning 2000 rows; narrow the scope for more)"
         if not docs:
-            label = f"wing={wing}" if wing else ""
-            if room:
-                label += f" room={room}" if label else f"room={room}"
-            return f"No drawers found for {label}."
+            return f"No drawers found for {label}." + (capped_note if capped else "")
 
         lines = [f"## L2 — ON-DEMAND ({len(docs)} drawers)"]
+        if capped:
+            lines.append(capped_note)
         for doc, meta in zip(docs[:n_results], metas[:n_results]):
             meta = meta or {}
             doc = doc or ""

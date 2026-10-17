@@ -2968,6 +2968,46 @@ class TestMinedFilesystemIdentity(_IdentityRows):
         # A drawer of the file's own content.
         assert _is_bookkeeping_row({"room": "documents", "chunk_index": 0}, "d_1") is False
         assert _is_bookkeeping_row({}, "") is False
+        # A real drawer in a room a project named "_registry".
+        assert _is_bookkeeping_row({"room": "_registry", "chunk_index": 0}, "drawer_p_r") is False
+
+    def test_a_drawer_in_a_real_registry_room_is_pruned_with_its_source(self, tmp_dir, palace_path):
+        """A project can name a room "_registry". Its drawers are content, so
+        when the source goes away they go too, like any other drawer."""
+        from mempalace.sync import sync_palace
+
+        repo = Path(tmp_dir) / "repo"
+        repo.mkdir(parents=True)
+        (repo / ".gitignore").write_text("*.py\n")
+        source = repo / "registry.py"
+        source.write_text("REGISTRY = {}\n")
+
+        client = chromadb.PersistentClient(path=palace_path)
+        col = client.get_or_create_collection(
+            "mempalace_drawers", metadata={"hnsw:space": "cosine"}
+        )
+        col.add(
+            ids=["drawer_demo__registry_0"],
+            documents=["REGISTRY = {}"],
+            embeddings=[[1.0, 0.0, 0.0]],
+            metadatas=[
+                {
+                    "wing": "demo",
+                    "room": "_registry",
+                    "source_file": str(source),
+                    "chunk_index": 0,
+                    "added_by": "miner",
+                    "filed_at": "2026-08-23T00:00:00",
+                }
+            ],
+        )
+        del client
+
+        report = sync_palace(
+            palace_path=palace_path, project_dirs=[str(repo)], wing="demo", dry_run=False
+        )
+
+        assert report["removed_drawers"] == 1, report
 
     def test_a_registry_sentinel_is_not_a_drawer_that_survived(self, tmp_dir, palace_path):
         """A convo sentinel names the same source as the drawers it tracks and
