@@ -406,3 +406,41 @@ def test_a_link_at_the_next_temp_name_is_skipped_not_written_through(tmp_path, m
     assert dest.read_text(encoding="utf-8") == "new"
     assert victim.read_text(encoding="utf-8") == "untouched"
     assert os.path.islink(planted)
+
+
+def test_a_read_racing_a_publish_is_retried_on_windows(tmp_path, monkeypatch):
+    """Opening a file while os.replace renames over it gives EACCES on Windows."""
+    dest = tmp_path / "updates-cache.json"
+    dest.write_bytes(b'{"latest": "3.9.0"}')
+    real_read = fsio.Path.read_bytes
+    failures = []
+
+    def read_bytes(self):
+        if len(failures) < 2:
+            failures.append(self)
+            raise PermissionError(errno.EACCES, "Permission denied", str(self))
+        return real_read(self)
+
+    monkeypatch.setattr(fsio, "_WINDOWS", True)
+    monkeypatch.setattr(fsio, "_REPLACE_BACKOFF", (0, 0, 0))
+    monkeypatch.setattr(fsio.Path, "read_bytes", read_bytes)
+
+    assert fsio.read_published_bytes(dest) == b'{"latest": "3.9.0"}'
+    assert len(failures) == 2
+
+
+def test_a_denied_read_is_not_retried_off_windows(tmp_path, monkeypatch):
+    dest = tmp_path / "state.json"
+    dest.write_bytes(b"{}")
+    calls = []
+
+    def read_bytes(self):
+        calls.append(self)
+        raise PermissionError(errno.EACCES, "Permission denied", str(self))
+
+    monkeypatch.setattr(fsio, "_WINDOWS", False)
+    monkeypatch.setattr(fsio.Path, "read_bytes", read_bytes)
+
+    with pytest.raises(PermissionError):
+        fsio.read_published_bytes(dest)
+    assert len(calls) == 1
