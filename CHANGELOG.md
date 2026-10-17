@@ -68,9 +68,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   smart quotes and accented letters for good. Now a UTF-8 file with a few
   stray bytes (its valid UTF-8 characters outnumber them) keeps its text
   exactly, with only the stray bytes held as lone surrogates, so `café` stays
-  searchable; search results, exports and every MCP transport carry those
-  bytes intact. Any other file decodes as windows-1252, with every byte
-  mapped. A drawer whose source was not plain UTF-8 carries
+  searchable. Any other file decodes as windows-1252, with every byte mapped.
+  The palace stores every byte exactly. MCP responses show a stray byte as
+  U+FFFD, because some clients' JSON parsers reject the escape that would
+  carry it; `mempalace_get_drawer` with `include_source_bytes: true` returns
+  the drawer's exact source bytes as base64. Exports write the original
+  bytes, and MemPalace processes talking to each other (proxy and hub, the
+  daemon, peer sync) pass them exactly. A drawer whose source was not plain UTF-8 carries
   `source_encoding` (`utf-8-sig`, `utf-8+surrogateescape`,
   `utf-8-sig+surrogateescape` or `windows-1252`), and
   `fsio.encode_source(text, source_encoding)` gives the source bytes back.

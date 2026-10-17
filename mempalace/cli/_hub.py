@@ -6,7 +6,8 @@ if __name__ != "mempalace.cli":
 from ..hub_client import HUB_FORWARD_ENV as _HUB_FORWARD_ENV
 from ..hub_client import SEARCH_OVERRIDE_ENV_VARS as _SEARCH_OVERRIDE_ENV_VARS
 from ..hub_client import _forwarding_disabled as _hub_forward_disabled
-from ..stored_text import dumps_wire
+from ..hub_client import hub_request_headers
+from ..stored_text import dumps_internal
 
 _HUB_HEALTH_TIMEOUT_S = 0.75
 # A backfill mine over a large transcript tree can legitimately run for many
@@ -143,7 +144,7 @@ def _forward_search_to_hub(args, palace_path: str) -> bool:
         return False
 
     base_url = server_registry.client_base_url(info)
-    headers = {"Content-Type": "application/json"}
+    headers = hub_request_headers()
 
     try:
         health = urllib.request.Request(f"{base_url}/healthz", headers=headers)
@@ -163,7 +164,7 @@ def _forward_search_to_hub(args, palace_path: str) -> bool:
         if value:
             arguments[name] = value
 
-    body = dumps_wire(
+    body = dumps_internal(
         {
             "jsonrpc": "2.0",
             "id": 1,
@@ -273,7 +274,7 @@ def _forward_mine_to_hub(args, palace_path: str, *, include_ignored=None) -> boo
         return False
 
     base_url = server_registry.client_base_url(info)
-    headers = {"Content-Type": "application/json"}
+    headers = hub_request_headers()
 
     try:
         health = urllib.request.Request(f"{base_url}/healthz", headers=headers)

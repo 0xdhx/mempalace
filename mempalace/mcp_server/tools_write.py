@@ -1245,12 +1245,30 @@ def tool_sync(project_dir: str = None, wing: str = None, apply: bool = False):
             _invalidate_overview_caches()
 
 
-def tool_get_drawer(drawer_id: str):
+def _with_source_bytes(payload: dict) -> dict:
+    """Add the drawer's exact source bytes, base64, when it names an encoding.
+
+    A client shows a stray source byte as U+FFFD; these bytes are what the
+    source held for this drawer's text (newlines as read, in text mode).
+    """
+    import base64
+
+    from ..fsio import encode_source
+
+    encoding = payload.get("metadata", {}).get("source_encoding")
+    if encoding:
+        raw = encode_source(payload["content"], encoding)
+        payload["source_bytes_base64"] = base64.b64encode(raw).decode("ascii")
+    return payload
+
+
+def tool_get_drawer(drawer_id: str, include_source_bytes: bool = False):
     """Fetch a single logical drawer by ID."""
+    finish = _with_source_bytes if include_source_bytes else (lambda payload: payload)
     try:
         record = _sqlite_logical_drawer_record(drawer_id)
         if record is not None:
-            return _drawer_payload(record)
+            return finish(_drawer_payload(record))
     except Exception as e:
         return {"error": str(e)}
 
@@ -1262,7 +1280,7 @@ def tool_get_drawer(drawer_id: str):
         record = _collection_logical_drawer_record(col, drawer_id)
         if record is None:
             return {"error": f"Drawer not found: {drawer_id}"}
-        return _drawer_payload(record)
+        return finish(_drawer_payload(record))
     except Exception as e:
         return {"error": str(e)}
 

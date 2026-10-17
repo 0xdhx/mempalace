@@ -103,7 +103,12 @@ from ..backends.chroma import (  # noqa: E402
     register_before_system_cache_reset,
     reset_hnsw_capacity_cache,
 )
-from ..stored_text import decode_value, dumps_wire  # noqa: E402
+from ..stored_text import (  # noqa: E402
+    EXACT_WIRE_HEADER,
+    decode_value,
+    dumps_client,
+    dumps_internal,
+)
 from ..backends import BackendMismatchError, PalaceRef, detect_backend_for_path  # noqa: E402
 from ..backends.base import (  # noqa: E402
     DimensionMismatchError,

@@ -8,7 +8,7 @@ import os
 import urllib.request
 from typing import Mapping
 
-from .stored_text import dumps_wire
+from .stored_text import EXACT_WIRE_HEADER, dumps_internal
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,19 @@ def _forwarding_disabled() -> bool:
     }
 
 
+def hub_request_headers(token: str | None = None) -> dict[str, str]:
+    """Headers for a MemPalace process calling a hub's MCP endpoint.
+
+    Asks for the exact text, stray source bytes included (see
+    ``stored_text.dumps_internal``); the caller shows it to its own client
+    the client's way.
+    """
+    headers = {"Content-Type": "application/json", EXACT_WIRE_HEADER: "1"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
 def discover_hub(palace_path: str | None) -> tuple[str, dict[str, str]] | None:
     """Return the authenticated endpoint for another live hub, if available."""
 
@@ -109,14 +122,11 @@ def discover_hub(palace_path: str | None) -> tuple[str, dict[str, str]] | None:
         if not info or info.get("pid") == os.getpid():
             return None
         base_url = server_registry.client_base_url(info)
-        headers = {"Content-Type": "application/json"}
         token = server_registry.load_server_token(palace_path)
     except Exception:
         logger.debug("hub discovery failed", exc_info=True)
         return None
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-    return base_url, headers
+    return base_url, hub_request_headers(token)
 
 
 def forward_json_rpc(
@@ -128,7 +138,7 @@ def forward_json_rpc(
 ):
     """POST one JSON-RPC request to the hub; return ``None`` for an empty body."""
 
-    body = dumps_wire(request).encode("utf-8")
+    body = dumps_internal(request).encode("utf-8")
     http_request = urllib.request.Request(f"{base_url}/mcp", data=body, headers=dict(headers))
     with urllib.request.urlopen(http_request, timeout=timeout) as response:
         raw = response.read()

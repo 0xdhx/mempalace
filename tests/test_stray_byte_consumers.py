@@ -1,43 +1,52 @@
 """A drawer that holds a stray source byte survives every way out.
 
 ``fsio.decode_source`` keeps a stray byte in UTF-8 text as a lone surrogate.
-Wire bodies carry it as a ``\\udcXX`` JSON escape (``stored_text.dumps_wire``),
-exports write the original byte back, and services that only take valid
-Unicode get U+FFFD in its place.
+External MCP clients see it as U+FFFD (``stored_text.dumps_client``), and
+``mempalace_get_drawer(include_source_bytes=True)`` returns the exact bytes.
+Hops between MemPalace processes keep it exact as a ``\\udcXX`` escape
+(``stored_text.dumps_internal``). Exports write the original byte back, and
+services that only take valid Unicode get U+FFFD.
 """
 
+import base64
 import http.client
+import io
 import json
 import os
 import threading
 
 import pytest
 
-from mempalace.stored_text import dumps_wire
+from mempalace.stored_text import EXACT_WIRE_HEADER, dumps_client, dumps_internal
 
-STRAY = "café zebrafinch " * 10 + "stray\udcffbyte"
-STRAY_BYTES = ("café zebrafinch " * 10).encode("utf-8") + b"stray\xffbyte\n"
+STRAY_BYTES = ("café zebrafinch " * 10).encode("utf-8") + b"stray\xffbyte"
+STRAY_TEXT = "café zebrafinch " * 10 + "stray\udcffbyte"
 
 
-def test_dumps_wire_escapes_only_lone_surrogates():
-    text = dumps_wire({"text": "café \udcff", "n": [1]})
-    assert "café" in text
-    assert "\\udcff" in text
+def test_dumps_internal_keeps_a_lone_surrogate_exact():
+    text = dumps_internal({"text": "café \udcff", "n": [1]})
+    assert "café" in text and "\\udcff" in text
     text.encode("utf-8")
     assert json.loads(text) == {"text": "café \udcff", "n": [1]}
 
 
-def test_stdio_reply_keeps_a_lone_surrogate_as_an_escape():
+def test_dumps_client_shows_a_lone_surrogate_as_u_fffd():
+    inner = json.dumps({"t": "\udcff"}, ensure_ascii=False)
+    text = dumps_client({"text": "café \udcff", "inner": inner})
+    assert "\\ud" not in text.lower()
+    assert json.loads(text)["text"] == "café �"
+
+
+def test_stdio_reply_shows_a_lone_surrogate_as_u_fffd():
     from mempalace import mcp_server
 
     def dispatch(request):
-        content = [{"type": "text", "text": STRAY}]
+        content = [{"type": "text", "text": STRAY_TEXT}]
         return {"jsonrpc": "2.0", "id": request["id"], "result": {"content": content}}
 
     reply = mcp_server._stdio_reply('{"jsonrpc": "2.0", "id": 1, "method": "x"}', dispatch)
-    reply.encode("utf-8")
-    assert "\\udcff" in reply
-    assert json.loads(reply)["result"]["content"][0]["text"] == STRAY
+    assert "\\udcff" not in reply
+    assert json.loads(reply)["result"]["content"][0]["text"] == STRAY_TEXT.replace("\udcff", "�")
 
 
 def test_llm_request_body_sends_u_fffd_for_a_lone_surrogate():
@@ -45,6 +54,26 @@ def test_llm_request_body_sends_u_fffd_for_a_lone_surrogate():
 
     body = json_request_body({"messages": [{"content": "café \udcff"}]})
     assert json.loads(body.decode("utf-8")) == {"messages": [{"content": "café �"}]}
+
+
+def test_daemon_responses_keep_a_lone_surrogate_exact():
+    from mempalace.daemon import _json_response
+
+    class Handler:
+        wfile = io.BytesIO()
+
+        def send_response(self, status):
+            pass
+
+        def send_header(self, name, value):
+            pass
+
+        def end_headers(self):
+            pass
+
+    handler = Handler()
+    _json_response(handler, 200, {"result": STRAY_TEXT})
+    assert json.loads(handler.wfile.getvalue())["result"] == STRAY_TEXT
 
 
 @pytest.fixture
@@ -56,6 +85,27 @@ def stray_palace(tmp_path, palace_path):
     (src / "n.txt").write_bytes(STRAY_BYTES)
     miner.mine(str(src), palace_path, wing_override="proj", agent="t")
     return palace_path
+
+
+@pytest.fixture
+def stray_server(monkeypatch, config, kg, stray_palace):
+    from mempalace import mcp_server
+    from mempalace.palace import get_collection
+
+    monkeypatch.setattr(mcp_server, "_config", config)
+    monkeypatch.setattr(mcp_server, "_get_kg", lambda: kg)
+    drawer_id = get_collection(stray_palace).get()["ids"][0]
+    httpd = mcp_server._build_http_server("127.0.0.1", 0)
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    thread.start()
+    try:
+        yield httpd.server_address[1], drawer_id
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
 
 
 def test_export_writes_the_stray_byte_back(tmp_path, stray_palace):
@@ -72,7 +122,7 @@ def test_export_writes_the_stray_byte_back(tmp_path, stray_palace):
     assert b"stray\xffbyte" in written
 
 
-def _call(port, name, arguments):
+def _call(port, name, arguments, headers=None):
     body = json.dumps(
         {
             "jsonrpc": "2.0",
@@ -83,43 +133,97 @@ def _call(port, name, arguments):
     ).encode("utf-8")
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     try:
-        conn.request("POST", "/mcp", body, {"Content-Type": "application/json"})
+        conn.request("POST", "/mcp", body, {"Content-Type": "application/json", **(headers or {})})
         response = conn.getresponse()
         return response.status, response.read()
     finally:
         conn.close()
 
 
-def test_http_search_and_get_drawer_carry_a_stray_byte_drawer(
-    monkeypatch, config, kg, stray_palace
-):
+def _text(raw):
+    payload = json.loads(raw)
+    assert "error" not in payload, payload
+    return payload["result"]["content"][0]["text"]
+
+
+def test_http_search_and_get_drawer_show_u_fffd_to_a_client(stray_server):
+    port, drawer_id = stray_server
+    for name, arguments, holds_drawer in (
+        ("mempalace_search", {"query": "zebrafinch", "limit": 3}, True),
+        ("mempalace_search", {"query": "nomatchwordxyz", "limit": 3}, False),
+        ("mempalace_get_drawer", {"drawer_id": drawer_id}, True),
+    ):
+        status, raw = _call(port, name, arguments)
+        assert status == 200, (name, raw[:200])
+        assert b"\\udc" not in raw.lower()
+        if holds_drawer:
+            assert "stray�byte" in _text(raw)
+
+
+def test_http_answers_another_mempalace_process_exactly(stray_server):
+    port, drawer_id = stray_server
+    status, raw = _call(
+        port, "mempalace_get_drawer", {"drawer_id": drawer_id}, {EXACT_WIRE_HEADER: "1"}
+    )
+    assert status == 200
+    assert json.loads(_text(raw))["content"] == STRAY_TEXT
+
+
+def test_hub_client_round_trips_a_stray_byte_exactly(stray_server):
+    from mempalace.hub_client import forward_json_rpc, hub_request_headers
+
+    port, drawer_id = stray_server
+    response = forward_json_rpc(
+        f"http://127.0.0.1:{port}",
+        hub_request_headers(),
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "mempalace_get_drawer", "arguments": {"drawer_id": drawer_id}},
+        },
+    )
+    assert json.loads(response["result"]["content"][0]["text"])["content"] == STRAY_TEXT
+
+
+def test_get_drawer_returns_the_exact_source_bytes_on_request(stray_server):
+    port, drawer_id = stray_server
+    status, raw = _call(
+        port, "mempalace_get_drawer", {"drawer_id": drawer_id, "include_source_bytes": True}
+    )
+    assert status == 200
+    payload = json.loads(_text(raw))
+    assert payload["metadata"]["source_encoding"] == "utf-8+surrogateescape"
+    assert base64.b64decode(payload["source_bytes_base64"]) == STRAY_BYTES
+
+    status, raw = _call(port, "mempalace_get_drawer", {"drawer_id": drawer_id})
+    assert "source_bytes_base64" not in json.loads(_text(raw))
+
+
+def test_sync_routes_carry_a_stray_byte_exactly(monkeypatch, stray_server):
+    from mempalace import mcp_server
+
+    port, _ = stray_server
+    monkeypatch.setattr(mcp_server, "_mesh_peers_payload", lambda: {"note": "a\udcffb"})
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    try:
+        conn.request("GET", "/sync/peers")
+        raw = conn.getresponse().read()
+    finally:
+        conn.close()
+    assert json.loads(raw) == {"note": "a\udcffb"}
+
+
+def test_update_drawer_keeps_the_stray_byte_in_the_revision(monkeypatch, config, kg, stray_palace):
     from mempalace import mcp_server
     from mempalace.palace import get_collection
+    from mempalace.revisions import load_drawer_revisions
 
     monkeypatch.setattr(mcp_server, "_config", config)
     monkeypatch.setattr(mcp_server, "_get_kg", lambda: kg)
     drawer_id = get_collection(stray_palace).get()["ids"][0]
 
-    httpd = mcp_server._build_http_server("127.0.0.1", 0)
-    thread = threading.Thread(
-        target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
-    )
-    thread.start()
-    try:
-        port = httpd.server_address[1]
-        for name, arguments in (
-            ("mempalace_search", {"query": "zebrafinch", "limit": 3}),
-            ("mempalace_search", {"query": "nomatchwordxyz", "limit": 3}),
-            ("mempalace_get_drawer", {"drawer_id": drawer_id}),
-        ):
-            status, raw = _call(port, name, arguments)
-            assert status == 200, (name, raw[:200])
-            payload = json.loads(raw)
-            assert "error" not in payload, payload
-            assert "stray\udcffbyte" in payload["result"]["content"][0]["text"] or (
-                arguments.get("query") == "nomatchwordxyz"
-            )
-    finally:
-        httpd.shutdown()
-        httpd.server_close()
-        thread.join(timeout=5)
+    result = mcp_server.tool_update_drawer(drawer_id, content="rewritten notes")
+    assert result.get("success"), result
+    (revision,) = load_drawer_revisions(stray_palace, drawer_id)
+    assert revision["content"] == STRAY_TEXT

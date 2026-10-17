@@ -609,6 +609,14 @@ TOOLS = {
             "type": "object",
             "properties": {
                 "drawer_id": {"type": "string", "description": "ID of the drawer to fetch"},
+                "include_source_bytes": {
+                    "type": "boolean",
+                    "description": (
+                        "Also return `source_bytes_base64`: the drawer's exact source bytes, "
+                        "for a drawer whose metadata names a `source_encoding`. Responses "
+                        "show a byte that is not valid UTF-8 as U+FFFD; these bytes keep it."
+                    ),
+                },
             },
             "required": ["drawer_id"],
         },

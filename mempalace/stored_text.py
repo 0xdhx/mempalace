@@ -21,10 +21,15 @@ a backend compare stored form, so their operands go through
 :func:`encode_where` / :func:`encode_filter`; a filter evaluated in Python
 on decoded rows keeps the caller's values.
 
-Text that leaves the process goes through :func:`dumps_wire` when it is a
-JSON-RPC or HTTP body, so a lone surrogate travels as a ``\\udcXX`` escape,
-and through ``config.strip_lone_surrogates`` when a service only takes
-valid Unicode (an embedder, an LLM API).
+A lone surrogate (a stray source byte) leaves the process one of three ways.
+Between MemPalace processes (proxy to hub requests, daemon, peer sync, the
+revision log) :func:`dumps_internal` keeps it as an exact ``\\udcXX``
+escape. A response to an external MCP client goes through
+:func:`dumps_client`, which shows it as U+FFFD, because some clients' JSON
+parsers reject a lone-surrogate escape outright; the stored text keeps the
+byte, and ``mempalace_get_drawer(include_source_bytes=True)`` returns it.
+A service that only takes valid Unicode (an embedder, an LLM API) gets
+``config.strip_lone_surrogates``.
 """
 
 import json
@@ -231,12 +236,26 @@ def _surrogate_escape(match) -> str:
     return f"\\u{ord(match.group()):04x}"
 
 
-def dumps_wire(obj, **kwargs) -> str:
-    """JSON text for a wire: non-ASCII as written, lone surrogates escaped.
+# Sent by a MemPalace process calling the hub's MCP endpoint, so the hub
+# answers with :func:`dumps_internal` instead of :func:`dumps_client`.
+EXACT_WIRE_HEADER = "X-MemPalace-Exact"
 
-    A stray source byte is held as a lone surrogate, which no UTF-8 encoder
-    takes. As a ``\\udcXX`` escape the JSON encodes, and the client's parser
+
+def dumps_internal(obj, **kwargs) -> str:
+    """JSON for a hop between MemPalace processes, exact.
+
+    Non-ASCII stays as written and each lone surrogate becomes a ``\\udcXX``
+    escape, so the text encodes as UTF-8 and the reader's ``json.loads``
     gets the surrogate back.
     """
     text = json.dumps(obj, ensure_ascii=False, **kwargs)
     return _LONE_SURROGATE.sub(_surrogate_escape, text)
+
+
+def dumps_client(obj, **kwargs) -> str:
+    """JSON for an external MCP client: each lone surrogate shown as U+FFFD.
+
+    Some clients' JSON parsers reject a lone-surrogate escape and with it the
+    whole response. The display is lossy; the stored text is not.
+    """
+    return _LONE_SURROGATE.sub("�", json.dumps(obj, ensure_ascii=False, **kwargs))
