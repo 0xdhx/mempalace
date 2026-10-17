@@ -135,6 +135,25 @@ def _mempalace_python() -> str:
     return sys.executable
 
 
+# The children start in the user's project directory, which may be untrusted.
+# ``python -m`` would put that directory first on sys.path, so a project holding
+# mempalace/ or mempalace.py would run instead of the installed package. This
+# launcher drops the empty sys.path entry ``-c`` adds, leaving the working
+# directory itself (and every relative path) unchanged. Python 3.11+ honours
+# PYTHONSAFEPATH, which the hook wrappers export, and adds no entry at all.
+_SAFE_MAIN = (
+    "import sys\n"
+    "if sys.path and sys.path[0] == '': del sys.path[0]\n"
+    "import runpy\n"
+    "runpy.run_module('mempalace', run_name='__main__', alter_sys=True)\n"
+)
+
+
+def _mempalace_command(*args: str) -> list:
+    """Command line that runs ``mempalace <args>`` without importing from the cwd."""
+    return [_mempalace_python(), "-c", _SAFE_MAIN, *args]
+
+
 _RECENT_MSG_COUNT = 30  # how many recent user messages to summarize
 
 STOP_BLOCK_REASON = (
@@ -764,7 +783,7 @@ def _maybe_auto_ingest():
                     # Daemon accepted context — don't fall back (would double-mine).
                     _log(f"Daemon mine submission failed: {exc}")
                 continue
-            _spawn_mine([_mempalace_python(), "-m", "mempalace", "mine", mine_dir, "--mode", mode])
+            _spawn_mine(_mempalace_command("mine", mine_dir, "--mode", mode))
         except OSError:
             pass
         except Exception as exc:
@@ -817,15 +836,7 @@ def _mine_sync():
                 continue
             with open(log_path, "a") as log_f:
                 subprocess.run(
-                    [
-                        _mempalace_python(),
-                        "-m",
-                        "mempalace",
-                        "mine",
-                        mine_dir,
-                        "--mode",
-                        mode,
-                    ],
+                    _mempalace_command("mine", mine_dir, "--mode", mode),
                     stdout=log_f,
                     stderr=log_f,
                     timeout=60,
@@ -1263,19 +1274,7 @@ def _ingest_transcript(transcript_path: str):
         # Route through ``_spawn_mine`` so the per-target PID guard kicks
         # in here too — repeated Stop/PreCompact fires for the same
         # transcript should not stack up parallel ingest mines.
-        _spawn_mine(
-            [
-                _mempalace_python(),
-                "-m",
-                "mempalace",
-                "mine",
-                str(path),
-                "--mode",
-                "convos",
-                "--wing",
-                wing,
-            ]
-        )
+        _spawn_mine(_mempalace_command("mine", str(path), "--mode", "convos", "--wing", wing))
         _log(f"Transcript ingest started: {path.name} -> {wing}")
     except OSError:
         pass
