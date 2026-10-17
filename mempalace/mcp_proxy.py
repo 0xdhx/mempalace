@@ -36,7 +36,6 @@ from .hub_client import (
     search_settings_overridden,
 )
 from .stored_text import dumps_client, dumps_internal
-
 from .update_awareness import cached_update_status, schedule_update_check
 
 logger = logging.getLogger(__name__)

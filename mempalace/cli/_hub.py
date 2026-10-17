@@ -3,9 +3,9 @@ if __name__ != "mempalace.cli":
     raise ImportError(f"{__name__} is an implementation fragment; import mempalace.cli")
 
 
-from ..hub_client import HUB_FORWARD_ENV as _HUB_FORWARD_ENV
-from ..hub_client import _forwarding_disabled as _hub_forward_disabled
 from ..hub_client import (
+    HUB_FORWARD_ENV as _HUB_FORWARD_ENV,
+    _forwarding_disabled as _hub_forward_disabled,
     hub_request_headers,
     search_fingerprint_matches,
     search_settings_overridden,

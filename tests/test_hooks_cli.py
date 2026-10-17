@@ -8,13 +8,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
-from hypothesis import given
-from hypothesis import strategies as st
+from hypothesis import given, strategies as st
 
 import mempalace.hooks_cli as hooks_cli_mod
 from mempalace.config import sanitize_name
 from mempalace.hooks_cli import (
     SAVE_INTERVAL,
+    _claim_mine_slot,
     _count_human_messages,
     _diary_agent_for_harness,
     _extract_recent_messages,
@@ -27,18 +27,17 @@ from mempalace.hooks_cli import (
     _mine_already_running,
     _mine_sync,
     _parse_harness_input,
+    _pid_file_for_cmd,
     _safe_wing_slug,
     _sanitize_session_id,
     _save_diary_direct,
     _validate_transcript_path,
     _wing_from_transcript_path,
-    hook_stop,
-    hook_session_start,
-    hook_session_end,
     hook_precompact,
+    hook_session_end,
+    hook_session_start,
+    hook_stop,
     run_hook,
-    _claim_mine_slot,
-    _pid_file_for_cmd,
 )
 
 

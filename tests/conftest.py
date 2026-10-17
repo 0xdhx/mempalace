@@ -10,9 +10,9 @@ mempalace imports — so that module-level initialisations (e.g.
 instead of the real user profile.
 """
 
-import os
 import hashlib
 import math
+import os
 import re
 import shutil
 import tempfile
@@ -99,8 +99,9 @@ class _StableTestEmbeddingFunction:
 # don't re-download the 79 MB model on every run. The HOME redirect above
 # would otherwise point ONNXMiniLM_L6_V2.DOWNLOAD_PATH at the empty temp dir.
 try:
-    from pathlib import Path  # noqa: E402
-    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (  # noqa: E402
+    from pathlib import Path
+
+    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import (
         ONNXMiniLM_L6_V2,
     )
 
@@ -129,10 +130,11 @@ def _stable_embedding_function_for_tests(request, monkeypatch):
 
     ef = _StableTestEmbeddingFunction()
 
+    from chromadb.api.types import DefaultEmbeddingFunction
+
     import mempalace.backends.chroma as chroma_mod
     import mempalace.backends.embedding_wrapper as embedding_wrapper
     import mempalace.embedding as embedding_mod
-    from chromadb.api.types import DefaultEmbeddingFunction
 
     monkeypatch.setattr(DefaultEmbeddingFunction, "__call__", lambda self, input: ef(input=input))
     monkeypatch.setattr(

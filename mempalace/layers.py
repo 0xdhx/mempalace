@@ -22,8 +22,8 @@ import os
 import sys
 import threading
 import time
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
 
 from .config import MempalaceConfig
 from .metadata_types import is_bookkeeping

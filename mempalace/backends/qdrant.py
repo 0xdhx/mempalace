@@ -18,9 +18,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Optional
-from urllib import error as urlerror
-from urllib import parse as urlparse
-from urllib import request as urlrequest
+from urllib import error as urlerror, parse as urlparse, request as urlrequest
 
 import numpy as np
 

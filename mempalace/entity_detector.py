@@ -32,16 +32,15 @@ Usage:
 
 from __future__ import annotations
 
-import json
-import re
-import os
 import functools
-from pathlib import Path
+import json
+import os
+import re
 from collections import defaultdict
+from pathlib import Path
 
 from mempalace.i18n import get_entity_patterns
 from mempalace.project_config import MEMPALACE_PROJECT_FILES
-
 
 # ==================== COCA CONTENT-WORD FILTER (Tier 2 linguistics cleanup) ====================
 #

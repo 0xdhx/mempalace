@@ -63,8 +63,8 @@ def cmd_mine(args):
         EmbeddingFunctionUnavailableError,
         UnknownEmbeddingModelError,
     )
-    from ..palace import MineAlreadyRunning, MineFileErrors, MineValidationError
     from ..media import MediaAssetError, MediaAssetSetupError
+    from ..palace import MineAlreadyRunning, MineFileErrors, MineValidationError
 
     model_errors = (
         UnknownEmbeddingModelError,
@@ -307,16 +307,16 @@ def mine_source_adapter(
     import logging
 
     from ..knowledge_graph import KnowledgeGraph
+    from ..media import MediaAsset, MediaAssetError, MediaAssetSetupError, store_media_asset
     from ..palace import get_collection, mine_palace_lock
     from ..sources import (
         DrawerRecord,
         PalaceContext,
-        SourceRef,
         SourceItemMetadata,
+        SourceRef,
         get_adapter,
         resolve_adapter_for_source,
     )
-    from ..media import MediaAsset, MediaAssetError, MediaAssetSetupError, store_media_asset
 
     logger = logging.getLogger(__name__)
 

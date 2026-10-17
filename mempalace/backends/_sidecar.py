@@ -14,8 +14,10 @@ import logging
 import os
 from typing import Optional
 
-from ..fsio import atomic_write_json as _atomic_write_json
-from ..fsio import read_json_for_update as _read_json_for_update
+from ..fsio import (
+    atomic_write_json as _atomic_write_json,
+    read_json_for_update as _read_json_for_update,
+)
 
 EMBEDDER_SIDECAR_FILENAME = "mempalace_embedder.json"
 

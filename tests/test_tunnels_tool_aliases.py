@@ -11,9 +11,7 @@ from itertools import permutations
 
 import pytest
 
-from mempalace import hallways as hw
-from mempalace import palace_graph as pg
-from mempalace import palace_audit as audit
+from mempalace import hallways as hw, palace_audit as audit, palace_graph as pg
 from mempalace.config import MempalaceConfig
 from mempalace.tunnels_tool import (
     apply_proposal,
@@ -22,7 +20,6 @@ from mempalace.tunnels_tool import (
     prune_tunnels,
     save_proposal,
 )
-
 
 CASES = [
     ("CodeRouter.py", "src/models/CodeRouter.py", "tests/fixtures/CodeRouter.py"),

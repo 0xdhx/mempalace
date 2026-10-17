@@ -52,8 +52,7 @@ def test_graph_reads_change_no_drawer_rows(tmp_path, monkeypatch):
     # every open, and the pre-open safety fixes may stamp collection config,
     # so the file bytes can't be compared. The graph read must not pin HNSW
     # threads, and no drawer or drawer-metadata row may move.
-    from mempalace.backends import chroma as chroma_backend
-    from mempalace.backends import get_backend
+    from mempalace.backends import chroma as chroma_backend, get_backend
     from mempalace.palace import get_collection
 
     palace = tmp_path / "palace"

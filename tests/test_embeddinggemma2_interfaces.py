@@ -71,6 +71,7 @@ def test_mcp_search_forwards_only_nondefault_controls_and_serializes_asset_hit(
     monkeypatch, config, kg
 ):
     from _mcp_server_helpers import _patch_mcp_server
+
     from mempalace import mcp_server
 
     _patch_mcp_server(monkeypatch, config, kg)
@@ -147,6 +148,7 @@ def test_mcp_search_rejects_invalid_controls_before_search(
     monkeypatch, config, kg, arguments, message
 ):
     from _mcp_server_helpers import _patch_mcp_server
+
     from mempalace import mcp_server
 
     _patch_mcp_server(monkeypatch, config, kg)

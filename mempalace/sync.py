@@ -29,7 +29,6 @@ from .palace import (
 )
 from .source_identity import directory_identity
 
-
 logger = logging.getLogger(__name__)
 _BATCH = 1000
 

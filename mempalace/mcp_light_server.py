@@ -28,17 +28,17 @@ except (OSError, AttributeError):
     pass
 sys.stdout = sys.stderr
 
-from .version import __version__  # noqa: E402
-from .search_util import _cosine_scale_distance  # noqa: E402
+import inspect  # noqa: E402
+
+from . import mcp_server  # noqa: E402
 from .query_parser import (  # noqa: E402
     QueryParseError,
     parse_coordinate_input,
     parse_exec_input,
     parse_query_input,
 )
-from . import mcp_server  # noqa: E402
-
-import inspect  # noqa: E402
+from .search_util import _cosine_scale_distance  # noqa: E402
+from .version import __version__  # noqa: E402
 
 logger = logging.getLogger("mempalace_mcp_light")
 

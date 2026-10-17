@@ -24,20 +24,18 @@ from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib import error as urlerror
-from urllib import request as urlrequest
+from urllib import error as urlerror, request as urlrequest
 from urllib.parse import parse_qs, urlparse
 
-from ._proc import kernel32 as _kernel32
-from ._proc import pid_alive as _pid_alive
+from ._proc import kernel32 as _kernel32, pid_alive as _pid_alive
 from .config import MempalaceConfig
-from .stored_text import dumps_internal
 from .palace import (
     MineAlreadyRunning,
     backend_requires_single_writer,
     mine_palace_lock,
     resolve_backend_name,
 )
+from .stored_text import dumps_internal
 
 HOST = "127.0.0.1"
 STATE_ROOT_ENV = "MEMPALACE_DAEMON_STATE_ROOT"

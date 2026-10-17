@@ -23,7 +23,6 @@ from mempalace.write_routing import (
     choose_write_route,
 )
 
-
 _SERVICE_ENV_KEYS = (
     "MEMPALACE_PALACE_PATH",
     "MEMPAL_PALACE_PATH",

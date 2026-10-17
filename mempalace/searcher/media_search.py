@@ -35,8 +35,8 @@ def search_with_media(
     default search retains its existing hybrid ranking and result schema.
     Missing asset files remain searchable references with ``available=False``.
     """
-    from ..palace import ASSETS_COLLECTION_NAME
     from ..embedding import embedding_section, get_embedding_function
+    from ..palace import ASSETS_COLLECTION_NAME
     from . import (
         _distance_to_similarity,
         _result_date_fields,

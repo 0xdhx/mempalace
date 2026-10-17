@@ -8,17 +8,19 @@ Normalizes format, chunks by exchange pair (Q+A = one unit), files to palace.
 Same palace as project mining. Different ingest strategy.
 """
 
-import os
-import sys
 import json
 import logging
+import os
 import stat
-from pathlib import Path
-from datetime import datetime
+import sys
 from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from .backends import PalaceNotFoundError
+from .entities import entities_metadata
+from .fsio import encoding_metadata, open_source_file
 from .ids import (
     ID_RECIPE,
     make_convo_drawer_id,
@@ -30,9 +32,6 @@ from .normalize import (
     normalize_conversations_with_mtime,
     recording_transforms,
 )
-from .source_identity import identity_metadata, source_directory_identity
-from .entities import entities_metadata
-from .fsio import encoding_metadata, open_source_file
 from .palace import (
     CHUNKER_VERSIONS,
     CONVO_CHUNKER_VERSION,
@@ -52,6 +51,7 @@ from .palace import (
     raise_if_files_failed,
     write_file_drawers,
 )
+from .source_identity import identity_metadata, source_directory_identity
 
 logger = logging.getLogger("mempalace_mcp")
 

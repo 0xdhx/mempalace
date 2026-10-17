@@ -1,16 +1,15 @@
 """MCP server tests — status, taxonomy, metadata, list filters."""
 
-from datetime import datetime
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from datetime import datetime
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
 from _mcp_server_helpers import (
     _get_collection,
     _patch_mcp_server,
@@ -900,6 +899,7 @@ class TestMetadataFacets:
 
     def test_tool_get_taxonomy_uses_metadata_facets(self, monkeypatch):
         from unittest.mock import call
+
         import mempalace.mcp_server as mcp
 
         monkeypatch.setattr(mcp, "_sqlite_taxonomy", lambda: None)

@@ -18,7 +18,7 @@ def cmd_search(args):
     if _search_args_forwardable(args) and _forward_search_to_hub(args, palace_path):
         return
 
-    from ..searcher import search, SearchError
+    from ..searcher import SearchError, search
 
     experimental = {}
     if getattr(args, "include_media", False):
@@ -56,8 +56,9 @@ def cmd_wakeup(args):
 
 def cmd_split(args):
     """Split concatenated transcript mega-files into per-session files."""
-    from ..split_mega_files import main as split_main
     import sys
+
+    from ..split_mega_files import main as split_main
 
     # Rebuild argv for split_mega_files argparse
     # Expand ~ and resolve to absolute path so split_mega_files sees a real path

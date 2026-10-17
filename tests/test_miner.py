@@ -2094,8 +2094,9 @@ def _make_minable_project(project_root: Path, n_files: int = 3) -> None:
 
 def test_mine_keyboard_interrupt_prints_summary_and_exits_130(tmp_path, capsys):
     """A KeyboardInterrupt mid-loop produces the clean summary + exit 130."""
-    import pytest
     from unittest.mock import patch
+
+    import pytest
 
     project_root = tmp_path / "proj"
     project_root.mkdir()
@@ -2128,8 +2129,9 @@ def test_mine_keyboard_interrupt_quotes_path_with_spaces_in_resume_hint(tmp_path
     spaces / metacharacters yields a copy-paste-safe `mempalace mine ...`
     command. Otherwise users on a path like "My Project" hit a broken
     invocation when they re-run after Ctrl-C."""
-    import pytest
     from unittest.mock import patch
+
+    import pytest
 
     project_root = tmp_path / "my project"
     project_root.mkdir()
@@ -2468,8 +2470,9 @@ def test_mine_arbitrary_exception_prints_summary_and_reraises(tmp_path, capsys):
     banner before propagating, so users don't see a silent exit-0 with no
     completion message (#1296 Failure 2). Re-raise preserves the traceback
     and yields a non-zero exit code."""
-    import pytest
     from unittest.mock import patch
+
+    import pytest
 
     project_root = tmp_path / "proj"
     project_root.mkdir()
@@ -2498,8 +2501,9 @@ def test_mine_arbitrary_exception_prints_summary_and_reraises(tmp_path, capsys):
 
 def test_mine_cleans_up_pid_file_on_interrupt(tmp_path):
     """Our own per-target PID slot is removed in the finally clause."""
-    import pytest
     from unittest.mock import patch
+
+    import pytest
 
     project_root = tmp_path / "proj"
     project_root.mkdir()
@@ -3200,8 +3204,7 @@ def test_process_file_records_the_directory_it_mined_from(tmp_path, monkeypatch)
     from, which is the directory ``sync`` asks about later. Without it, sync
     cannot tell a witness in that directory from a witness on a volume
     mounted there since (#2320)."""
-    from mempalace import miner
-    from mempalace import source_identity as si
+    from mempalace import miner, source_identity as si
 
     class FakeCol:
         def __init__(self):
@@ -3260,8 +3263,7 @@ def test_recording_the_directory_writes_nothing_into_the_project(tmp_path):
     and the real one has to come back with the identity actually recorded, or
     this would pass against a tree where nothing takes it.
     """
-    from mempalace import miner
-    from mempalace import source_identity as si
+    from mempalace import miner, source_identity as si
 
     project = tmp_path / "proj"
     project.mkdir()

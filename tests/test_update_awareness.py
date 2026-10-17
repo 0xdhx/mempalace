@@ -17,7 +17,6 @@ from mempalace.update_awareness import (
     schedule_update_check,
 )
 
-
 NOW = datetime(2026, 8, 28, 12, 0, tzinfo=timezone.utc)
 
 

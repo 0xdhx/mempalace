@@ -1,13 +1,12 @@
 """MCP server tests — search tool and date-window filters."""
 
 import json
-from types import SimpleNamespace
 import sys
 import warnings
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-
 from _mcp_server_helpers import (
     _patch_mcp_server,
 )

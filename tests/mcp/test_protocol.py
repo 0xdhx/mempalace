@@ -7,7 +7,6 @@ import sys
 from unittest.mock import MagicMock
 
 import pytest
-
 from _chroma_palace_helper import make_minimal_chroma_sqlite
 from _mcp_server_helpers import (
     _get_collection,
@@ -651,7 +650,7 @@ class TestHandleRequest:
         assert resp["result"]["protocolVersion"] == SUPPORTED_PROTOCOL_VERSIONS[0]
 
     def test_initialize_missing_version_uses_oldest(self):
-        from mempalace.mcp_server import handle_request, SUPPORTED_PROTOCOL_VERSIONS
+        from mempalace.mcp_server import SUPPORTED_PROTOCOL_VERSIONS, handle_request
 
         resp = handle_request({"method": "initialize", "id": 1, "params": {}})
         assert resp["result"]["protocolVersion"] == SUPPORTED_PROTOCOL_VERSIONS[-1]
@@ -688,8 +687,7 @@ class TestHandleRequest:
         must not advertise the hint (omitted means the MCP default, false).
         The same rule covers every tool --read-only refuses.
         """
-        from mempalace.mcp_server import TOOLS, _READ_ONLY_REFUSED_TOOLS, handle_request
-
+        from mempalace.mcp_server import _READ_ONLY_REFUSED_TOOLS, TOOLS, handle_request
         from mempalace.service import classify_tool
 
         expected = {name for name in TOOLS if classify_tool(name) == "read"}
@@ -894,6 +892,7 @@ class TestCacheInvalidation:
         """When chroma.sqlite3 disappears, a cached collection should be invalidated."""
         _patch_mcp_server(monkeypatch, config, kg)
         import os
+
         from mempalace import mcp_server
 
         _client, _col = _get_collection(palace_path, create=True)
@@ -1612,6 +1611,7 @@ class TestStructuredErrors:
     def test_cache_thread_safe(self, tmp_path, monkeypatch):
         """Concurrent _get_kg() for the same path yields one instance."""
         import concurrent.futures
+
         from mempalace import mcp_server
 
         monkeypatch.setattr(mcp_server, "_kg_by_path", {})
@@ -1848,6 +1848,7 @@ class TestStructuredErrors:
         longer holds it under the stale key.
         """
         import sqlite3 as _sqlite3
+
         from mempalace import mcp_server
 
         class _ClosedKG:

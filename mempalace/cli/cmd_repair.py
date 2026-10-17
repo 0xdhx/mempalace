@@ -214,8 +214,8 @@ def cmd_repair(args):
         raise SystemExit(2)
 
     from ..backends.chroma import ChromaBackend
-    from ..palace import MineAlreadyRunning, mine_palace_lock
     from ..migrate import confirm_destructive_action, contains_palace_database
+    from ..palace import MineAlreadyRunning, mine_palace_lock
     from ..repair import (
         _preview_legacy_repair,
         index_read_recovery_guidance,

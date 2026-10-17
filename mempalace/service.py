@@ -9,8 +9,8 @@ caller's terminal.
 from __future__ import annotations
 
 import contextlib
-import io
 import functools
+import io
 import os
 import sys
 from typing import Any

@@ -864,7 +864,7 @@ class TestStdioProxy:
             hub.stop()
 
     def test_dynamic_proxy_status_adds_local_client_update_state(self, proxied_palace, monkeypatch):
-        from mempalace import mcp_server, mcp_proxy
+        from mempalace import mcp_proxy, mcp_server
 
         hub = _FakeHub(mine_result={"updates": {"server": {"enabled": True, "installed": "3.9.0"}}})
         try:

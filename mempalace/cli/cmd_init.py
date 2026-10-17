@@ -6,6 +6,7 @@ if __name__ != "mempalace.cli":
 def cmd_init(args):
     import json
     from pathlib import Path
+
     from ..entity_detector import confirm_entities
     from ..project_scanner import discover_entities
     from ..room_detector_local import detect_rooms_local

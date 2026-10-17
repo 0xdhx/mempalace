@@ -574,7 +574,7 @@ class TestTunnelFunctions:
 
     def test_tunnel_functions_importable(self):
         """find_tunnels, traverse, graph_stats should be importable."""
-        from mempalace.palace_graph import find_tunnels, traverse, graph_stats
+        from mempalace.palace_graph import find_tunnels, graph_stats, traverse
 
         assert callable(find_tunnels)
         assert callable(traverse)
