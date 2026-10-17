@@ -20,6 +20,7 @@ which backends honour that.
 
 import os
 import sys
+import time
 from pathlib import Path
 from collections import defaultdict
 
@@ -75,6 +76,28 @@ def _read_open_failure(exc: Exception) -> str:
             "stop that process or wait for it to finish."
         )
     return "No palace found. Run: mempalace mine <dir>"
+
+
+_READ_ATTEMPTS = 3
+_READ_RETRY_DELAY = 0.2
+
+
+def _read_with_retry(read):
+    """``read()``, retried briefly when it fails, then re-raised.
+
+    A missing capability is not retried; it will not appear on a second try.
+    """
+    from .backends.base import UnsupportedCapabilityError
+
+    for attempt in range(_READ_ATTEMPTS):
+        try:
+            return read()
+        except (NotImplementedError, TypeError, UnsupportedCapabilityError):
+            raise
+        except Exception:
+            if attempt == _READ_ATTEMPTS - 1:
+                raise
+            time.sleep(_READ_RETRY_DELAY * (attempt + 1))
 
 
 # ---------------------------------------------------------------------------
@@ -149,22 +172,27 @@ class Layer1:
         in ``BaseCollection``. That default is what this method used to do
         inline, so backends without pushdown behave exactly as before.
 
-        Third-party collections predating ``get_recent`` (or any backend error)
-        degrade to the inline paged scan below rather than failing wake-up.
+        Third-party collections predating ``get_recent``, or a ``get_recent``
+        that keeps failing, degrade to the inline paged scan below. Each read
+        is retried briefly (a writer can hold the palace for a moment), and a
+        scan that still fails raises: a palace that cannot be read is not an
+        empty one, and a scan cut short is not the whole window.
         """
         where = {"wing": self.wing} if self.wing else None
         getter = getattr(col, "get_recent", None)
         if getter is not None:
             try:
-                result = getter(
-                    limit=self.MAX_SCAN,
-                    where=where,
-                    order_field="filed_at",
-                    include=["documents", "metadatas"],
+                result = _read_with_retry(
+                    lambda: getter(
+                        limit=self.MAX_SCAN,
+                        where=where,
+                        order_field="filed_at",
+                        include=["documents", "metadatas"],
+                    )
                 )
                 return list(result.documents or []), list(result.metadatas or [])
             except Exception:
-                pass  # capability missing or backend hiccup — page it manually
+                pass  # capability missing or backend error — try the paged scan
 
         # Fetch in batches to avoid SQLite variable limit (~999)
         _BATCH = 500
@@ -174,10 +202,7 @@ class Layer1:
             kwargs = {"include": ["documents", "metadatas"], "limit": _BATCH, "offset": offset}
             if where:
                 kwargs["where"] = where
-            try:
-                batch = col.get(**kwargs)
-            except Exception:
-                break
+            batch = _read_with_retry(lambda: col.get(**kwargs))
             batch_docs = batch.get("documents", [])
             batch_metas = batch.get("metadatas", [])
             if not batch_docs:
@@ -197,7 +222,13 @@ class Layer1:
             message = _read_open_failure(exc)
             return message if message.startswith("## ") else f"## L1 — {message}"
 
-        docs, metas = self._fetch_candidates(col)
+        try:
+            docs, metas = self._fetch_candidates(col)
+        except Exception as exc:
+            return (
+                f"## L1 — Palace could not be read right now ({type(exc).__name__}); "
+                "wake-up skipped its recent memories. Try again in a moment."
+            )
 
         if not docs:
             return "## L1 — No memories yet."

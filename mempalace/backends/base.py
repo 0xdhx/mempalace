@@ -808,6 +808,10 @@ class BaseCollection(ABC):
     ) -> None:
         """Default non-atomic update: get + merge + upsert.
 
+        Ids that do not exist are skipped, as on every built-in backend; an
+        update never creates a record. A record's stored embedding is kept
+        when the caller passes none and the backend returns one.
+
         Backends advertising ``supports_update`` MUST override with an atomic
         single-round-trip implementation.
         """
@@ -823,25 +827,37 @@ class BaseCollection(ABC):
             if value is not None and len(value) != n:
                 raise ValueError(f"{label} length {len(value)} does not match ids length {n}")
 
-        existing = self.get(ids=ids, include=["documents", "metadatas"])
+        existing = self.get(ids=list(ids), include=["documents", "metadatas", "embeddings"])
+        stored_embeddings = existing.embeddings
         by_id = {
-            rid: (existing.documents[i], existing.metadatas[i])
+            rid: (
+                existing.documents[i],
+                existing.metadatas[i],
+                stored_embeddings[i] if stored_embeddings is not None else None,
+            )
             for i, rid in enumerate(existing.ids)
         }
-        merged_docs: list[str] = []
-        merged_metas: list[dict] = []
+        out_ids, out_docs, out_metas, out_embeddings = [], [], [], []
         for i, rid in enumerate(ids):
-            prev_doc, prev_meta = by_id.get(rid, ("", {}))
-            merged_docs.append(documents[i] if documents is not None else prev_doc)
+            if rid not in by_id:
+                continue
+            prev_doc, prev_meta, prev_embedding = by_id[rid]
+            out_ids.append(rid)
+            out_docs.append(documents[i] if documents is not None else prev_doc)
             new_meta = dict(prev_meta or {})
             if metadatas is not None:
                 new_meta.update(metadatas[i] or {})
-            merged_metas.append(new_meta)
+            out_metas.append(new_meta)
+            out_embeddings.append(embeddings[i] if embeddings is not None else prev_embedding)
+        if not out_ids:
+            return
+        if any(vector is None for vector in out_embeddings):
+            out_embeddings = None
         self.upsert(
-            documents=merged_docs,
-            ids=list(ids),
-            metadatas=merged_metas,
-            embeddings=embeddings,
+            documents=out_docs,
+            ids=out_ids,
+            metadatas=out_metas,
+            embeddings=out_embeddings,
         )
 
 

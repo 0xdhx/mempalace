@@ -93,6 +93,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   now read distances on the cosine scale, so palaces using `l2` or `ip` rank and
   report the same way as cosine ones. Search responses name the raw distance's
   scale in `distance_metric`.
+- **`wake-up` no longer says "No memories yet" when it could not read the
+  palace.** A recent-memories read that failed, for example while a mine held
+  the database, was swallowed and the wake-up reported an empty palace; a scan
+  that failed part-way showed whatever it had read as the whole window. Each
+  read is now retried briefly, and one that still fails says the palace could
+  not be read right now.
+- A backend's `update` never creates a record for an id that does not exist.
+  The built-in backends already skipped missing ids; the default that
+  third-party backends inherit wrote them as empty records.
 
 ---
 

@@ -7,7 +7,7 @@ under their own fake/live client in ``test_qdrant_backend.py``.
 
 import pytest
 
-from _backend_conformance import assert_partition_isolation
+from _backend_conformance import assert_partition_isolation, assert_update_skips_missing_ids
 
 from mempalace.backends import PalaceRef
 from mempalace.backends.chroma import ChromaBackend
@@ -34,6 +34,34 @@ def test_cross_palace_isolation(backend_cls, tmp_path):
                 backend.get_collection(palace=ref, collection_name="mempalace_drawers", create=True)
             )
         assert_partition_isolation(backend, cols[0], cols[1])
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize("backend_cls", _LOCAL_BACKENDS)
+def test_update_skips_missing_ids(backend_cls, tmp_path):
+    """``update`` never creates a record for an id that does not exist."""
+    backend = backend_cls()
+    try:
+        ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+        col = backend.get_collection(palace=ref, collection_name="mempalace_drawers", create=True)
+        assert_update_skips_missing_ids(backend, col)
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize("backend_cls", _LOCAL_BACKENDS)
+def test_default_update_skips_missing_ids(backend_cls, tmp_path, monkeypatch):
+    """The ``BaseCollection.update`` default, which pgvector, qdrant, milvus and
+    third-party backends inherit, holds the same contract as the overrides."""
+    from mempalace.backends.base import BaseCollection
+
+    backend = backend_cls()
+    try:
+        ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+        col = backend.get_collection(palace=ref, collection_name="mempalace_drawers", create=True)
+        monkeypatch.setattr(type(col), "update", BaseCollection.update)
+        assert_update_skips_missing_ids(backend, col)
     finally:
         backend.close()
 

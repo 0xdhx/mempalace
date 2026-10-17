@@ -7,7 +7,7 @@ from hashlib import sha256
 
 import pytest
 
-from _backend_conformance import assert_partition_isolation
+from _backend_conformance import assert_partition_isolation, assert_update_skips_missing_ids
 
 from mempalace.backends import (
     BackendError,
@@ -378,6 +378,13 @@ def test_pgvector_cross_palace_isolation_conformance(tmp_path, fake_pgvector):
     # Same backend + same DSN → same client instance, distinct tables.
     assert cols[0]._table != cols[1]._table
     assert_partition_isolation(backend, cols[0], cols[1], embedding=[1.0, 0.0])
+
+
+def test_pgvector_update_skips_missing_ids_conformance(tmp_path, fake_pgvector):
+    backend = PgVectorBackend()
+    ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    col = backend.get_collection(palace=ref, collection_name="drawers", create=True)
+    assert_update_skips_missing_ids(backend, col, embedding=[1.0, 0.0])
 
 
 def test_pgvector_namespace_isolation_conformance(tmp_path, fake_pgvector):

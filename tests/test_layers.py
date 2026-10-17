@@ -236,11 +236,14 @@ def test_layer1_breaks_importance_ties_by_filed_at_recency():
     assert result.index("middle memory") < result.index("oldest memory")
 
 
-def test_layer1_batch_exception_breaks():
-    """If col.get raises on a batch, loop breaks gracefully."""
+def test_layer1_scan_cut_short_reports_the_read_error(monkeypatch):
+    """A page that keeps failing is reported, not passed off as the whole window."""
+    monkeypatch.setattr("mempalace.layers._READ_RETRY_DELAY", 0)
     mock_col = _mock_legacy_collection()
     mock_col.get.side_effect = [
-        {"documents": ["doc1"], "metadatas": [{"room": "r"}]},
+        {"documents": ["doc1"] * 500, "metadatas": [{"room": "r"}] * 500},
+        RuntimeError("batch error"),
+        RuntimeError("batch error"),
         RuntimeError("batch error"),
     ]
     with (
@@ -248,10 +251,57 @@ def test_layer1_batch_exception_breaks():
         patch("mempalace.layers._get_collection", return_value=mock_col),
     ):
         mock_cfg.return_value.palace_path = "/fake"
-        layer = Layer1(palace_path="/fake")
-        result = layer.generate()
+        result = Layer1(palace_path="/fake").generate()
 
-    assert "ESSENTIAL STORY" in result
+    assert "could not be read right now (RuntimeError)" in result
+    assert "ESSENTIAL STORY" not in result
+
+
+def test_layer1_unreadable_palace_is_not_reported_empty(monkeypatch):
+    """A palace a writer is holding is not 'No memories yet'."""
+    import sqlite3
+
+    monkeypatch.setattr("mempalace.layers._READ_RETRY_DELAY", 0)
+    mock_col = MagicMock()
+    mock_col.get_recent.side_effect = sqlite3.OperationalError("database is locked")
+    mock_col.get.side_effect = sqlite3.OperationalError("database is locked")
+    with (
+        patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+        patch("mempalace.layers._get_collection", return_value=mock_col),
+    ):
+        mock_cfg.return_value.palace_path = "/fake"
+        result = Layer1(palace_path="/fake").generate()
+
+    assert "No memories" not in result
+    assert "could not be read right now (OperationalError)" in result
+    assert mock_col.get_recent.call_count == 3
+    assert mock_col.get.call_count == 3
+
+
+def test_layer1_retries_a_read_the_palace_was_not_ready_for(monkeypatch):
+    """A read that fails once while the palace is busy succeeds on the retry."""
+    import sqlite3
+
+    monkeypatch.setattr("mempalace.layers._READ_RETRY_DELAY", 0)
+    mock_col = MagicMock()
+    mock_col.get_recent.side_effect = [
+        sqlite3.OperationalError("database is locked"),
+        GetResult(
+            ids=["a"],
+            documents=["The memory filed while the reader waited."],
+            metadatas=[{"room": "r"}],
+        ),
+    ]
+    mock_col.get.side_effect = sqlite3.OperationalError("database is locked")
+    with (
+        patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+        patch("mempalace.layers._get_collection", return_value=mock_col),
+    ):
+        mock_cfg.return_value.palace_path = "/fake"
+        result = Layer1(palace_path="/fake").generate()
+
+    assert "The memory filed while the reader waited." in result
+    mock_col.get.assert_not_called()
 
 
 # ── Layer1 — recency fetch (capable backend vs scan fallback) ───────────
@@ -339,8 +389,9 @@ def test_layer1_falls_back_to_scan_when_capability_missing():
     assert mock_col.get.called
 
 
-def test_layer1_falls_back_to_scan_when_capability_raises():
+def test_layer1_falls_back_to_scan_when_capability_raises(monkeypatch):
     """A backend error inside get_recent degrades to the scan, not to an empty L1."""
+    monkeypatch.setattr("mempalace.layers._READ_RETRY_DELAY", 0)
     mock_col = MagicMock()
     mock_col.get_recent.side_effect = RuntimeError("server said no")
     mock_col.get.side_effect = [
