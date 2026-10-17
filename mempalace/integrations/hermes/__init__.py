@@ -78,7 +78,7 @@ from mempalace.config import (
 )
 from mempalace.convo_miner import file_conversation_exchange
 from mempalace.knowledge_graph import KnowledgeGraph
-from mempalace.layers import Layer0
+from mempalace.layers import Layer0, fetch_recent_window, recent_read_failure
 from mempalace.palace import MineAlreadyRunning, get_collection
 from mempalace.searcher import search_memories
 
@@ -112,28 +112,10 @@ def _l1_story_from_collection(
     from collections import defaultdict
     from pathlib import Path as _Path
 
-    docs: list = []
-    metas: list = []
-    batch = 500
-    offset = 0
-    max_scan = 2000
-    while True:
-        kwargs = {"include": ["documents", "metadatas"], "limit": batch, "offset": offset}
-        if wing:
-            kwargs["where"] = {"wing": wing}
-        try:
-            chunk = collection.get(**kwargs)
-        except Exception:
-            break
-        batch_docs = chunk.get("documents") or []
-        batch_metas = chunk.get("metadatas") or []
-        if not batch_docs:
-            break
-        docs.extend(batch_docs)
-        metas.extend(batch_metas)
-        offset += len(batch_docs)
-        if len(batch_docs) < batch or len(docs) >= max_scan:
-            break
+    try:
+        docs, metas = fetch_recent_window(collection, wing=wing or None, max_scan=2000)
+    except Exception as exc:
+        return f"## L1 -- {recent_read_failure(exc)}"
 
     if not docs:
         return "## L1 -- No memories yet."

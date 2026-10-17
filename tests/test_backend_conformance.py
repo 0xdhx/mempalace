@@ -66,6 +66,28 @@ def test_default_update_skips_missing_ids(backend_cls, tmp_path, monkeypatch):
         backend.close()
 
 
+def test_default_update_keeps_each_rows_stored_vector():
+    """One record without a stored vector does not drop the others' vectors."""
+    from unittest.mock import MagicMock
+
+    from mempalace.backends.base import BaseCollection, GetResult
+
+    col = MagicMock()
+    col.get.return_value = GetResult(
+        ids=["a", "b"],
+        documents=["alpha", "beta"],
+        metadatas=[{"wing": "w"}, {"wing": "w"}],
+        embeddings=[[1.0, 0.0], None],
+    )
+    BaseCollection.update(col, ids=["a", "b"], metadatas=[{"room": "x"}, {"room": "y"}])
+
+    calls = [call.kwargs for call in col.upsert.call_args_list]
+    assert [(c["ids"], c["embeddings"]) for c in calls] == [
+        (["a"], [[1.0, 0.0]]),
+        (["b"], None),
+    ]
+
+
 def test_local_backends_do_not_claim_namespace_isolation():
     """Local backends isolate by on-disk path, not namespace; they must not
     advertise the namespace-isolation capability (RFC 001 isolation contract)."""

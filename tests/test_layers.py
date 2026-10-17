@@ -275,7 +275,8 @@ def test_layer1_unreadable_palace_is_not_reported_empty(monkeypatch):
     assert "No memories" not in result
     assert "could not be read right now (OperationalError)" in result
     assert mock_col.get_recent.call_count == 3
-    assert mock_col.get.call_count == 3
+    # The same palace error is reported, not re-run as a scan.
+    mock_col.get.assert_not_called()
 
 
 def test_layer1_retries_a_read_the_palace_was_not_ready_for(monkeypatch):
@@ -389,11 +390,65 @@ def test_layer1_falls_back_to_scan_when_capability_missing():
     assert mock_col.get.called
 
 
-def test_layer1_falls_back_to_scan_when_capability_raises(monkeypatch):
-    """A backend error inside get_recent degrades to the scan, not to an empty L1."""
+def test_layer1_read_that_blocks_past_the_budget_is_cut_off():
+    """A read stuck in SQLite's busy timeout does not hold wake-up past its budget."""
+    import time as _time
+
+    mock_col = MagicMock()
+
+    def blocked(**kwargs):
+        _time.sleep(2.0)
+        raise AssertionError("the abandoned read's result must not be used")
+
+    mock_col.get_recent.side_effect = blocked
+    with (
+        patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+        patch("mempalace.layers._get_collection", return_value=mock_col),
+    ):
+        mock_cfg.return_value.palace_path = "/fake"
+        started = _time.monotonic()
+        result = Layer1(palace_path="/fake").generate()
+        elapsed = _time.monotonic() - started
+
+    assert "could not be read right now (TimeoutError)" in result
+    assert elapsed < 0.45
+    mock_col.get.assert_not_called()
+
+
+def test_wake_up_keeps_identity_when_l1_fails(tmp_path):
+    """L0 is returned even if generating L1 blows up."""
+    identity = tmp_path / "identity.txt"
+    identity.write_text("I am Atlas.", encoding="utf-8")
+    stack = MemoryStack(palace_path=str(tmp_path / "palace"), identity_path=str(identity))
+    with patch.object(stack.l1, "generate", side_effect=RuntimeError("boom")):
+        text = stack.wake_up()
+
+    assert "I am Atlas." in text
+    assert "could not be read right now (RuntimeError)" in text
+
+
+def test_layer1_reports_a_get_recent_backend_error(monkeypatch):
+    """A backend error inside get_recent is reported, not re-run as a scan."""
     monkeypatch.setattr("mempalace.layers._READ_RETRY_DELAY", 0)
     mock_col = MagicMock()
     mock_col.get_recent.side_effect = RuntimeError("server said no")
+    with (
+        patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+        patch("mempalace.layers._get_collection", return_value=mock_col),
+    ):
+        mock_cfg.return_value.palace_path = "/fake"
+        result = Layer1(palace_path="/fake").generate()
+
+    assert "could not be read right now (RuntimeError)" in result
+    mock_col.get.assert_not_called()
+
+
+def test_layer1_falls_back_to_scan_when_capability_unsupported():
+    """A backend that has get_recent but cannot serve it wakes up via the scan."""
+    from mempalace.backends.base import UnsupportedCapabilityError
+
+    mock_col = MagicMock()
+    mock_col.get_recent.side_effect = UnsupportedCapabilityError("no recency order")
     mock_col.get.side_effect = [
         {
             "documents": ["Scanned memory recovered after the backend errored."],

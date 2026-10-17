@@ -849,16 +849,18 @@ class BaseCollection(ABC):
                 new_meta.update(metadatas[i] or {})
             out_metas.append(new_meta)
             out_embeddings.append(embeddings[i] if embeddings is not None else prev_embedding)
-        if not out_ids:
-            return
-        if any(vector is None for vector in out_embeddings):
-            out_embeddings = None
-        self.upsert(
-            documents=out_docs,
-            ids=out_ids,
-            metadatas=out_metas,
-            embeddings=out_embeddings,
-        )
+        # Rows that carry a vector keep it; rows the backend returned none for
+        # go in a second upsert without embeddings, for the backend to embed.
+        with_vector = [i for i, vector in enumerate(out_embeddings) if vector is not None]
+        without_vector = [i for i, vector in enumerate(out_embeddings) if vector is None]
+        for rows, keep_vectors in ((with_vector, True), (without_vector, False)):
+            if rows:
+                self.upsert(
+                    documents=[out_docs[i] for i in rows],
+                    ids=[out_ids[i] for i in rows],
+                    metadatas=[out_metas[i] for i in rows],
+                    embeddings=[out_embeddings[i] for i in rows] if keep_vectors else None,
+                )
 
 
 # ---------------------------------------------------------------------------

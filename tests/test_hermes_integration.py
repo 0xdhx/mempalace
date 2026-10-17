@@ -1074,3 +1074,35 @@ def test_on_memory_write_skips_unknown_target_and_non_add(initialized_provider):
     initialized_provider.on_memory_write("replace", "memory", "x")
     initialized_provider.on_memory_write("remove", "user", "x")
     assert initialized_provider._worker_queue.qsize() == pre
+
+
+def test_l1_story_reports_an_unreadable_collection(integration_module, monkeypatch):
+    """A collection that cannot be read is not "No memories yet"."""
+    import sqlite3
+
+    monkeypatch.setattr("mempalace.layers._READ_RETRY_DELAY", 0)
+
+    class _Locked:
+        def get_recent(self, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def get(self, **kwargs):
+            raise AssertionError("the same palace error must not be re-run as a scan")
+
+    story = integration_module._l1_story_from_collection(_Locked())
+    assert "No memories" not in story
+    assert "could not be read right now (OperationalError)" in story
+
+
+def test_l1_story_reads_the_newest_drawers(integration_module):
+    class _Col:
+        def get(self, **kwargs):
+            if kwargs.get("offset"):
+                return {"documents": [], "metadatas": []}
+            return {
+                "documents": ["A memory filed through the provider's own client."],
+                "metadatas": [{"room": "r", "filed_at": "2026-10-01"}],
+            }
+
+    story = integration_module._l1_story_from_collection(_Col(), wing="w")
+    assert "A memory filed through the provider's own client." in story

@@ -20,6 +20,7 @@ which backends honour that.
 
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from collections import defaultdict
@@ -78,26 +79,122 @@ def _read_open_failure(exc: Exception) -> str:
     return "No palace found. Run: mempalace mine <dir>"
 
 
+# Wall-clock budget for the whole recent-memories fetch, retries and read
+# time included. Wake-up runs inside hooks with a 500 ms limit.
+_RECENT_READ_BUDGET = 0.3
 _READ_ATTEMPTS = 3
-_READ_RETRY_DELAY = 0.2
+_READ_RETRY_DELAY = 0.05
 
 
-def _read_with_retry(read):
-    """``read()``, retried briefly when it fails, then re-raised.
-
-    A missing capability is not retried; it will not appear on a second try.
-    """
+def _capability_missing():
     from .backends.base import UnsupportedCapabilityError
 
+    return (NotImplementedError, TypeError, UnsupportedCapabilityError)
+
+
+def _read_before(deadline: float, read):
+    """``read()``, but stop waiting for it at ``deadline``.
+
+    A read blocked in SQLite's busy timeout cannot be interrupted, so it runs on
+    a daemon thread that is abandoned if it overruns; its result is discarded.
+    """
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("the palace read did not finish within the wake-up budget")
+    box = {}
+
+    def run():
+        try:
+            box["value"] = read()
+        except BaseException as exc:  # handed back to the caller below
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, name="mempalace-recent-read", daemon=True)
+    worker.start()
+    worker.join(remaining)
+    if worker.is_alive():
+        raise TimeoutError("the palace read did not finish within the wake-up budget")
+    if "error" in box:
+        raise box["error"]
+    return box["value"]
+
+
+def _read_with_retry(read, deadline: float, missing: tuple):
+    """``read()``, retried briefly while ``deadline`` allows, then re-raised.
+
+    A missing capability (``missing``) and a timed-out read are not retried.
+    """
     for attempt in range(_READ_ATTEMPTS):
         try:
-            return read()
-        except (NotImplementedError, TypeError, UnsupportedCapabilityError):
+            return _read_before(deadline, read)
+        except (TimeoutError,) + missing:
             raise
         except Exception:
-            if attempt == _READ_ATTEMPTS - 1:
+            remaining = deadline - time.monotonic()
+            if attempt == _READ_ATTEMPTS - 1 or remaining <= 0:
                 raise
-            time.sleep(_READ_RETRY_DELAY * (attempt + 1))
+            time.sleep(min(_READ_RETRY_DELAY, remaining))
+
+
+def fetch_recent_window(col, *, wing=None, max_scan: int = 2000) -> tuple[list, list]:
+    """``(documents, metadatas)`` for the ``max_scan`` most recently filed drawers.
+
+    Uses the backend's ``get_recent`` capability, which pushes ``ORDER BY
+    filed_at DESC LIMIT n`` into storage where the backend can and otherwise
+    falls back to the scan-then-sort default in ``BaseCollection``. A collection
+    without the capability is paged through ``get`` instead.
+
+    The whole fetch fits in ``_RECENT_READ_BUDGET``. A read that fails is
+    retried within it and then raised: a palace that cannot be read is not an
+    empty one, and a scan cut short is not the whole window.
+    """
+    missing = _capability_missing()  # resolved before the clock starts
+    deadline = time.monotonic() + _RECENT_READ_BUDGET
+    where = {"wing": wing} if wing else None
+    getter = getattr(col, "get_recent", None)
+    if getter is not None:
+        try:
+            result = _read_with_retry(
+                lambda: getter(
+                    limit=max_scan,
+                    where=where,
+                    order_field="filed_at",
+                    include=["documents", "metadatas"],
+                ),
+                deadline,
+                missing,
+            )
+            return list(result.documents or []), list(result.metadatas or [])
+        except missing:
+            pass  # capability missing — page it manually
+
+    # Fetch in batches to avoid SQLite variable limit (~999)
+    batch_size = 500
+    docs, metas = [], []
+    offset = 0
+    while True:
+        kwargs = {"include": ["documents", "metadatas"], "limit": batch_size, "offset": offset}
+        if where:
+            kwargs["where"] = where
+        batch = _read_with_retry(lambda: col.get(**kwargs), deadline, missing)
+        batch_docs = batch.get("documents") or []
+        batch_metas = batch.get("metadatas") or []
+        if not batch_docs:
+            break
+        docs.extend(batch_docs)
+        metas.extend(batch_metas)
+        offset += len(batch_docs)
+        if len(batch_docs) < batch_size or len(docs) >= max_scan:
+            break
+    return docs, metas
+
+
+def recent_read_failure(exc: Exception) -> str:
+    """The wake-up line for a recent-memories read that failed."""
+    return (
+        f"Palace could not be read right now ({type(exc).__name__}); "
+        "wake-up skipped its recent memories. Try again in a moment."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,55 +261,8 @@ class Layer1:
         self.wing = wing
 
     def _fetch_candidates(self, col) -> tuple[list, list]:
-        """Fetch the L1 candidate window: the MAX_SCAN most recently filed drawers.
-
-        Uses the backend's ``get_recent`` capability, which pushes
-        ``ORDER BY filed_at DESC LIMIT n`` into storage where the backend can
-        (pgvector today) and otherwise falls back to the scan-then-sort default
-        in ``BaseCollection``. That default is what this method used to do
-        inline, so backends without pushdown behave exactly as before.
-
-        Third-party collections predating ``get_recent``, or a ``get_recent``
-        that keeps failing, degrade to the inline paged scan below. Each read
-        is retried briefly (a writer can hold the palace for a moment), and a
-        scan that still fails raises: a palace that cannot be read is not an
-        empty one, and a scan cut short is not the whole window.
-        """
-        where = {"wing": self.wing} if self.wing else None
-        getter = getattr(col, "get_recent", None)
-        if getter is not None:
-            try:
-                result = _read_with_retry(
-                    lambda: getter(
-                        limit=self.MAX_SCAN,
-                        where=where,
-                        order_field="filed_at",
-                        include=["documents", "metadatas"],
-                    )
-                )
-                return list(result.documents or []), list(result.metadatas or [])
-            except Exception:
-                pass  # capability missing or backend error — try the paged scan
-
-        # Fetch in batches to avoid SQLite variable limit (~999)
-        _BATCH = 500
-        docs, metas = [], []
-        offset = 0
-        while True:
-            kwargs = {"include": ["documents", "metadatas"], "limit": _BATCH, "offset": offset}
-            if where:
-                kwargs["where"] = where
-            batch = _read_with_retry(lambda: col.get(**kwargs))
-            batch_docs = batch.get("documents", [])
-            batch_metas = batch.get("metadatas", [])
-            if not batch_docs:
-                break
-            docs.extend(batch_docs)
-            metas.extend(batch_metas)
-            offset += len(batch_docs)
-            if len(batch_docs) < _BATCH or len(docs) >= self.MAX_SCAN:
-                break
-        return docs, metas
+        """The L1 candidate window: the MAX_SCAN most recently filed drawers."""
+        return fetch_recent_window(col, wing=self.wing, max_scan=self.MAX_SCAN)
 
     def generate(self) -> str:
         """Pull top drawers from the palace and format as compact L1 text."""
@@ -225,10 +275,7 @@ class Layer1:
         try:
             docs, metas = self._fetch_candidates(col)
         except Exception as exc:
-            return (
-                f"## L1 — Palace could not be read right now ({type(exc).__name__}); "
-                "wake-up skipped its recent memories. Try again in a moment."
-            )
+            return f"## L1 — {recent_read_failure(exc)}"
 
         if not docs:
             return "## L1 — No memories yet."
@@ -532,7 +579,10 @@ class MemoryStack:
         # L1: Essential Story
         if wing:
             self.l1.wing = wing
-        parts.append(self.l1.generate())
+        try:
+            parts.append(self.l1.generate())
+        except Exception as exc:  # identity is still worth waking up with
+            parts.append(f"## L1 — {recent_read_failure(exc)}")
 
         return "\n".join(parts)
 
