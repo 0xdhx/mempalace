@@ -268,11 +268,22 @@ def require_external_consent(
     return False
 
 
+def json_request_body(body: dict) -> bytes:
+    """UTF-8 JSON for an LLM API request.
+
+    A stray source byte is held in drawer text as a lone surrogate, which
+    strict APIs reject; it is sent as U+FFFD, the stored text keeps it.
+    """
+    from .config import strip_lone_surrogates
+
+    return strip_lone_surrogates(json.dumps(body, ensure_ascii=False)).encode("utf-8")
+
+
 def _http_post_json(url: str, body: dict, headers: dict, timeout: int) -> dict:
     """POST JSON and return the parsed response. Raises LLMError on any failure."""
     req = Request(
         url,
-        data=json.dumps(body).encode("utf-8"),
+        data=json_request_body(body),
         headers={"Content-Type": "application/json", **headers},
     )
     try:

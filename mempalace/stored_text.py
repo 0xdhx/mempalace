@@ -20,12 +20,19 @@ may decode a single value with :func:`decode_value`. Filters pushed down to
 a backend compare stored form, so their operands go through
 :func:`encode_where` / :func:`encode_filter`; a filter evaluated in Python
 on decoded rows keeps the caller's values.
+
+Text that leaves the process goes through :func:`dumps_wire` when it is a
+JSON-RPC or HTTP body, so a lone surrogate travels as a ``\\udcXX`` escape,
+and through ``config.strip_lone_surrogates`` when a service only takes
+valid Unicode (an embedder, an LLM API).
 """
 
+import json
 import re
 
 FLAG = "_mempalace_escaped"
 _PREFIX = "\x01mpesc:"
+_LONE_SURROGATE = re.compile(r"[\ud800-\udfff]")
 _BAD = re.compile(r"[\x00\ud800-\udfff]")
 _ESCAPE = re.compile(r"[\\\x00\ud800-\udfff]")
 _UNESCAPE = re.compile(r"\\(\\|0|u[0-9A-F]{4})")
@@ -218,3 +225,18 @@ def restore_rows(documents, metadatas):
         [doc for doc, _ in pairs] if documents else documents,
         [meta for _, meta in pairs],
     )
+
+
+def _surrogate_escape(match) -> str:
+    return f"\\u{ord(match.group()):04x}"
+
+
+def dumps_wire(obj, **kwargs) -> str:
+    """JSON text for a wire: non-ASCII as written, lone surrogates escaped.
+
+    A stray source byte is held as a lone surrogate, which no UTF-8 encoder
+    takes. As a ``\\udcXX`` escape the JSON encodes, and the client's parser
+    gets the surrogate back.
+    """
+    text = json.dumps(obj, ensure_ascii=False, **kwargs)
+    return _LONE_SURROGATE.sub(_surrogate_escape, text)

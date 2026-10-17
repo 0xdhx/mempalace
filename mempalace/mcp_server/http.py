@@ -1169,11 +1169,7 @@ def _http_serve_logstream_stream(handler) -> None:
                 else _call_logstream(lambda ls: ls.list_events(limit=_SSE_BATCH_LIMIT, **filters))
             )
             for event in events:
-                frame = (
-                    f"id: {event['id']}\n"
-                    f"event: logstream\n"
-                    f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                )
+                frame = f"id: {event['id']}\nevent: logstream\ndata: {dumps_wire(event)}\n\n"
                 handler.wfile.write(frame.encode("utf-8"))
                 cursor = event["id"]
                 last_write = time.monotonic()
@@ -1273,7 +1269,7 @@ def _build_http_server(host: str, port: int):
             self.close_connection = True
 
         def _send_json(self, status: int, payload: dict) -> None:
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            body = dumps_wire(payload).encode("utf-8")
             self._send_bytes(status, body, "application/json; charset=utf-8")
 
         def _request_rejected(self, require_auth: bool) -> bool:

@@ -32,16 +32,41 @@ CAFE_WITH_STRAY_BYTE = "café notes ".encode("utf-8") * 3 + b"\xff tail"
         (b"", "", "utf-8"),
         ("café ✨".encode("utf-8"), "café ✨", "utf-8"),
         (b"\xef\xbb\xbfwith a BOM", "with a BOM", "utf-8-sig"),
-        (b"caf\xc3\xa9 \xff", "café \udcff", "utf-8+surrogateescape"),
+        (b"caf\xc3\xa9 r\xc3\xa9sum\xc3\xa9 \xff", "café résumé \udcff", "utf-8+surrogateescape"),
         (b"\xef\xbb\xbfab\xffc", "ab\udcffc", "utf-8-sig+surrogateescape"),
         (SMART_QUOTES_CP1252, SMART_QUOTES_TEXT, "windows-1252"),
         # An undefined cp1252 byte is a C1 control; the quotes stay quotes.
         (b"\x93a\x81b\x94 \xe9", "“a\x81b” é", "windows-1252"),
+        # As many stray bytes as valid sequences: not enough to call it UTF-8.
+        (b"caf\xc3\xa9 \xff", "cafÃ© ÿ", "windows-1252"),
     ],
-    ids=["empty", "utf-8", "bom", "stray-byte", "bom-stray-byte", "cp1252", "cp1252-undefined"],
+    ids=[
+        "empty",
+        "utf-8",
+        "bom",
+        "stray-byte",
+        "bom-stray-byte",
+        "cp1252",
+        "cp1252-undefined",
+        "tie-is-legacy",
+    ],
 )
 def test_decode_source_picks_the_reading_that_keeps_the_text(raw, text, encoding):
     assert decode_source(raw) == (text, encoding)
+
+
+def test_a_cp1252_file_whose_bytes_happen_to_form_utf8_stays_cp1252():
+    """``É`` then ``”`` in cp1252 is C9 94, a valid UTF-8 sequence; the file's
+    other accented letters are still stray bytes, so it is not UTF-8."""
+    text = "L’ÉTÉ” est arrivé, déjà très chaud. “Oui”, dit-il, ça ira."
+    assert decode_source(text.encode("cp1252")) == (text, "windows-1252")
+
+
+def test_a_long_utf8_file_with_one_stray_byte_stays_utf8():
+    raw = "naïve résumé café ".encode("utf-8") * 200 + b"\xff"
+    text, encoding = decode_source(raw)
+    assert encoding == "utf-8+surrogateescape"
+    assert text.endswith("café \udcff")
 
 
 @pytest.mark.parametrize(
@@ -249,7 +274,10 @@ def test_convo_mine_of_a_stray_byte_transcript_files_and_hashes(tmp_path):
     src.mkdir()
     doc = src / "chat.txt"
     turns = [
-        b"> question %d caf\xc3\xa9 " % i + b"asked " * 20 + b"\xff\n" + b"answer " * 40
+        b"> question %d caf\xc3\xa9 r\xc3\xa9sum\xc3\xa9 " % i
+        + b"asked " * 20
+        + b"\xff\n"
+        + b"answer " * 40
         for i in range(3)
     ]
     doc.write_bytes(b"\n\n".join(turns) + b"\n")
@@ -304,7 +332,7 @@ def test_diary_ingest_hashes_a_stray_byte_diary(tmp_path):
 
     diary_dir = tmp_path / "diary"
     diary_dir.mkdir()
-    entry = b"## 09:00\n\ncaf\xc3\xa9 " + b"a day of work " * 10 + b"\xff\n"
+    entry = b"## 09:00\n\ncaf\xc3\xa9 r\xc3\xa9sum\xc3\xa9 " + b"a day of work " * 10 + b"\xff\n"
     (diary_dir / "2026-01-02.md").write_bytes(entry)
     palace = str(tmp_path / "palace")
     ingest_diaries(diary_dir, palace)
@@ -317,7 +345,11 @@ def test_hook_recent_messages_read_a_stray_byte_line(tmp_path):
     from mempalace.hooks_cli import _extract_recent_messages
 
     entry = {"message": {"role": "user", "content": "PLACEHOLDER"}}
-    line = json.dumps(entry).encode("ascii").replace(b"PLACEHOLDER", b"caf\xc3\xa9 \xff ok")
+    line = (
+        json.dumps(entry)
+        .encode("ascii")
+        .replace(b"PLACEHOLDER", b"caf\xc3\xa9 r\xc3\xa9sum\xc3\xa9 \xff ok")
+    )
     path = tmp_path / "t.jsonl"
     path.write_bytes(line + b"\n")
 

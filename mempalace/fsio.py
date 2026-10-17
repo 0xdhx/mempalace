@@ -391,6 +391,7 @@ def encode_windows_1252(text: str) -> bytes:
 # Any character a valid multi-byte UTF-8 sequence decodes to: not ASCII and
 # not one of the lone surrogates surrogateescape gives a stray byte.
 _UTF8_MULTIBYTE = re.compile("[^\x00-\x7f\udc80-\udcff]")
+_STRAY_BYTE = re.compile("[\udc80-\udcff]")
 
 
 def decode_source(raw: bytes, *, universal_newlines: bool = False) -> Tuple[str, str]:
@@ -401,9 +402,12 @@ def decode_source(raw: bytes, *, universal_newlines: bool = False) -> Tuple[str,
     - UTF-8 with stray bytes keeps its UTF-8 text, and only the stray bytes
       become lone surrogates U+DC80-U+DCFF: ``utf-8+surrogateescape`` (or
       ``utf-8-sig+surrogateescape``). A file counts as UTF-8 here when it has
-      a byte-order mark or at least one valid multi-byte sequence.
-    - Anything else, ASCII plus bytes that never form UTF-8, is a legacy file
-      and decodes as WHATWG ``windows-1252``, which maps every byte.
+      a byte-order mark, or when its valid multi-byte characters outnumber
+      its stray bytes. A legacy file can form a few valid sequences by chance
+      (cp1252 ``É`` then ``”`` is the bytes of one UTF-8 character), but its
+      accented letters fail far more often than that.
+    - Anything else is a legacy file and decodes as WHATWG ``windows-1252``,
+      which maps every byte.
 
     ``encode_source(text, encoding)`` gives the bytes back. This never raises
     and never yields U+FFFD for a bad byte. ``universal_newlines`` turns CRLF
@@ -416,7 +420,7 @@ def decode_source(raw: bytes, *, universal_newlines: bool = False) -> Tuple[str,
         text = body.decode("utf-8")
     except UnicodeDecodeError:
         text = body.decode("utf-8", "surrogateescape")
-        if bom or _UTF8_MULTIBYTE.search(text):
+        if bom or len(_UTF8_MULTIBYTE.findall(text)) > len(_STRAY_BYTE.findall(text)):
             encoding += "+surrogateescape"
         else:
             text, encoding = decode_windows_1252(raw), "windows-1252"

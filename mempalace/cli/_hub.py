@@ -6,6 +6,7 @@ if __name__ != "mempalace.cli":
 from ..hub_client import HUB_FORWARD_ENV as _HUB_FORWARD_ENV
 from ..hub_client import SEARCH_OVERRIDE_ENV_VARS as _SEARCH_OVERRIDE_ENV_VARS
 from ..hub_client import _forwarding_disabled as _hub_forward_disabled
+from ..stored_text import dumps_wire
 
 _HUB_HEALTH_TIMEOUT_S = 0.75
 # A backfill mine over a large transcript tree can legitimately run for many
@@ -162,14 +163,13 @@ def _forward_search_to_hub(args, palace_path: str) -> bool:
         if value:
             arguments[name] = value
 
-    body = json.dumps(
+    body = dumps_wire(
         {
             "jsonrpc": "2.0",
             "id": 1,
             "method": "tools/call",
             "params": {"name": "mempalace_search", "arguments": arguments},
-        },
-        ensure_ascii=False,
+        }
     ).encode("utf-8")
 
     try:

@@ -56,9 +56,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   conversation, diary and sweep ingest decoded files as UTF-8 and replaced
   anything else with the replacement character, so a cp1252 file lost its
   smart quotes and accented letters for good. Now a UTF-8 file with a few
-  stray bytes keeps its text exactly, with only the stray bytes held as lone
-  surrogates, so `café` stays searchable. A file with no UTF-8 in it at all
-  decodes as windows-1252, with every byte mapped. A drawer whose source was
+  stray bytes (its valid UTF-8 characters outnumber them) keeps its text
+  exactly, with only the stray bytes held as lone surrogates, so `café` stays
+  searchable; search results, exports and every MCP transport carry those
+  bytes intact. Any other file decodes as windows-1252, with every byte
+  mapped. A drawer whose source was
   not plain UTF-8 carries `source_encoding` (`utf-8-sig`,
   `utf-8+surrogateescape`, `utf-8-sig+surrogateescape` or `windows-1252`), and
   `fsio.encode_source(text, source_encoding)` gives the source bytes back.

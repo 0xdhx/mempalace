@@ -8,6 +8,8 @@ import os
 import urllib.request
 from typing import Mapping
 
+from .stored_text import dumps_wire
+
 logger = logging.getLogger(__name__)
 
 HUB_FORWARD_ENV = "MEMPALACE_HUB_FORWARD"
@@ -126,7 +128,7 @@ def forward_json_rpc(
 ):
     """POST one JSON-RPC request to the hub; return ``None`` for an empty body."""
 
-    body = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    body = dumps_wire(request).encode("utf-8")
     http_request = urllib.request.Request(f"{base_url}/mcp", data=body, headers=dict(headers))
     with urllib.request.urlopen(http_request, timeout=timeout) as response:
         raw = response.read()

@@ -31,6 +31,7 @@ from urllib.parse import parse_qs, urlparse
 from ._proc import kernel32 as _kernel32
 from ._proc import pid_alive as _pid_alive
 from .config import MempalaceConfig
+from .stored_text import dumps_wire
 from .palace import (
     MineAlreadyRunning,
     backend_requires_single_writer,
@@ -758,7 +759,7 @@ class DaemonRuntime:
 
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: dict[str, Any]) -> None:
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    body = dumps_wire(payload).encode("utf-8")
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Content-Length", str(len(body)))
@@ -1082,7 +1083,7 @@ class DaemonClient:
         *,
         timeout: float = 5.0,
     ) -> dict[str, Any]:
-        data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+        data = None if body is None else dumps_wire(body).encode("utf-8")
         req = urlrequest.Request(
             self.base_url + path,
             data=data,

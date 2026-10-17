@@ -49,7 +49,7 @@ import urllib.error
 from datetime import datetime
 from typing import Optional
 
-from .llm_client import endpoint_is_local, external_use_accepted_by_env
+from .llm_client import endpoint_is_local, external_use_accepted_by_env, json_request_body
 from .palace import (
     NORMALIZE_VERSION,
     get_closets_collection,
@@ -164,13 +164,13 @@ def _call_llm(cfg: LLMConfig, source_file: str, wing: str, room: str, content: s
     if lang_instruction and "english" not in lang_instruction.lower():
         prompt += f"\n\nLanguage instruction: {lang_instruction}"
 
-    body = json.dumps(
+    body = json_request_body(
         {
             "model": cfg.model,
             "max_tokens": MAX_OUTPUT_TOKENS,
             "messages": [{"role": "user", "content": prompt}],
         }
-    ).encode("utf-8")
+    )
 
     headers = {"Content-Type": "application/json"}
     if cfg.key:
