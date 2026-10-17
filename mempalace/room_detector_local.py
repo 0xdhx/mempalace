@@ -12,9 +12,10 @@ No internet. No API key. Your files stay on your machine.
 import logging
 import os
 import sys
-import yaml
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
+
+import yaml
 
 from .project_config import find_project_config
 

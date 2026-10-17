@@ -354,6 +354,7 @@ class TestRouting:
 def refused_local(monkeypatch):
     """The real local server of a proxy started with a --backend it refuses."""
     from _mcp_server_helpers import _keep_server_command_line_state
+
     from mempalace import mcp_server
 
     _keep_server_command_line_state(monkeypatch)
@@ -527,6 +528,7 @@ def test_local_fallback_serves_the_palace_the_proxy_was_started_for(monkeypatch,
     so the proxy's own flags have to be applied there. Otherwise the session
     silently serves the configured default palace."""
     from _mcp_server_helpers import _keep_server_command_line_state
+
     from mempalace import mcp_server
 
     _keep_server_command_line_state(monkeypatch)
@@ -566,6 +568,7 @@ def test_local_fallback_restores_stdout_before_a_flag_can_be_refused(monkeypatch
     answering over stdout after a failed load, and a client waiting there would
     never see a response."""
     from _mcp_server_helpers import _keep_server_command_line_state
+
     from mempalace import mcp_server
     from mempalace.backends.registry import BackendUnavailableError
 

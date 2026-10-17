@@ -38,11 +38,11 @@ from typing import Optional
 from .backends._inproc_sqlite import open_reader as open_palace_reader
 from .config import MempalaceConfig, normalize_wing_name
 from .hallways import (
+    association_groups,
     entity_spelling_key,
     is_generic_entity,
     is_self_link,
     list_hallways,
-    association_groups,
 )
 from .palace_graph import _load_tunnels
 from .tunnels_tool import connection_index, tunnel_endpoints

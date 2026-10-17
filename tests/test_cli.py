@@ -15,13 +15,12 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from mempalace.palace import MineAlreadyRunning
 from mempalace.cli import (
     cmd_compress,
+    cmd_daemon,
     cmd_hook,
     cmd_init,
     cmd_instructions,
-    cmd_daemon,
     cmd_mine,
     cmd_repair,
     cmd_search,
@@ -30,7 +29,7 @@ from mempalace.cli import (
     cmd_wakeup,
     main,
 )
-
+from mempalace.palace import MineAlreadyRunning
 
 # ── CLI entry point: PYTHONPATH stripping ────────────────────────────────
 

@@ -14,7 +14,6 @@ from urllib.request import Request, urlopen
 from .fsio import atomic_publish
 from .version import __version__
 
-
 _POLICY_FILE = "updates.json"
 _CACHE_FILE = "updates-cache.json"
 _STABLE_VERSION = re.compile(r"^\d+\.\d+\.\d+$")

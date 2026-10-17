@@ -21,7 +21,6 @@ from pathlib import Path
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Fixtures: stub the Hermes ABC, then import the provider module by path.
 # ---------------------------------------------------------------------------

@@ -20,10 +20,11 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from .fsio import CorruptStateError
-from .fsio import atomic_write_text as _atomic_write_text
-from .fsio import refuse_unparsed as _refuse_unparsed
-
+from .fsio import (
+    CorruptStateError,
+    atomic_write_text as _atomic_write_text,
+    refuse_unparsed as _refuse_unparsed,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Common English words that could be confused with names
@@ -403,7 +404,7 @@ class EntityRegistry:
         configured ``MempalaceConfig().entity_languages`` to match the
         locales used at ``mempalace init`` time.
         """
-        from mempalace.entity_detector import extract_candidates, score_entity, classify_entity
+        from mempalace.entity_detector import classify_entity, extract_candidates, score_entity
 
         lines = text.splitlines()
         candidates = extract_candidates(text, languages=languages)

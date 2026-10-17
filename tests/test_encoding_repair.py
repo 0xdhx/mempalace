@@ -12,7 +12,6 @@ from mempalace.encoding_repair import (
     restore_collection,
 )
 
-
 CLEAN_MULTILINGUAL = [
     "La canción «PERÚ» abre el disco.",
     "Buried surface area 1250 Å².",

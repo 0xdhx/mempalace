@@ -23,7 +23,6 @@ from mempalace.closet_llm import (
     regenerate_closets,
 )
 
-
 # ── LLMConfig ─────────────────────────────────────────────────────────────
 
 
@@ -575,7 +574,7 @@ with mine_palace_lock(sys.argv[1]):
         """Regression: the old closet_id base used ``source.split('/')[-1]``
         which silently degrades on Windows paths (``C:\\proj\\a.md`` →
         the whole string). ``os.path.basename`` handles both separators."""
-        from mempalace.palace import get_collection, get_closets_collection
+        from mempalace.palace import get_closets_collection, get_collection
 
         palace = str(tmp_path / "palace")
         # Use a path whose basename differs between '/' split and

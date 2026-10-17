@@ -30,13 +30,14 @@ from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from .backends.base import BaseCollection, PalaceNotFoundError
 from .config import MempalaceConfig, normalize_wing_name
 from .dynamics import initialize_dynamics_fields, potentiate
-from .fsio import atomic_write_json as _atomic_write_json
-from .fsio import read_json_for_update as _read_json_for_update
-from .palace import get_collection as _get_palace_collection
-from .palace import mine_lock
-from .backends.base import BaseCollection, PalaceNotFoundError
+from .fsio import (
+    atomic_write_json as _atomic_write_json,
+    read_json_for_update as _read_json_for_update,
+)
+from .palace import get_collection as _get_palace_collection, mine_lock
 
 logger = logging.getLogger("mempalace_graph")
 
@@ -96,8 +97,7 @@ def sqlite_grouped_counts_reader(config=None):
 
             db_name = "chroma.sqlite3"
         elif backend in {"sqlite_exact", "rust_exact"}:
-            from .backends.sqlite_exact import _DB_FILENAME as db_name
-            from .backends.sqlite_exact import sqlite_room_wing_hall_counts
+            from .backends.sqlite_exact import _DB_FILENAME as db_name, sqlite_room_wing_hall_counts
         else:
             return None
         if not os.path.isfile(os.path.join(config.palace_path, db_name)):

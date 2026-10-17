@@ -43,9 +43,9 @@ import json
 import os
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-import urllib.error
 from datetime import datetime
 from typing import Optional
 

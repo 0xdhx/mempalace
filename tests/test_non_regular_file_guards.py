@@ -53,8 +53,7 @@ from mempalace.normalize import _read_transcript_file
 from mempalace.project_scanner import _collect_manifest_names, _parse_gradle
 from mempalace.repair import _copy_file_no_follow, _open_regular_file_no_follow
 from mempalace.room_detector_local import detect_rooms_local
-from mempalace.split_mega_files import main as split_main
-from mempalace.split_mega_files import split_file
+from mempalace.split_mega_files import main as split_main, split_file
 from mempalace.sweeper import parse_claude_jsonl, sweep_directory
 
 # ``os.mkfifo`` and ``SIGALRM`` are both POSIX-only. Windows has no FIFO in

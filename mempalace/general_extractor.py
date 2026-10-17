@@ -20,11 +20,10 @@ Usage:
 """
 
 import re
-from typing import List, Dict, Tuple
+from typing import Dict, List, Tuple
 
 from .config import DEFAULT_CHUNK_SIZE
 from .fsio import decode_source
-
 
 # =============================================================================
 # MARKER SETS — One per memory type

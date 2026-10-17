@@ -70,6 +70,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Union
 
+# Module-level imports from .miner so tests can patch them via
+# mempalace.format_miner.<name>. Lazy imports inside functions would not
+# expose these as attributes of this module, breaking the test seams.
+from .config import MempalaceConfig, normalize_wing_name
+from .fsio import decode_source
+from .ids import ID_RECIPE, make_drawer_id_from_chunk
+from .miner import (
+    _compute_topic_tunnels_for_wing,
+    chunk_text,
+    detect_room,
+    load_config,
+)
 from .palace import (
     MINE_ABORTS,
     NORMALIZE_VERSION,
@@ -85,20 +97,7 @@ from .palace import (
     raise_if_files_failed,
     write_file_drawers,
 )
-
-# Module-level imports from .miner so tests can patch them via
-# mempalace.format_miner.<name>. Lazy imports inside functions would not
-# expose these as attributes of this module, breaking the test seams.
-from .config import MempalaceConfig, normalize_wing_name
-from .fsio import decode_source
-from .ids import ID_RECIPE, make_drawer_id_from_chunk
 from .source_identity import identity_metadata, source_directory_identity
-from .miner import (
-    _compute_topic_tunnels_for_wing,
-    chunk_text,
-    detect_room,
-    load_config,
-)
 
 __all__ = [
     "SUPPORTED_FORMATS",

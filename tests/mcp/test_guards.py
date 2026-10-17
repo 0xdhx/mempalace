@@ -9,7 +9,6 @@ import re
 import sqlite3
 
 import pytest
-
 from _chroma_palace_helper import make_minimal_chroma_sqlite
 
 

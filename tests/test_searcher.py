@@ -10,7 +10,6 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-
 from _chroma_palace_helper import make_minimal_chroma_sqlite
 
 from mempalace.backends import BackendMismatchError
@@ -22,7 +21,6 @@ from mempalace.searcher import (
     search,
     search_memories,
 )
-
 
 # ── build_where_filter (unit) ──────────────────────────────────────────
 

@@ -8,15 +8,15 @@ from uuid import UUID
 
 import chromadb
 import pytest
+from _mcp_server_helpers import _patch_mcp_server
 from chromadb.config import Settings, System
 from chromadb.db.impl.sqlite import SqliteDB
 from chromadb.segment.impl.metadata.sqlite import SqliteMetadataSegment
 from chromadb.types import Operation
+from test_chroma_metadata_contracts import synthetic_db
 
 from mempalace.backends import chroma as cb
 from mempalace.backends._inproc_sqlite import release
-from test_chroma_metadata_contracts import synthetic_db
-from _mcp_server_helpers import _patch_mcp_server
 
 
 def test_listing_hydrates_only_selected_logical_page(monkeypatch, config, palace_path, kg):

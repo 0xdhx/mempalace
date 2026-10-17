@@ -62,7 +62,6 @@ from mempalace.searcher import (
     search_memories,
 )
 
-
 # ── mine_lock ────────────────────────────────────────────────────────────
 
 
@@ -1059,7 +1058,7 @@ class TestDiaryIngest:
         )
         palace_dir = tmp_path / "palace"
 
-        from mempalace.diary_ingest import _state_file_for, _split_entries, ingest_diaries
+        from mempalace.diary_ingest import _split_entries, _state_file_for, ingest_diaries
 
         ingest_diaries(str(diary_dir), str(palace_dir), force=True)
 

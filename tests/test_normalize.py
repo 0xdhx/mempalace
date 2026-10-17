@@ -15,9 +15,9 @@ from mempalace.normalize import (
     _try_claude_ai_json,
     _try_claude_code_jsonl,
     _try_codex_jsonl,
+    _try_continue_json,
     _try_gemini_json,
     _try_gemini_jsonl,
-    _try_continue_json,
     _try_normalize_json,
     _try_normalize_json_split,
     _try_pi_jsonl,
@@ -26,7 +26,6 @@ from mempalace.normalize import (
     normalize_conversations,
     strip_noise,
 )
-
 
 # ── normalize() top-level ──────────────────────────────────────────────
 

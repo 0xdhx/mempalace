@@ -3,7 +3,6 @@ import uuid
 
 import numpy as np
 import pytest
-
 from _backend_conformance import assert_partition_isolation, assert_update_skips_missing_ids
 from _chroma_palace_helper import make_minimal_chroma_sqlite
 

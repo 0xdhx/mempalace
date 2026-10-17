@@ -15,8 +15,8 @@ with back-compat for existing installs:
 
 import hashlib
 import json
-import math
 import logging
+import math
 import os
 import re
 import sys

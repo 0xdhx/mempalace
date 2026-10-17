@@ -1,7 +1,9 @@
 import http.client
 import json
 import threading
+
 import pytest
+
 from mempalace import mcp_server as mcp
 
 pytestmark = pytest.mark.usefixtures("tokenless_http_hub")

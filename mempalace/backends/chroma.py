@@ -10,11 +10,11 @@ import pickle
 import re
 import shlex
 import sqlite3
-import weakref
 import struct
 import threading
 import time
 import warnings
+import weakref
 from collections import defaultdict
 from numbers import Integral
 from pathlib import Path
@@ -33,9 +33,11 @@ from ..stored_text import (
     prepare_stored_write,
     restore_rows,
 )
-from ._inproc_sqlite import open_reader as open_palace_reader
-from ._inproc_sqlite import open_writer as open_palace_writer
-from ._inproc_sqlite import palace_db_lock
+from ._inproc_sqlite import (
+    open_reader as open_palace_reader,
+    open_writer as open_palace_writer,
+    palace_db_lock,
+)
 from ._magic import has_sqlite_magic
 from ._sidecar import EMBEDDER_SIDECAR_FILENAME, read_embedder_sidecar, write_embedder_sidecar
 from .base import (

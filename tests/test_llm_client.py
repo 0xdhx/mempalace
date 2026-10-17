@@ -6,7 +6,7 @@ suite.
 """
 
 import json
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -20,7 +20,6 @@ from mempalace.llm_client import (
     get_provider,
     require_external_consent,
 )
-
 
 # ── factory ─────────────────────────────────────────────────────────────
 
@@ -62,8 +61,8 @@ def test_http_post_json_success():
 
 
 def test_http_post_json_http_error_wraps_as_llm_error():
-    from urllib.error import HTTPError
     import io
+    from urllib.error import HTTPError
 
     err = HTTPError("http://x", 404, "Not Found", {}, io.BytesIO(b"model missing"))
     with patch("mempalace.llm_client.urlopen", side_effect=err):

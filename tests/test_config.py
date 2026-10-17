@@ -4,6 +4,7 @@ import sqlite3
 import tempfile
 
 import pytest
+
 from mempalace.config import (
     MempalaceConfig,
     _default_config_dir,
@@ -1014,12 +1015,12 @@ def test_miner_constants_alias_config_defaults():
     canonical ``DEFAULT_CHUNK_*`` constants in ``mempalace.config``.
     Pinned by this test so a future drift would surface as a unit failure.
     """
-    from mempalace.miner import CHUNK_SIZE, CHUNK_OVERLAP, MIN_CHUNK_SIZE
     from mempalace.config import (
-        DEFAULT_CHUNK_SIZE,
         DEFAULT_CHUNK_OVERLAP,
+        DEFAULT_CHUNK_SIZE,
         DEFAULT_MIN_CHUNK_SIZE,
     )
+    from mempalace.miner import CHUNK_OVERLAP, CHUNK_SIZE, MIN_CHUNK_SIZE
 
     assert CHUNK_SIZE == DEFAULT_CHUNK_SIZE == 800
     assert CHUNK_OVERLAP == DEFAULT_CHUNK_OVERLAP == 100

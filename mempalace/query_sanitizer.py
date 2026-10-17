@@ -18,8 +18,8 @@ Expected recovery:
   Worst case with sanitizer: ~70-80% (survivable)
 """
 
-import re
 import logging
+import re
 
 from mempalace.config import strip_lone_surrogates
 

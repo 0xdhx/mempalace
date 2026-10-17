@@ -8,22 +8,29 @@ Stores verbatim chunks as drawers. No summaries. Ever.
 """
 
 import errno
+import fnmatch
+import hashlib
+import logging
 import os
 import re
-import sys
 import shlex
-import hashlib
-import fnmatch
-import logging
 import stat
+import sys
 import tempfile
-from pathlib import Path
-from datetime import datetime
 from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from .entity_detector import _apply_known_systems_prepass, _get_coca_filter
 from .fsio import encoding_metadata, read_source_text
+
+# Module-level import so tests can patch it as
+# ``mempalace.miner.compute_hallways_for_wing``. The integration call
+# lives at the end of _mine_impl, alongside the existing
+# ``_compute_topic_tunnels_for_wing`` post-mine block.
+from .hallways import compute_hallways_for_wing
+from .ids import ID_RECIPE, make_drawer_id_from_chunk
 from .metadata_types import is_bookkeeping
 from .palace import (
     NORMALIZE_VERSION,
@@ -49,13 +56,6 @@ from .palace import (
     upsert_closet_lines,
     write_file_drawers,
 )
-
-# Module-level import so tests can patch it as
-# ``mempalace.miner.compute_hallways_for_wing``. The integration call
-# lives at the end of _mine_impl, alongside the existing
-# ``_compute_topic_tunnels_for_wing`` post-mine block.
-from .hallways import compute_hallways_for_wing
-from .ids import ID_RECIPE, make_drawer_id_from_chunk
 
 # Re-exported: callers and tests import these from the miner (#2676).
 from .project_config import (  # noqa: F401
@@ -180,8 +180,8 @@ SKIP_FILENAMES = {
 # ``mempalace.miner`` keep working unchanged. Single source of truth
 # lives in ``config.DEFAULT_CHUNK_*``.
 from .config import (  # noqa: E402  (kept here for the legacy alias)
-    DEFAULT_CHUNK_SIZE as CHUNK_SIZE,
     DEFAULT_CHUNK_OVERLAP as CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE as CHUNK_SIZE,
     DEFAULT_MIN_CHUNK_SIZE as MIN_CHUNK_SIZE,
 )
 

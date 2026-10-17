@@ -6,13 +6,12 @@ under their own fake/live client in ``test_qdrant_backend.py``.
 """
 
 import pytest
-
 from _backend_conformance import assert_partition_isolation, assert_update_skips_missing_ids
 
 from mempalace.backends import PalaceRef
 from mempalace.backends.chroma import ChromaBackend
-from mempalace.backends.sqlite_exact import SQLiteExactBackend
 from mempalace.backends.rust_exact import RustExactBackend
+from mempalace.backends.sqlite_exact import SQLiteExactBackend
 
 _LOCAL_BACKENDS = [
     pytest.param(ChromaBackend, id="chroma"),

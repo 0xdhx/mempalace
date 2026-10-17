@@ -9,7 +9,6 @@ from contextlib import closing
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-
 from _chroma_palace_helper import make_minimal_chroma_sqlite
 
 from mempalace import repair

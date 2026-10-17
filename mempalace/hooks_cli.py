@@ -13,15 +13,15 @@ with ``cwd`` on every record, and passes that file's path here.
 """
 
 import hashlib
-from contextlib import contextmanager
-from contextvars import ContextVar
-from dataclasses import dataclass
 import json
 import os
 import re
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional

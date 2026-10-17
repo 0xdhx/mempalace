@@ -11,7 +11,6 @@ from pathlib import Path
 
 import chromadb
 import pytest
-
 from _chroma_palace_helper import make_minimal_chroma_sqlite
 
 
@@ -651,11 +650,12 @@ class TestSyncPalace:
         cannot fake-pass — the assertion below verifies the patched explode
         actually ran before the cache was cleared.
         """
+        import json
+
         from mempalace import mcp_server
 
         # Reconfigure to point at synced_world.
         from mempalace.config import MempalaceConfig
-        import json
 
         cfg_dir = Path(synced_world["palace_path"]).parent / "cfg_for_cache_test"
         cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -1239,11 +1239,12 @@ class TestSyncMcpTool:
         assert report.get("dry_run") is True
 
     def test_apply_true_is_destructive(self, monkeypatch, config, synced_world, kg):
+        import json
+
         from mempalace import mcp_server
 
         # Rebuild config to point at synced_world's palace.
         from mempalace.config import MempalaceConfig
-        import json
 
         cfg_dir = Path(synced_world["palace_path"]).parent / "cfg_for_mcp_test"
         cfg_dir.mkdir(parents=True, exist_ok=True)
@@ -1297,10 +1298,10 @@ class TestSyncMcpTool:
         a structured `{success: False, error: ...}` instead of raising."""
         import fcntl
         import hashlib
+        import json
 
         from mempalace import mcp_server
         from mempalace.config import MempalaceConfig
-        import json
 
         # Wire MCP config at synced_world.
         cfg_dir = Path(synced_world["palace_path"]).parent / "cfg_for_lock_test"
@@ -2814,8 +2815,7 @@ class TestMinedFilesystemIdentity(_IdentityRows):
         that arrives or leaves while the witnesses are being stat'ed makes the
         two readings describe different directories, and a verdict built from
         them is a verdict about neither."""
-        from mempalace import source_identity as si
-        from mempalace import sync as sync_mod
+        from mempalace import source_identity as si, sync as sync_mod
 
         repo, neighbour, gone = self._repo_with_a_neighbour(tmp_dir)
         recorded = si.directory_identity(repo)
@@ -2863,8 +2863,7 @@ class TestMinedFilesystemIdentity(_IdentityRows):
         read where the verdict is formed, next to the other two readings, or
         a reading taken while the right volume was there condemns drawers
         settled after it was gone."""
-        from mempalace import source_identity as si
-        from mempalace import sync as sync_mod
+        from mempalace import source_identity as si, sync as sync_mod
 
         repo, neighbour, gone = self._repo_with_a_neighbour(tmp_dir)
         here = si.directory_identity(repo)
@@ -3896,8 +3895,7 @@ class TestGitignoredRouteIdentity(_IdentityRows):
         """The directory that answered before the rule was read is the one the
         drawer was mined from; the one answering after it is not. The rule was
         read from one of them, and nothing says which, so the drawer is kept."""
-        from mempalace import source_identity as si
-        from mempalace import sync as sync_mod
+        from mempalace import source_identity as si, sync as sync_mod
 
         repo, ignored = self._repo_with_an_ignored_file(tmp_dir)
         here = si.directory_identity(repo)
@@ -3930,8 +3928,7 @@ class TestGitignoredRouteIdentity(_IdentityRows):
         """The mirror image: another directory answered before the rule was
         read, and the mined one answers after it. A reading taken only after
         the rule would match the drawer and remove it."""
-        from mempalace import source_identity as si
-        from mempalace import sync as sync_mod
+        from mempalace import source_identity as si, sync as sync_mod
 
         repo, ignored = self._repo_with_an_ignored_file(tmp_dir)
         here = si.directory_identity(repo)
@@ -3976,8 +3973,7 @@ class TestGitignoredRouteIdentity(_IdentityRows):
         With ``below_the_rule`` the sources sit in a subdirectory and the
         rule stays at the root, so the entry read across the change is an
         ancestor's."""
-        from mempalace import source_identity as si
-        from mempalace import sync as sync_mod
+        from mempalace import source_identity as si, sync as sync_mod
 
         repo = Path(tmp_dir) / "repo"
         home = repo / "sub" if below_the_rule else repo

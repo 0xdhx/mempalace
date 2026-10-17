@@ -16,13 +16,13 @@ from mempalace.backends import (
     QueryResult,
     UnsupportedFilterError,
     available_backends,
+    chroma as chroma_module,
     get_backend,
 )
-from mempalace.backends import chroma as chroma_module
 from mempalace.backends.chroma import (
+    _HNSW_MISSING_METADATA_DATA_FLOOR,
     ChromaBackend,
     ChromaCollection,
-    _HNSW_MISSING_METADATA_DATA_FLOOR,
     _fix_blob_seq_ids,
     _fix_missing_collection_type,
     _pin_hnsw_threads,
@@ -1509,6 +1509,7 @@ def test_fix_blob_seq_ids_skips_sqlite_when_marker_present(tmp_path):
     never want to open it again, even read-only.
     """
     from unittest.mock import patch
+
     from mempalace.backends.chroma import _BLOB_FIX_MARKER
 
     # Pre-create the marker so the function should short-circuit.

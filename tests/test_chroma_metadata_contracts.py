@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import chromadb
 import pytest
 from chromadb.config import Settings
+
 from mempalace import embedding
-from mempalace.backends import chroma as cb
-from mempalace.backends import embedding_wrapper as ew
+from mempalace.backends import chroma as cb, embedding_wrapper as ew
 from mempalace.backends._inproc_sqlite import release
 from mempalace.config import MempalaceConfig
 from mempalace.rooms import load_pending_apply, pending_apply_path

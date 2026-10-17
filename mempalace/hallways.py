@@ -34,18 +34,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import logging
 import os
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
 from .dynamics import initialize_dynamics_fields
-from .fsio import atomic_write_json as _atomic_write_json
-from .fsio import read_json_for_update as _read_json_for_update
-from .fsio import refuse_unparsed as _refuse_unparsed
+from .fsio import (
+    atomic_write_json as _atomic_write_json,
+    read_json_for_update as _read_json_for_update,
+    refuse_unparsed as _refuse_unparsed,
+)
 from .metadata_types import is_bookkeeping
 
 logger = logging.getLogger("mempalace_hallways")
@@ -574,8 +576,8 @@ def _wing_metadata_from_sqlite(col, wing: str) -> Optional[list]:
     scoped read, stopped at its first row, tells it apart from a wing with no
     drawers at all.
     """
-    from .palace import _fast_collection_metadata
     from .backends.chroma import MetadataRecoveryPending
+    from .palace import _fast_collection_metadata
 
     scope = {"wing": wing}
     try:

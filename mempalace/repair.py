@@ -32,6 +32,7 @@ Usage (from CLI):
 import argparse
 import errno
 import os
+import re
 import shutil
 import sqlite3
 import stat
@@ -40,11 +41,15 @@ from collections import defaultdict
 from contextlib import closing, suppress
 from dataclasses import dataclass
 from datetime import datetime
-import re
 from typing import Callable, Iterator, Optional
 
 from chromadb.errors import NotFoundError as ChromaNotFoundError
 
+from .backends._inproc_sqlite import (
+    open_reader as open_palace_reader,
+    open_writer as open_palace_writer,
+    release as release_palace_anchor,
+)
 from .backends.chroma import ChromaBackend, _clear_chroma_system_cache, hnsw_capacity_status
 
 # sqlite_read_uri stays in this module's namespace: callers and tests reach the
@@ -53,10 +58,6 @@ from .backends.chroma import ChromaBackend, _clear_chroma_system_cache, hnsw_cap
 # palace's in-process lock.
 from .config import connect_sqlite_read, sqlite_read_uri  # noqa: F401
 from .stored_text import decode_record
-from .backends._inproc_sqlite import open_reader as open_palace_reader
-from .backends._inproc_sqlite import open_writer as open_palace_writer
-from .backends._inproc_sqlite import release as release_palace_anchor
-
 
 COLLECTION_NAME = "mempalace_drawers"
 REPAIR_TEMP_COLLECTION = f"{COLLECTION_NAME}__repair_tmp"
@@ -1304,7 +1305,7 @@ _FTS5_CONTENT_RESTORE_SQL = """
 """
 
 _FTS5_REBUILD_SQL = (
-    "INSERT INTO embedding_fulltext_search(embedding_fulltext_search) VALUES('rebuild')"  # noqa: E501
+    "INSERT INTO embedding_fulltext_search(embedding_fulltext_search) VALUES('rebuild')"
 )
 
 
@@ -2072,8 +2073,8 @@ def _rebuild_one_collection(
     embeddings: list[list[float]] = []
     upserted = 0
     col = None
-    from .palace import ASSETS_COLLECTION_NAME
     from .config import MempalaceConfig
+    from .palace import ASSETS_COLLECTION_NAME
 
     media_assets = collection_name == ASSETS_COLLECTION_NAME
     embeddinggemma2 = MempalaceConfig().embedding_model == "embeddinggemma2"

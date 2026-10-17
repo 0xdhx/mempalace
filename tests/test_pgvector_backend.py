@@ -6,7 +6,6 @@ import types
 from hashlib import sha256
 
 import pytest
-
 from _backend_conformance import assert_partition_isolation, assert_update_skips_missing_ids
 
 from mempalace.backends import (
@@ -16,19 +15,21 @@ from mempalace.backends import (
     DimensionMismatchError,
     PalaceRef,
     available_backends,
+    pgvector as pgvector_module,
 )
-from mempalace.backends import pgvector as pgvector_module
 from mempalace.backends._remote_common import as_vector_array
-from mempalace.backends.base import UnsupportedCapabilityError
-from mempalace.backends.base import recency_sort_key as _recency_sort_key
+from mempalace.backends.base import (
+    UnsupportedCapabilityError,
+    recency_sort_key as _recency_sort_key,
+)
 from mempalace.backends.pgvector import (
     PgVectorBackend,
+    _matches_where,
     _PgVectorClient,
     _PgVectorConfig,
-    _matches_where,
-    _vector_distance,
     _shared_namespace_key,
     _shared_namespace_slug,
+    _vector_distance,
 )
 
 
