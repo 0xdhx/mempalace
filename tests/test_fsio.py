@@ -336,3 +336,73 @@ def test_an_unfollowed_link_is_replaced_and_its_target_left_alone(tmp_path):
     assert not os.path.islink(link)
     assert link.read_text(encoding="utf-8") == "drawer_bad\n"
     assert target.read_text(encoding="utf-8") == "untouched"
+
+
+def test_an_unfollowed_link_is_not_written_in_place_when_the_rename_fails(tmp_path, monkeypatch):
+    """Writing in place would follow the link, so the refusal is raised."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched", encoding="utf-8")
+    link = tmp_path / "corrupt_ids.txt"
+    _symlink_or_skip(link, victim)
+    real_replace = os.replace
+
+    def refused(src, dst, *args, **kwargs):
+        if os.path.basename(str(dst)) == link.name:
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+        return real_replace(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(os, "replace", refused)
+
+    with pytest.raises(PermissionError):
+        fsio.atomic_write_text(link, "drawer_bad\n", follow_symlinks=False)
+
+    assert os.path.islink(link)
+    assert victim.read_text(encoding="utf-8") == "untouched"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [link.name, victim.name]
+
+
+def test_an_unfollowed_link_is_not_written_in_place_without_a_temp_file(tmp_path, monkeypatch):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched", encoding="utf-8")
+    link = tmp_path / "corrupt_ids.txt"
+    _symlink_or_skip(link, victim)
+
+    def refused(*args, **kwargs):
+        raise PermissionError(errno.EACCES, "Access is denied")
+
+    monkeypatch.setattr(fsio, "open_new_temp_file", refused)
+
+    with pytest.raises(PermissionError):
+        fsio.atomic_write_text(link, "drawer_bad\n", follow_symlinks=False)
+
+    assert victim.read_text(encoding="utf-8") == "untouched"
+
+
+def test_a_file_at_the_old_pid_temp_name_is_left_alone(tmp_path):
+    dest = tmp_path / "state.json"
+    stale = tmp_path / f"state.json.tmp-{os.getpid()}"
+    stale.write_text("someone else's", encoding="utf-8")
+
+    fsio.atomic_write_text(dest, "new")
+
+    assert dest.read_text(encoding="utf-8") == "new"
+    assert stale.read_text(encoding="utf-8") == "someone else's"
+    assert sorted(p.name for p in tmp_path.iterdir()) == [dest.name, stale.name]
+
+
+def test_a_link_at_the_next_temp_name_is_skipped_not_written_through(tmp_path, monkeypatch):
+    """Temporary files are created ``O_EXCL``: a link planted at the name the
+    publisher picks costs one attempt, never a write through it."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched", encoding="utf-8")
+    dest = tmp_path / "state.json"
+    names = iter([b"\x00" * 6, b"\x01" * 6])
+    monkeypatch.setattr(os, "urandom", lambda n: next(names))
+    planted = tmp_path / ".state.json.000000000000.tmp"
+    _symlink_or_skip(planted, victim)
+
+    fsio.atomic_write_text(dest, "new")
+
+    assert dest.read_text(encoding="utf-8") == "new"
+    assert victim.read_text(encoding="utf-8") == "untouched"
+    assert os.path.islink(planted)

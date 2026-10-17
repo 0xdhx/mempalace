@@ -162,7 +162,6 @@ def _fill_temp(
     try:
         if private:
             _chmod_quiet(tmp, 0o600)
-        os.ftruncate(fd, 0)
         with _open_body(fd, "w", binary) as handle:
             write_body(handle)
             handle.flush()
@@ -175,27 +174,11 @@ def _fill_temp(
 def _open_publish_temp(path: Path, mode: int):
     """Return ``(fd, tmp)`` for a publish into ``path``.
 
-    The pid-named file is tried first. ``O_NOFOLLOW`` keeps a symlink at that
-    name from being written through. A hard link is not a symlink, so a
-    second link is rejected before the truncate: truncating it would empty a
-    file nobody named here. Anything else in the way of the pid name asks
-    the directory for a name of its own.
+    The file is always new: created ``O_EXCL`` under a random name, so a file
+    or link someone else left in the directory is never reused or written
+    through. A run killed before the rename leaves its file behind.
     """
-    tmp = str(path.with_name(f"{path.name}.tmp-{os.getpid()}"))
-    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(tmp, flags, mode)
-        try:
-            linked = os.fstat(fd).st_nlink > 1
-        except BaseException:
-            os.close(fd)
-            raise
-        if linked:
-            os.close(fd)
-            raise OSError(errno.EMLINK, "temporary name has another link", tmp)
-    except OSError:
-        fd, tmp = open_new_temp_file(path.parent, prefix=f".{path.name}.", suffix=".tmp", mode=mode)
-    return fd, tmp
+    return open_new_temp_file(path.parent, prefix=f".{path.name}.", suffix=".tmp", mode=mode)
 
 
 def _replace(tmp: str, path: Path) -> None:
@@ -225,19 +208,20 @@ def _finish_failed_replace(
     write_body: Callable[[Any], None],
     binary: bool,
     private: bool,
+    in_place: bool,
 ) -> None:
     """Publish in place when the directory itself refused the rename.
 
-    That happens on POSIX when an orphan at the pid name was reused, so the
-    directory first answers at the rename. A Windows error is a file another
-    process still holds after the retries; writing through it would let that
-    reader see a torn file, so it is raised. So is anything not an
-    ``OSError`` (a signal between the write and the rename) and any errno the
-    fallback is not for. The temporary file holds a finished, fsynced copy:
+    A Windows error is a file another process still holds after the retries;
+    writing through it would let that reader see a torn file, so it is
+    raised. So is anything not an ``OSError`` (a signal between the write and
+    the rename), any errno the fallback is not for, and every failure when
+    ``in_place`` is off. The temporary file holds a finished, fsynced copy:
     it is removed only after the in-place write returns.
     """
     if (
-        not isinstance(exc, OSError)
+        not in_place
+        or not isinstance(exc, OSError)
         or exc.errno not in _IN_PLACE_ERRNOS
         or getattr(exc, "winerror", None) is not None
     ):
@@ -276,7 +260,8 @@ def atomic_publish(
     ``binary`` is set (no newline translation). The file is 0600 unless
     ``private`` is false, which leaves the mode to the umask as a plain
     ``open()`` does. With ``follow_symlinks`` false a link at ``path`` is
-    replaced rather than written through. The write falls back to
+    replaced rather than written through, and there is no in-place fallback,
+    since writing in place would follow it. Otherwise the write falls back to
     ``write_in_place`` only when the directory refuses a new name (``EACCES``,
     ``EPERM``, ``EROFS``) while the destination itself may still be writable.
     Every other failure propagates and does not truncate ``path``.
@@ -286,7 +271,7 @@ def atomic_publish(
     try:
         fd, tmp = _open_publish_temp(path, mode)
     except OSError as exc:
-        if exc.errno not in _IN_PLACE_ERRNOS:
+        if not follow_symlinks or exc.errno not in _IN_PLACE_ERRNOS:
             raise
         write_in_place(path, write_body, binary=binary, private=private)
         _warn_in_place(path, why="a temporary file")
@@ -296,7 +281,7 @@ def atomic_publish(
     try:
         _replace(tmp, path)
     except BaseException as exc:
-        _finish_failed_replace(exc, tmp, path, write_body, binary, private)
+        _finish_failed_replace(exc, tmp, path, write_body, binary, private, follow_symlinks)
         return
     fsync_directory(path.parent)
 

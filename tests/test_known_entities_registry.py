@@ -367,18 +367,17 @@ def test_successful_write_leaves_no_tmp_sidecar(temp_registry):
     assert _quarantine_files(temp_registry) == []
 
 
-def test_a_leftover_temp_file_from_this_process_is_reused(temp_registry):
-    """A signal between the write and the rename leaves the temporary file
-    behind. It carries the pid, so the next run of that process writes over
-    it instead of adding another one."""
+def test_a_file_at_the_old_pid_temp_name_is_left_alone(temp_registry):
+    """Temporary files are created exclusively under a random name, so a file
+    someone left at the old pid name is neither reused nor removed."""
     stale = temp_registry.with_name(f"{temp_registry.name}.tmp-{os.getpid()}")
     stale.write_text("half a registry from a run that was killed")
 
     miner.add_to_known_entities({"people": ["Alice"]})
 
-    assert not stale.exists()
+    assert stale.read_text() == "half a registry from a run that was killed"
     assert json.loads(temp_registry.read_text()) == {"people": ["Alice"]}
-    assert _quarantine_files(temp_registry) == []
+    assert _quarantine_files(temp_registry) == [stale]
 
 
 needs_unprivileged_posix = pytest.mark.skipif(
@@ -564,9 +563,8 @@ def test_an_orphan_at_the_temporary_name_does_not_cost_the_rename(temp_registry,
 
 @needs_unprivileged_posix
 def test_a_reusable_orphan_does_not_widen_the_registry(temp_registry):
-    """The pid-named file can be one this process left behind itself, with
-    whatever mode it had. ``O_CREAT`` on an existing name does not touch the
-    mode, so without the explicit ``chmod`` the registry inherits it."""
+    """A file at the old pid-named temp name, whatever its mode, is never
+    reused: the publish creates its own file, so the registry comes out 0600."""
     temp_registry.write_text(json.dumps({"people": ["Alice"]}))
     orphan = temp_registry.with_name(f"{temp_registry.name}.tmp-{os.getpid()}")
     orphan.write_text("left behind")
@@ -617,34 +615,9 @@ def test_a_hard_link_at_the_temporary_name_is_not_written_through(temp_registry,
 
 
 @needs_unprivileged_posix
-def test_a_temporary_file_the_fallback_cannot_remove_is_named(temp_registry, capsys):
-    """Removing it needs the directory, which is what refused the rename. It
-    holds what the call was asked to save, so leaving the user to find it is
-    worse than saying where it is."""
-    temp_registry.write_text(json.dumps({"people": ["Alice"]}))
-    orphan = temp_registry.with_name(f"{temp_registry.name}.tmp-{os.getpid()}")
-    orphan.write_text("half a registry from a run that was killed")
-    os.chmod(orphan, 0o600)
-    os.chmod(temp_registry.parent, 0o555)
-    try:
-        miner.add_to_known_entities({"people": ["Dana"]})
-        err = capsys.readouterr().err
-    finally:
-        os.chmod(temp_registry.parent, 0o700)
-
-    assert orphan.exists(), "the fallback could not have removed it here"
-    assert orphan.name in err
-    assert "could not be removed" in err
-    assert sorted(json.loads(temp_registry.read_text())["people"]) == ["Alice", "Dana"]
-
-
-@needs_unprivileged_posix
 def test_a_read_only_directory_with_a_usable_orphan_still_merges(temp_registry, capsys):
-    """Opening a temporary file that already exists needs the file, not the
-    directory, so a run that reuses an orphan at the pid name never asks the
-    directory anything and reaches the rename, where a read-only directory
-    refuses. ``develop`` wrote the registry in place there and kept the merge;
-    raising instead would lose it."""
+    """A read-only directory takes no new temporary file, orphan or not, so
+    the merge is written in place rather than lost."""
     temp_registry.write_text(json.dumps({"people": ["Alice"], "projects": ["Orion"]}))
     orphan = temp_registry.with_name(f"{temp_registry.name}.tmp-{os.getpid()}")
     orphan.write_text("half a registry from a run that was killed")
@@ -778,11 +751,6 @@ def test_a_taken_temporary_name_is_retried(temp_registry, monkeypatch):
 
     def occupied(path, *args, **kwargs):
         name = os.path.basename(str(path))
-        # The pid-named file is tried first and would succeed. Refusing it is
-        # what sends the write to a name the directory picks, which is the one
-        # the retry belongs to.
-        if name == f"{temp_registry.name}.tmp-{os.getpid()}":
-            raise FileExistsError(errno.EEXIST, "File exists")
         if name.startswith("." + temp_registry.name + ".") and taken["left"]:
             taken["left"] -= 1
             raise FileExistsError(errno.EEXIST, "File exists")
@@ -905,8 +873,7 @@ def test_the_umask_does_not_leave_the_temporary_file_unwritable(temp_registry, m
     real_fsync = os.fsync
 
     def record(fd):
-        candidate = temp_registry.with_name(f"{temp_registry.name}.tmp-{os.getpid()}")
-        if candidate.exists():
+        for candidate in temp_registry.parent.glob(f".{temp_registry.name}.*.tmp"):
             seen["mode"] = stat_mod.S_IMODE(os.stat(candidate).st_mode)
         return real_fsync(fd)
 
