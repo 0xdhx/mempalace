@@ -40,6 +40,7 @@ from typing import Iterable, Optional, Protocol
 
 from .config import MempalaceConfig, sanitize_name
 from .fsio import atomic_write_json
+from .llm_client import parse_json_reply
 from .metadata_types import is_bookkeeping
 
 ROOM_SET_SCHEMA_VERSION = 1
@@ -247,24 +248,9 @@ def _propose_user_prompt(wing: str, samples: list[dict], max_rooms: int) -> str:
     return "\n".join(lines)
 
 
-def _json_object(text: str) -> dict:
-    text = text.strip()
-    if text.startswith("```"):
-        text = re.sub(r"^```[a-zA-Z]*\n?", "", text)
-        text = re.sub(r"\n?```$", "", text)
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, re.DOTALL)
-        if not match:
-            raise ValueError("LLM response held no JSON object") from None
-        data = json.loads(match.group(0))
-    return data
-
-
 def _parse_room_json(text: str) -> tuple[list[dict], list[dict]]:
     """``(rooms, assignments)`` from the LLM's answer; assignments may be empty."""
-    data = _json_object(text)
+    data = parse_json_reply(text, expect=(dict, list))
     rooms = data.get("rooms") if isinstance(data, dict) else data
     if not isinstance(rooms, list):
         raise ValueError("LLM response JSON has no 'rooms' list")
@@ -274,7 +260,7 @@ def _parse_room_json(text: str) -> tuple[list[dict], list[dict]]:
 
 def _parse_room_json_assignments(text: str) -> tuple[list[dict], list[dict]]:
     """``([], assignments)`` from the follow-up call; tolerates a bare list."""
-    data = _json_object(text)
+    data = parse_json_reply(text, expect=(dict, list))
     assignments = data.get("assignments") if isinstance(data, dict) else data
     return [], list(assignments) if isinstance(assignments, list) else []
 
