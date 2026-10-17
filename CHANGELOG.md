@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **`python -m mempalace.dedup` is gone.** It deleted near-duplicate drawers
+  and also any drawer shorter than 20 characters, so it could remove real
+  memories. Nothing else in MemPalace called it. A re-mine already replaces a
+  file's own drawers without duplicating them, and search folds identical text
+  from different files at read time.
 - **`mempalace init` records a backend chosen with `MEMPALACE_BACKEND`.** The
   backend is read from `config.json` before the environment, and a palace init
   has not created yet has nothing on disk to detect it from, so the first
