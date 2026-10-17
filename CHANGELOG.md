@@ -64,6 +64,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Embedding a single string gives one vector.** The MiniLM and
+  OpenAI-compatible embedding functions treated a bare string as a list of
+  characters and returned one vector per character. Every embedding function
+  now reads a bare string as one document.
+- **A failed embedding dimension probe is retried.** When the embedder could
+  not answer the first probe (a local server still starting, a model still
+  loading), the dimension was cached as unknown for the rest of the process, so
+  a later identity record, such as the one a repair writes, kept no dimension.
+  Only a successful probe is cached now, and the first failure for a model is
+  logged as a warning.
 - MemPalace's own project files are handled under every name the miner
   reads. A project using `mempalace.yml` or the legacy `mempal.yaml` no longer
   has that file sampled by entity and corpus-origin detection on a re-run of
