@@ -30,6 +30,9 @@ import pytest
 
 from mempalace import mcp_server as mcp
 
+# Most tests drive an open loopback hub; the default token has its own tests.
+pytestmark = pytest.mark.usefixtures("tokenless_http_hub")
+
 
 def _post(port, path, body, headers=None, host_header=None):
     """Raw POST with full control over Host / Origin / Authorization headers."""
@@ -960,6 +963,51 @@ def test_bearer_token_enforced_when_configured(monkeypatch):
         httpd.shutdown()
         httpd.server_close()
         thread.join(timeout=5)
+
+
+def test_loopback_hub_requires_the_stored_token_by_default(monkeypatch, tmp_path):
+    """D-25: with no token configured, even a loopback hub mints and requires one,
+    stored where local clients find it."""
+    from types import SimpleNamespace
+
+    from mempalace import server_registry
+
+    monkeypatch.delenv("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN", raising=False)
+    monkeypatch.delenv("MEMPALACE_MCP_HTTP_TOKEN", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    palace = str(tmp_path / "palace")
+    monkeypatch.setattr(mcp, "_config", SimpleNamespace(palace_path=palace, backend="chroma"))
+
+    httpd = mcp._build_http_server("127.0.0.1", 0)
+    port = httpd.server_address[1]
+    thread = threading.Thread(
+        target=httpd.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
+    )
+    thread.start()
+    try:
+        token = server_registry.load_server_token(palace)
+        assert token and httpd.auth_token == token
+        if os.name == "posix":
+            assert os.stat(server_registry.server_token_path(palace)).st_mode & 0o077 == 0
+        ping = {"jsonrpc": "2.0", "id": 1, "method": "ping"}
+        assert _post(port, "/mcp", ping)[0] == 401
+        assert _post(port, "/mcp", ping, headers={"Authorization": f"Bearer {token}"})[0] == 200
+        assert _get(port, "/healthz")[0] == 200
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+        thread.join(timeout=5)
+
+
+def test_hub_without_token_or_palace_refuses_to_start(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN", raising=False)
+    monkeypatch.delenv("MEMPALACE_MCP_HTTP_TOKEN", raising=False)
+    monkeypatch.setattr(mcp, "_config", SimpleNamespace(palace_path="", backend="chroma"))
+    with pytest.raises(ValueError, match="bearer token"):
+        mcp._build_http_server("127.0.0.1", 0)
 
 
 def test_read_only_hides_and_refuses_mutating_tools(http_server, monkeypatch):

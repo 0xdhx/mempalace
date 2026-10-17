@@ -651,9 +651,14 @@ def _http_serve_sync(handler, path: str) -> bool:
     from urllib.parse import parse_qsl
 
     query = dict(parse_qsl(urlparse(handler.path).query))
+
+    def send(status: int, payload: dict) -> None:
+        # Peers replicate what they read here, so stray bytes travel exact.
+        handler._send_json(status, payload, exact=True)
+
     try:
         if path == "/sync/version_vector":
-            handler._send_json(
+            send(
                 200,
                 {
                     "replica_id": _call_logstream(lambda ls: ls.replica_id),
@@ -672,21 +677,21 @@ def _http_serve_sync(handler, path: str) -> bool:
             after = int(query.get("after", "0") or 0)
             limit = int(query.get("limit", "500") or 500)
             events = _call_logstream(lambda ls: ls.list_ops(origin, after_seq=after, limit=limit))
-            handler._send_json(200, {"origin": origin, "events": events, "count": len(events)})
+            send(200, {"origin": origin, "events": events, "count": len(events)})
             return True
         if path == "/sync/artifact":
             artifact_id = query.get("id") or ""
             artifact = _call_logstream(lambda ls: ls.get_artifact(artifact_id))
             if artifact is None:
-                handler._send_json(404, {"error": f"artifact {artifact_id!r} not found"})
+                send(404, {"error": f"artifact {artifact_id!r} not found"})
             else:
-                handler._send_json(200, {"artifact": artifact})
+                send(200, {"artifact": artifact})
             return True
         if path == "/sync/peers":
-            handler._send_json(200, _mesh_peers_payload())
+            send(200, _mesh_peers_payload())
             return True
     except (ValueError, TypeError) as exc:
-        handler._send_json(400, {"error": str(exc)})
+        send(400, {"error": str(exc)})
         return True
     return False
 
@@ -1169,11 +1174,7 @@ def _http_serve_logstream_stream(handler) -> None:
                 else _call_logstream(lambda ls: ls.list_events(limit=_SSE_BATCH_LIMIT, **filters))
             )
             for event in events:
-                frame = (
-                    f"id: {event['id']}\n"
-                    f"event: logstream\n"
-                    f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                )
+                frame = f"id: {event['id']}\nevent: logstream\ndata: {dumps_internal(event)}\n\n"
                 handler.wfile.write(frame.encode("utf-8"))
                 cursor = event["id"]
                 last_write = time.monotonic()
@@ -1191,6 +1192,28 @@ def _http_serve_logstream_stream(handler) -> None:
         handler.close_connection = True
 
 
+def _http_resolve_token() -> str:
+    """The bearer token /mcp requires, or "" when serving deliberately without one.
+
+    On by default for every bind (D-25): an unset ``MEMPALACE_MCP_HTTP_TOKEN``
+    reuses or mints the palace's stored token, which local clients read from
+    the same place. Only ``MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN`` (set by
+    ``mempalace serve --no-token`` / ``--allow-insecure``) serves without one.
+    """
+    token = os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "").strip()
+    if token or _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV):
+        return token
+    if not _config.palace_path:
+        raise ValueError(
+            "MCP HTTP needs a bearer token: set MEMPALACE_MCP_HTTP_TOKEN or a palace "
+            f"path, or set {_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV}=1 to serve without one."
+        )
+    from .. import server_registry
+
+    token, _created = server_registry.load_or_create_server_token(_config.palace_path)
+    return token
+
+
 def _build_http_server(host: str, port: int):
     """Construct (but do not start) the MCP HTTP server.
 
@@ -1202,17 +1225,7 @@ def _build_http_server(host: str, port: int):
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    auth_token = os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "").strip()
-    if (
-        not _http_is_loopback(host)
-        and not auth_token
-        and not _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV)
-    ):
-        raise ValueError(
-            "MEMPALACE_MCP_HTTP_TOKEN is required when binding MCP HTTP to a "
-            f"non-loopback host. Set {_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV}=1 only "
-            "when a trusted fronting layer provides access control."
-        )
+    auth_token = _http_resolve_token()
 
     # Resolve TLS before bind so a bad cert/key fails loudly rather than at the
     # first request. TLS is transport encryption only — the bearer-token guard
@@ -1272,8 +1285,11 @@ def _build_http_server(host: str, port: int):
             self.wfile.write(body)
             self.close_connection = True
 
-        def _send_json(self, status: int, payload: dict) -> None:
-            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        def _send_json(self, status: int, payload: dict, *, exact: bool = False) -> None:
+            # MCP clients get stray source bytes as U+FFFD; peers replicating
+            # through /sync get them exact.
+            dumps = dumps_internal if exact else dumps_client
+            body = dumps(payload).encode("utf-8")
             self._send_bytes(status, body, "application/json; charset=utf-8")
 
         def _request_rejected(self, require_auth: bool) -> bool:
@@ -1350,7 +1366,9 @@ def _build_http_server(host: str, port: int):
                 self.close_connection = True
                 return
 
-            self._send_json(200, response)
+            # Another MemPalace process (proxy, hub client) asks for the exact
+            # text; it shows the result to its own client the client's way.
+            self._send_json(200, response, exact=self.headers.get(EXACT_WIRE_HEADER) == "1")
 
     httpd = _MCPHTTPServer((host, port), _Handler)
     bound_port = httpd.server_address[1]

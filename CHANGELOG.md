@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **The HTTP MCP server requires a bearer token on every bind, loopback
+  included.** With no `--token` or `MEMPALACE_MCP_HTTP_TOKEN`, `mempalace serve`
+  and `mempalace-mcp --transport http` reuse or create the palace's token at
+  `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace` clients
+  already look, so the CLI, hooks and stdio proxy keep working unchanged. Anything
+  else that calls a loopback `/mcp` directly now needs `Authorization: Bearer
+  <token>`, or start the server with `--no-token` (loopback only). The token is
+  no longer printed at startup; the path is.
+- **MCP tool arguments are checked against the tool's schema before the tool
+  runs.** Wrong types, out-of-range limits, unknown enum values and over-long
+  strings return `-32602` with the parameter named, instead of reaching the tool
+  (`"false"` used to arrive as a truthy string). Numeric and boolean strings
+  (`"5"`, `"false"`) are still accepted and converted. An internal tool error
+  reports its error class without the exception text.
 - **`closet_llm` reads `MEMPALACE_LLM_ENDPOINT`, `MEMPALACE_LLM_MODEL` and
   `MEMPALACE_LLM_KEY` instead of the generic `LLM_ENDPOINT`, `LLM_MODEL` and
   `LLM_KEY`.** Generic names are often set for other tools, and reading them
@@ -64,6 +78,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **`mempalace repair --mode max-seq-id` no longer runs alongside a writer.**
+  The repair rewrote Chroma's `max_seq_id` rows without the palace lease, so a
+  mine or an MCP write could land in the middle of it. It now takes the lease,
+  works out the repair again once it holds it, and exits with code 2 without
+  changing anything when another writer holds the palace. Its backup is taken
+  through SQLite's backup API, so writes still in the WAL are part of it. The
+  same applies to the max_seq_id check that runs before a repair rebuild.
 - **Embedding a single string gives one vector.** The MiniLM and
   OpenAI-compatible embedding functions treated a bare string as a list of
   characters and returned one vector per character. Every embedding function
@@ -81,6 +102,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `.gitignore` instead of always `mempalace.yaml`. The skip lists now come
   from one place. `init` also no longer overwrites an `entities.json` that
   holds AAAK entity codes for `mempalace compress`.
+- **Mining no longer turns bytes that are not UTF-8 into U+FFFD.** Project,
+  conversation, diary and sweep ingest decoded files as UTF-8 and replaced
+  anything else with the replacement character, so a cp1252 file lost its
+  smart quotes and accented letters for good. Now a UTF-8 file with a few
+  stray bytes (its valid UTF-8 characters outnumber them) keeps its text
+  exactly, with only the stray bytes held as lone surrogates, so `café` stays
+  searchable. Any other file decodes as windows-1252, with every byte mapped.
+  The palace stores every byte exactly. MCP responses show a stray byte as
+  U+FFFD, because some clients' JSON parsers reject the escape that would
+  carry it; `mempalace_get_drawer` with `include_source_bytes: true` returns
+  the drawer's exact source bytes as base64. Exports write the original
+  bytes, and MemPalace processes talking to each other (proxy and hub, the
+  daemon, peer sync) pass them exactly. `mempalace_update_drawer` with new
+  content drops `source_encoding` and `transforms`, since that text did not
+  come from the source file. A drawer whose source was not plain UTF-8 carries
+  `source_encoding` (`utf-8-sig`, `utf-8+surrogateescape`,
+  `utf-8-sig+surrogateescape` or `windows-1252`), and
+  `fsio.encode_source(text, source_encoding)` gives the source bytes back.
+  The encoding-repair script (`scripts/mempalace_repair_encoding.py`) leaves
+  those drawers alone. Drawers filed before this release keep their
+  replacement characters until their file is mined again.
 - **A re-mine no longer loses a file's drawers when it fails part-way.** The
   project and conversation miners deleted a changed file's drawers before
   writing the new ones, so a crash or backend error during the write left the
@@ -122,6 +164,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   now read distances on the cosine scale, so palaces using `l2` or `ip` rank and
   report the same way as cosine ones. Search responses name the raw distance's
   scale in `distance_metric`.
+- **`mempalace compress` no longer writes into the closets that search reads.**
+  Its lossy AAAK summaries were stored alongside closet pointers, so they
+  boosted search results like real closets. They now go to their own
+  `mempalace_aaak` collection, one row per drawer with `kind="aaak"`, and
+  repair and migrate carry it over. Deleting or rewriting a drawer (by any
+  delete tool, `sync`, or a re-mine) deletes its summary too. Search already
+  ignores summaries an older `compress` left in the closets; the next
+  `compress`, `repair --mode from-sqlite` or `migrate` moves them out.
 - **`wake-up` no longer says "No memories yet" when it could not read the
   palace.** A recent-memories read that failed, for example while a mine held
   the database, was swallowed and the wake-up reported an empty palace; a scan

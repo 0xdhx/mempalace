@@ -799,10 +799,11 @@ class QdrantCollection(BaseCollection):
         rows = self._scroll_all(
             qdrant_filter=q_filter, with_vector=with_vector, max_rows=bounded_rows
         )
+        id_set = None if ids is None else set(ids)
         rows = [
             row
             for row in rows
-            if (ids is None or row["id"] in set(ids))
+            if (id_set is None or row["id"] in id_set)
             and _matches_where(row["metadata"], where)
             and _matches_where_document(row["document"], where_document)
         ]

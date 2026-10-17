@@ -120,7 +120,9 @@ mempalace wake-up --wing driftwood
 
 ## `mempalace compress`
 
-Compress drawers using AAAK Dialect.
+Compress drawers using AAAK Dialect. Summaries go to the `mempalace_aaak`
+collection, keyed by drawer id, and never into the closets that search reads.
+Drawers are not changed.
 
 ```bash
 mempalace compress --wing myapp

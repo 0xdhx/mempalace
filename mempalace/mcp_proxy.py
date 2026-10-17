@@ -29,6 +29,7 @@ import sys
 import urllib.error
 
 from .hub_client import HUB_FORWARD_ENV, HUB_PROXY_TIMEOUT_S, discover_hub
+from .stored_text import dumps_client, dumps_internal
 
 from .update_awareness import cached_update_status, schedule_update_check
 
@@ -111,7 +112,7 @@ def _forward(base_url: str, headers: dict, request: dict, palace_path: str):
     """POST one JSON-RPC request to the hub; None for notifications (202)."""
     from . import server_registry
 
-    body = json.dumps(request, ensure_ascii=False).encode("utf-8")
+    body = dumps_internal(request).encode("utf-8")
     with server_registry.urlopen_with_server_tokens(
         palace_path,
         f"{base_url}/mcp",
@@ -394,12 +395,12 @@ def _run_proxy_loop(palace_path) -> None:
             # leaves the id unknowable: the answer carries a null one, as the
             # hub's HTTP transport answers it.
             logger.error("Server error: %s", exc)
-            payload = json.dumps(_json_rpc_error(None, -32700, "Parse error"), ensure_ascii=False)
+            payload = dumps_client(_json_rpc_error(None, -32700, "Parse error"))
         else:
             try:
                 response = _handle(request, palace_path, local)
                 if response is not None:
-                    payload = json.dumps(response, ensure_ascii=False)
+                    payload = dumps_client(response)
             except KeyboardInterrupt:
                 break
             except Exception:
@@ -410,9 +411,7 @@ def _run_proxy_loop(palace_path) -> None:
                 if req_id is None:
                     # A notification is owed no response, failure included.
                     continue
-                payload = json.dumps(
-                    _json_rpc_error(req_id, -32603, "Internal error"), ensure_ascii=False
-                )
+                payload = dumps_client(_json_rpc_error(req_id, -32603, "Internal error"))
 
         if payload is None:
             continue

@@ -11,17 +11,23 @@ A publish writes a temporary file in the destination directory, fsyncs it,
 then ``os.replace``s it into place and fsyncs the directory. An exception
 before the replace leaves the previous file untouched and removes the
 temporary file.
+
+Source files are read here too: without following a symlink, without
+blocking on a FIFO, and decoded so that no byte is lost (see
+``decode_source``).
 """
 
+import codecs
 import errno
 import json
 import os
+import re
 import stat
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional, Tuple, Union
 
 PathLike = Union[str, os.PathLike]
 
@@ -351,3 +357,145 @@ def move_aside(path: PathLike, *, label: str) -> Optional[str]:
         unlink_quietly(target)
         raise
     return target
+
+
+# The five bytes Windows-1252 leaves undefined. WHATWG's windows-1252, which
+# browsers use, maps each to the C1 control with the same number.
+WINDOWS_1252_UNDEFINED = frozenset({0x81, 0x8D, 0x8F, 0x90, 0x9D})
+_WINDOWS_1252_ERRORS = "mempalace.windows-1252"
+
+
+def _windows_1252_passthrough(exc):
+    if isinstance(exc, UnicodeDecodeError):
+        return "".join(chr(b) for b in exc.object[exc.start : exc.end]), exc.end
+    if isinstance(exc, UnicodeEncodeError):
+        chars = exc.object[exc.start : exc.end]
+        if all(ord(c) in WINDOWS_1252_UNDEFINED for c in chars):
+            return bytes(ord(c) for c in chars), exc.end
+    raise exc
+
+
+codecs.register_error(_WINDOWS_1252_ERRORS, _windows_1252_passthrough)
+
+
+def decode_windows_1252(raw: bytes) -> str:
+    """WHATWG windows-1252: cp1252 with the undefined bytes as C1 controls."""
+    return raw.decode("cp1252", _WINDOWS_1252_ERRORS)
+
+
+def encode_windows_1252(text: str) -> bytes:
+    """Inverse of ``decode_windows_1252``; raises for text it cannot encode."""
+    return text.encode("cp1252", _WINDOWS_1252_ERRORS)
+
+
+# Any character a valid multi-byte UTF-8 sequence decodes to: not ASCII and
+# not one of the lone surrogates surrogateescape gives a stray byte.
+_UTF8_MULTIBYTE = re.compile("[^\x00-\x7f\udc80-\udcff]")
+_STRAY_BYTE = re.compile("[\udc80-\udcff]")
+
+
+def decode_source(raw: bytes, *, universal_newlines: bool = False) -> Tuple[str, str]:
+    """Decode source bytes so that no byte is lost: ``(text, encoding)``.
+
+    - Valid UTF-8 is ``utf-8``, or ``utf-8-sig`` with its byte-order mark
+      dropped.
+    - UTF-8 with stray bytes keeps its UTF-8 text, and only the stray bytes
+      become lone surrogates U+DC80-U+DCFF: ``utf-8+surrogateescape`` (or
+      ``utf-8-sig+surrogateescape``). A file counts as UTF-8 here when it has
+      a byte-order mark, or when its valid multi-byte characters outnumber
+      its stray bytes. A legacy file can form a few valid sequences by chance
+      (cp1252 ``É`` then ``”`` is the bytes of one UTF-8 character), but its
+      accented letters fail far more often than that.
+    - Anything else is a legacy file and decodes as WHATWG ``windows-1252``,
+      which maps every byte.
+
+    ``encode_source(text, encoding)`` gives the bytes back. This never raises
+    and never yields U+FFFD for a bad byte. ``universal_newlines`` turns CRLF
+    and lone CR into LF, as reading the file in text mode did.
+    """
+    bom = raw.startswith(codecs.BOM_UTF8)
+    body = raw[len(codecs.BOM_UTF8) :] if bom else raw
+    encoding = "utf-8-sig" if bom else "utf-8"
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        text = body.decode("utf-8", "surrogateescape")
+        if bom or len(_UTF8_MULTIBYTE.findall(text)) > len(_STRAY_BYTE.findall(text)):
+            encoding += "+surrogateescape"
+        else:
+            text, encoding = decode_windows_1252(raw), "windows-1252"
+    if universal_newlines:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+    return text, encoding
+
+
+def encode_source(text: str, encoding: str) -> bytes:
+    """The bytes ``decode_source`` read ``text`` from, for its ``encoding``."""
+    if encoding == "windows-1252":
+        return encode_windows_1252(text)
+    codec, _, errors = encoding.partition("+")
+    if codec not in ("utf-8", "utf-8-sig") or errors not in ("", "surrogateescape"):
+        raise ValueError(f"not a source encoding: {encoding!r}")
+    data = text.encode("utf-8", errors or "strict")
+    return codecs.BOM_UTF8 + data if codec == "utf-8-sig" else data
+
+
+def encoding_metadata(encoding: str) -> dict:
+    """Drawer metadata naming a source's encoding when it is not plain UTF-8.
+
+    RFC 002 records the encoding per drawer only where it differs from the
+    default, so UTF-8 sources carry nothing.
+    """
+    return {} if encoding == "utf-8" else {"source_encoding": encoding}
+
+
+def open_source_file(path: PathLike) -> Tuple[int, os.stat_result]:
+    """Open ``path`` read-only: the descriptor and its ``fstat``.
+
+    Refuses a symlink and anything that is not a regular file with
+    ``OSError``. The caller closes the descriptor.
+    """
+    if os.path.islink(path):
+        raise OSError("symlinked files are skipped")
+    # O_NONBLOCK is what makes the S_ISREG check below reachable. Opening a
+    # FIFO for reading parks in the kernel until a writer shows up, so
+    # without it the fstat never runs and a named pipe with a source-file
+    # suffix wedges the mine forever. With it the open returns immediately
+    # and the file type decides. Linux open(2): "this flag has no effect for
+    # regular files and block devices".
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        # A reader that breaks a write lease gets EAGAIN when it passes
+        # O_NONBLOCK, where a blocking open waits out lease-break-time and
+        # succeeds. The kernel grants leases on regular files only, so
+        # re-check the type and open it the way this code did before the flag.
+        if exc.errno != errno.EAGAIN or not stat.S_ISREG(os.lstat(path).st_mode):
+            raise
+        fd = os.open(path, flags & ~getattr(os, "O_NONBLOCK", 0))
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise OSError("not a regular file")
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, st
+
+
+def read_source_text(path: PathLike, *, max_bytes: int) -> Tuple[str, str, float]:
+    """Read a source file whole: ``(text, encoding, mtime)``.
+
+    The mtime comes from the ``fstat`` taken before the read, so a caller
+    never stamps text with the mtime of a later append (#22). Newlines are
+    read as in text mode; see ``decode_source`` for the decoding. Raises
+    ``OSError`` for a symlink, a non-regular file, or more than ``max_bytes``.
+    """
+    fd, st = open_source_file(path)
+    with os.fdopen(fd, "rb") as handle:
+        if st.st_size > max_bytes:
+            raise OSError(f"file too large ({st.st_size // (1024 * 1024)} MB)")
+        raw = handle.read()
+    text, encoding = decode_source(raw, universal_newlines=True)
+    return text, encoding, st.st_mtime

@@ -119,17 +119,19 @@ and needs no extra.
 
 ## 3. Serve MCP over HTTP
 
-One command — `mempalace serve` — runs the server with secure defaults. On a
-network-exposed (`0.0.0.0`) bind it **auto-generates a strong bearer token**
-(stored `0600` under `~/.mempalace/server/`, printed once), prints a
-ready-to-paste client config, and runs in the foreground so Docker/systemd own
-the lifecycle.
+One command — `mempalace serve` — runs the server with secure defaults. Every
+bind, loopback included, **requires a bearer token**: unless you pass one, the
+server reuses or auto-generates a strong token stored `0600` at
+`~/.mempalace/server/<key>/token`, where local `mempalace` clients (the CLI,
+the save hooks, the stdio proxy) read it automatically. It prints that path and
+a ready-to-paste client config, never the token itself, and runs in the
+foreground so Docker/systemd own the lifecycle.
 
 ```bash
 mempalace serve --host 0.0.0.0 --port 8765 --backend milvus
 ```
 
-Output includes the token and the exact client command. Useful flags:
+Read the token from the printed path to hand it to remote clients. Useful flags:
 
 | Flag | Default | Purpose |
 |---|---|---|
@@ -138,12 +140,16 @@ Output includes the token and the exact client command. Useful flags:
 | `--backend` | config/env | Storage backend (e.g. `qdrant`) |
 | `--tls-cert` / `--tls-key` | _(none)_ | PEM cert + key to terminate **TLS natively** (server speaks `https`) |
 | `--read-only` | off | Expose recall only — the tools that change state are hidden and refused |
-| `--token` | auto | Use a specific bearer token instead of the generated one |
+| `--token` | auto | Use a specific bearer token instead of the stored one |
+| `--no-token` | off | Serve a loopback bind without a token (refused on a network bind) |
 | `--allow-insecure` | off | Permit a non-loopback bind with no token (only behind a trusted proxy) |
 
 The token always travels via the environment, never the command line, so it
-can't leak through `ps`. Binding to a non-loopback host with no token and no
-`--allow-insecure` refuses to start. The server also guards against
+can't leak through `ps`. Without `--no-token` or `--allow-insecure` the server
+never runs tokenless; `mempalace-mcp --transport http` follows the same rule,
+and `MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN=1` is its explicit opt-out.
+Tool arguments are checked against each tool's schema before any handler runs,
+and an internal error reaches a client as its error class only. The server also guards against
 DNS-rebinding with a `Host` allowlist and an `Origin` loopback check, and
 serializes concurrent writes — so multiple teammates can write to the shared
 palace at once over HTTP.
