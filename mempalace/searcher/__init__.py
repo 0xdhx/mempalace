@@ -41,6 +41,7 @@ from ..palace import (
     _open_collection_or_explain,
     get_closets_collection,
     get_collection,
+    is_aaak_row,
     resolve_backend_name,
 )
 from ..search_util import (
