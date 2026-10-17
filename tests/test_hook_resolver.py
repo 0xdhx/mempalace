@@ -33,7 +33,9 @@ def test_plugin_copy_matches_the_shared_resolver(copy: Path) -> None:
 
 
 def _write_executable(path: Path, content: str) -> None:
-    path.write_text(content, encoding="utf-8", newline="\n")
+    # Path.write_text(newline=) only exists from Python 3.10.
+    with open(path, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(content)
     path.chmod(0o755)
 
 
