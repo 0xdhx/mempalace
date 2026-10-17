@@ -24,6 +24,8 @@ on decoded rows keeps the caller's values.
 
 import re
 
+from .metadata_types import coerce_metadata_types
+
 FLAG = "_mempalace_escaped"
 _PREFIX = "\x01mpesc:"
 _BAD = re.compile(r"[\x00\ud800-\udfff]")
@@ -183,7 +185,7 @@ def prepare_stored_write(documents, ids, metadatas=None):
     metas = metadatas if metadatas is not None else [None] * len(ids)
     out_docs, out_metas = [], []
     for doc, meta in zip(docs if docs is not None else [None] * len(ids), metas):
-        doc, meta = encode_record(doc, meta)
+        doc, meta = encode_record(doc, coerce_metadata_types(meta))
         out_docs.append(doc)
         out_metas.append(meta)
     if metadatas is None:

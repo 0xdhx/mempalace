@@ -225,7 +225,7 @@ def file_already_mined(
             ) from exc
         ids = results.get("ids") or []
         for meta in results.get("metadatas") or []:
-            meta = meta or {}
+            meta = coerce_metadata_types(meta or {})
             if extract_mode is not None and not _metadata_matches_extract_mode(meta, extract_mode):
                 continue
             if not _is_comparable(meta, extract_mode):
@@ -313,7 +313,7 @@ def prefetch_mined_set(
         unprovable.clear()
 
     def _absorb(meta):
-        meta = meta or {}
+        meta = coerce_metadata_types(meta or {})
         src = meta.get("source_file")
         if not src:
             return
@@ -410,7 +410,7 @@ def prefetch_complete_mtimes(collection, source_files) -> Optional[dict[str, tup
 
     try:
         for meta in rows:
-            meta = meta or {}
+            meta = coerce_metadata_types(meta or {})
             src = meta.get("source_file")
             if src not in wanted or src in unprovable:
                 continue

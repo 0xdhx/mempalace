@@ -757,6 +757,8 @@ def tool_search(
             "method": sanitized["method"],
             "original_length": sanitized["original_length"],
             "clean_length": sanitized["clean_length"],
+            "truncated": sanitized["truncated"],
+            "replaced_lone_surrogates": sanitized["replaced_lone_surrogates"],
             "clean_query": sanitized["clean_query"],
         }
     if context:
@@ -838,7 +840,10 @@ def tool_traverse_graph(start_room: str, max_hops: int = 2):
         if not col:
             return _collection_error_or_no_palace()
         return traverse(start_room, col=col, max_hops=max_hops)
-    return traverse(start_room, max_hops=max_hops, config=_config)
+    try:
+        return traverse(start_room, max_hops=max_hops, config=_config)
+    except GraphUnavailable as e:
+        return {"error": str(e)}
 
 
 def tool_find_tunnels(wing_a: str = None, wing_b: str = None):
@@ -853,7 +858,10 @@ def tool_find_tunnels(wing_a: str = None, wing_b: str = None):
         if not col:
             return _collection_error_or_no_palace()
         return find_tunnels(wing_a, wing_b, col=col)
-    return find_tunnels(wing_a, wing_b, config=_config)
+    try:
+        return find_tunnels(wing_a, wing_b, config=_config)
+    except GraphUnavailable as e:
+        return {"error": str(e)}
 
 
 def tool_graph_stats():
@@ -912,7 +920,7 @@ def tool_create_tunnel(
             source_drawer_id=source_drawer_id,
             target_drawer_id=target_drawer_id,
         )
-    except ValueError as e:
+    except (ValueError, GraphUnavailable) as e:
         return {"error": str(e)}
 
 

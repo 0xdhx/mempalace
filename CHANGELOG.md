@@ -64,6 +64,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Graph tools no longer report an unreadable palace as an empty one.**
+  `traverse`, `find_tunnels` and explicit `create_tunnel` used to treat any
+  failure to open the palace (a lock, a corrupt index) as "no rooms", and an
+  explicit tunnel was let through when its room check failed. The graph now
+  opens the palace read-only; a palace that does not exist yet is still an
+  empty graph, and any other failure returns "palace could not be read for
+  the graph" instead.
+- **Search says when it rewrote your query.** The `sanitizer` block on a
+  sanitized `mempalace_search` result now carries `truncated` and
+  `replaced_lone_surrogates`, and a query whose only change was a replaced
+  lone surrogate is reported as sanitized. `original_length` counts the
+  query as sent.
+- **Drawer bookkeeping fields are stored as numbers, flags and ISO text.**
+  `chunk_index`, `chunk_total`, `line_start`, `line_end`, `entry_index` and
+  the version stamps are stored as integers, `source_mtime` and
+  `compression_ratio` as floats, `is_sentinel` as a boolean, and `filed_at`
+  / `created_at` datetimes as ISO text, whatever form a writer passed. Range
+  filters such as `{"chunk_index": {"$gt": 9}}` compare numbers instead of
+  text, and the already-mined check reads legacy rows that hold `"1"` as 1
+  instead of re-mining them. A value that does not parse is stored as given.
+
 - **Embedding a single string gives one vector.** The MiniLM and
   OpenAI-compatible embedding functions treated a bare string as a list of
   characters and returned one vector per character. Every embedding function

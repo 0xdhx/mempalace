@@ -129,6 +129,7 @@ from ..searcher import (  # noqa: E402
     search_memories,
 )
 from ..palace_graph import (  # noqa: E402
+    GraphUnavailable,
     traverse,
     find_tunnels,
     graph_stats,
