@@ -916,6 +916,14 @@ def tool_mine(
             "error": "include_ignored is supported only in projects mode",
             "error_class": "ValueError",
         }
+    # A truthy non-boolean ("false", 1) would silently opt into mining every
+    # subagent transcript, so accept only a real JSON boolean.
+    if not isinstance(include_subagents, bool):
+        return {
+            "success": False,
+            "error": "include_subagents must be a boolean",
+            "error_class": "ValueError",
+        }
 
     src = os.path.expanduser(source) if source else ""
     # convos accepts one conversation file as well as a directory — the CLI has

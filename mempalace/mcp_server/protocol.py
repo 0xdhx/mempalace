@@ -829,13 +829,45 @@ _COERCERS = {
 }
 
 
-def _coerce_argument(value, schema: dict, where: str):
+# A property marked strict is never converted: "true", 1 or null is refused,
+# not read as true or as absent. For switches that widen what is mined or
+# searched, a sloppy value must not opt in.
+STRICT_SCHEMA_KEY = "x-mempalace-strict"
+_STRICT_TYPES = {
+    "boolean": bool,
+    "string": str,
+    "integer": int,
+    "number": (int, float),
+    "array": list,
+    "object": dict,
+}
+
+
+def _check_strict(value, schema, where):
+    expected = schema.get("type")
+    wanted = _STRICT_TYPES.get(expected)
+    if wanted is None:
+        return value
+    if not isinstance(value, wanted) or (isinstance(value, bool) and expected != "boolean"):
+        raise ToolArgumentError(f"'{where}' must be a JSON {expected}")
+    items = schema.get("items")
+    if expected == "array" and isinstance(items, dict) and items.get("type"):
+        value = [
+            _coerce_argument(v, items, f"{where}[{i}]", strict=True) for i, v in enumerate(value)
+        ]
+    return value
+
+
+def _coerce_argument(value, schema: dict, where: str, strict: bool = False):
     """Return ``value`` as the type ``schema`` declares, or raise ToolArgumentError.
 
-    JSON clients send integers as floats or strings and booleans as "false".
+    JSON clients send integers as floats or strings and booleans as "false";
+    those are converted unless the property is strict.
     """
     coerce = _COERCERS.get(schema.get("type"))
-    if coerce is not None:
+    if strict or schema.get(STRICT_SCHEMA_KEY):
+        value = _check_strict(value, schema, where)
+    elif coerce is not None:
         value = coerce(value, schema, where)
     if "enum" in schema and value not in schema["enum"]:
         allowed = ", ".join(repr(v) for v in schema["enum"])
@@ -855,16 +887,17 @@ def validate_tool_arguments(tool_name: str, arguments: dict) -> dict:
 
     Shared by every entry point that runs a tool handler (stdio, HTTP, the
     daemon and the light server), so a value is judged the same way whichever
-    door it came through. A JSON null means "not supplied": the handler's
-    default applies. Keys the schema does not declare pass through untouched;
-    filtering them is the caller's job.
+    door it came through. A JSON null means "not supplied", so the handler's
+    default applies, except on a strict property, where it is refused. Keys
+    the schema does not declare pass through untouched; filtering them is the
+    caller's job.
     """
     props = TOOLS[tool_name]["input_schema"].get("properties", {})
     checked = {}
     for key, value in arguments.items():
-        if value is None:
-            continue
         schema = props.get(key)
+        if value is None and not (schema or {}).get(STRICT_SCHEMA_KEY):
+            continue
         checked[key] = value if schema is None else _coerce_argument(value, schema, key)
     return checked
 

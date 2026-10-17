@@ -141,3 +141,48 @@ def test_light_server_runs_the_same_check(monkeypatch):
 
     assert result["success"] is False
     assert "'limit' must be at most 100" in result["error"]
+
+
+@pytest.mark.parametrize(
+    "arguments, fragment",
+    [
+        ({"include_subagents": "true"}, "'include_subagents' must be a JSON boolean"),
+        ({"include_subagents": 1}, "'include_subagents' must be a JSON boolean"),
+        ({"include_subagents": None}, "'include_subagents' must be a JSON boolean"),
+        ({"include_ignored": '["a"]'}, "'include_ignored' must be a JSON array"),
+        ({"include_ignored": [1]}, "'include_ignored[0]' must be a JSON string"),
+    ],
+)
+def test_strict_properties_are_never_converted(monkeypatch, arguments, fragment):
+    """include_subagents / include_ignored widen what is mined: a sloppy value
+    must be refused, not read as an opt-in."""
+
+    def mine(**kwargs):  # pragma: no cover - must not run
+        raise AssertionError("mine ran with a converted switch")
+
+    monkeypatch.setitem(mcp_server.TOOLS["mempalace_mine"], "handler", mine)
+    monkeypatch.setattr(mcp_server, "_mcp_tool_preflight_refusal", lambda req_id, name: None)
+
+    response = _call({"source": "/tmp", **arguments}, name="mempalace_mine")
+
+    assert response["error"]["code"] == -32602
+    assert fragment in response["error"]["message"]
+
+
+def test_strict_properties_accept_real_json_values(monkeypatch):
+    seen = {}
+
+    def mine(**kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    monkeypatch.setitem(mcp_server.TOOLS["mempalace_mine"], "handler", mine)
+    monkeypatch.setattr(mcp_server, "_mcp_tool_preflight_refusal", lambda req_id, name: None)
+
+    response = _call(
+        {"source": "/tmp", "include_subagents": True, "include_ignored": ["a.md"]},
+        name="mempalace_mine",
+    )
+
+    assert "error" not in response, response
+    assert seen["include_subagents"] is True and seen["include_ignored"] == ["a.md"]
