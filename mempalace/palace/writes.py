@@ -73,41 +73,66 @@ def _split_unchanged(collection, batch: list) -> tuple:
     re-filed drawer no longer has is sent as ``None``, which removes it;
     without that a drawer re-mined over its old id would keep, say, entities
     its new text dropped. Backends that replace the metadata need nothing.
+
+    Vectors are read only for drawers whose text is unchanged, so a first
+    mine never reads one. Chroma persists HNSW in the background, and a
+    vector read that lands mid-persist on a young segment fails with
+    "Nothing found on disk"; reuse is only a saving, so such a failure
+    re-embeds those drawers instead of failing the mine.
     """
     from ..backends.embedding_wrapper import _metadata_title
 
     existing = collection.get(
         ids=[drawer_id for drawer_id, _, _ in batch],
-        include=["documents", "metadatas", "embeddings"],
+        include=["documents", "metadatas"],
     )
     ids = existing.get("ids") or []
     documents = existing.get("documents") or [None] * len(ids)
     metadatas = existing.get("metadatas") or [None] * len(ids)
-    vectors = existing.get("embeddings")
-    if vectors is None:
-        vectors = [None] * len(ids)
     stored = {
-        drawer_id: (doc, meta or {}, vector)
-        for drawer_id, doc, meta, vector in zip(ids, documents, metadatas, vectors)
+        drawer_id: (doc, meta or {}) for drawer_id, doc, meta in zip(ids, documents, metadatas)
     }
     merges = getattr(collection, "upsert_merges_metadata", False) is True
-    dimension = None
-    to_embed, reuse, reuse_vectors = [], [], []
+    rows, unchanged = [], []
     for drawer_id, doc, meta in batch:
-        old_doc, old_meta, vector = stored.get(drawer_id, (None, {}, None))
+        old_doc, old_meta = stored.get(drawer_id, (None, {}))
         if merges:
             meta = {**dict.fromkeys(set(old_meta) - set(meta)), **meta}
         same = old_doc == doc and _metadata_title(old_meta) == _metadata_title(meta)
-        if same and dimension is None:
-            from ..embedding import probe_dimension
+        rows.append((drawer_id, doc, meta, same))
+        if same:
+            unchanged.append(drawer_id)
+    vectors = _stored_vectors(collection, unchanged)
+    dimension = 0
+    if vectors:
+        from ..embedding import probe_dimension
 
-            dimension = probe_dimension()
+        dimension = probe_dimension()
+    to_embed, reuse, reuse_vectors = [], [], []
+    for drawer_id, doc, meta, same in rows:
+        vector = vectors.get(drawer_id)
         if same and _reusable_vector(vector, dimension):
             reuse.append((drawer_id, doc, meta))
             reuse_vectors.append(vector)
         else:
             to_embed.append((drawer_id, doc, meta))
     return to_embed, reuse, reuse_vectors
+
+
+def _stored_vectors(collection, ids: list) -> dict:
+    if not ids:
+        return {}
+    try:
+        got = collection.get(ids=ids, include=["embeddings"])
+    except Exception:
+        logger.warning(
+            "Could not read stored vectors; re-embedding %d drawers", len(ids), exc_info=True
+        )
+        return {}
+    vectors = got.get("embeddings")
+    if vectors is None:
+        return {}
+    return dict(zip(got.get("ids") or [], vectors))
 
 
 def _upsert(collection, rows: list, embeddings=None) -> None:

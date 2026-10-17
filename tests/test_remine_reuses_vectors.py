@@ -228,6 +228,67 @@ def test_a_stored_vector_of_another_dimension_is_embedded_again(tmp_path, embedd
     assert len(embedded) == count
 
 
+def _record_gets(monkeypatch, *, fail_vector_reads=False):
+    """Record every include list a mine passes to a drawer read."""
+    from chromadb.errors import InternalError
+
+    includes = []
+    real = embedding_wrapper.EmbeddingCollection.get
+
+    def recording(self, *args, **kwargs):
+        include = list(kwargs.get("include") or [])
+        includes.append(include)
+        if fail_vector_reads and "embeddings" in include:
+            raise InternalError(
+                "Error executing plan: Internal error: "
+                "Error creating hnsw segment reader: Nothing found on disk"
+            )
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(embedding_wrapper.EmbeddingCollection, "get", recording)
+    return includes
+
+
+def test_a_first_mine_reads_no_stored_vectors(tmp_path, embedded, monkeypatch):
+    # Chroma persists HNSW in the background; a vector read that lands
+    # mid-persist on a young segment fails, so a first mine must not make one.
+    src = (tmp_path / "chats").resolve()
+    src.mkdir()
+    for name in ("a.txt", "b.txt"):
+        _write_chat(src / name, range(3))
+    includes = _record_gets(monkeypatch)
+    _mine(src, str(tmp_path / "palace"))
+    assert includes
+    assert not [include for include in includes if "embeddings" in include]
+
+
+def test_a_failed_vector_read_embeds_again_instead_of_failing_the_mine(
+    tmp_path, embedded, monkeypatch
+):
+    src = (tmp_path / "chats").resolve()
+    src.mkdir()
+    _write_chat(src / "a.txt", range(3))
+    palace = str(tmp_path / "palace")
+    _mine(src, palace)
+    first = _palace_rows(palace)
+
+    _age_stamps(palace)
+    embedded.clear()
+    includes = _record_gets(monkeypatch, fail_vector_reads=True)
+    _mine(src, palace)
+    monkeypatch.undo()
+
+    assert [include for include in includes if "embeddings" in include]
+    assert len(embedded) == len(first)
+    second = _palace_rows(palace)
+    assert {drawer_id: row[0] for drawer_id, row in second.items()} == {
+        drawer_id: row[0] for drawer_id, row in first.items()
+    }
+    assert file_already_mined(
+        get_collection(palace), str(src / "a.txt"), check_mtime=True, extract_mode="exchange"
+    )
+
+
 def test_reusable_vector_needs_the_current_dimension():
     assert _reusable_vector([0.1, 0.2], 2)
     assert not _reusable_vector([], 2)
