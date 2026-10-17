@@ -717,7 +717,7 @@ class TestOverviewCaches:
     def _spy(monkeypatch, name, delay=0.0):
         import time
 
-        from mempalace.backends import chroma
+        from mempalace.backends import chroma_sqlite as chroma
 
         calls: list[int] = []
         real = getattr(chroma, name)

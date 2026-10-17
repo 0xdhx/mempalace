@@ -8,7 +8,7 @@ the database, build their SQL or decode stored text shows up here.
 
 import pytest
 
-from mempalace.backends import PalaceRef, chroma
+from mempalace.backends import PalaceRef, chroma, chroma_sqlite
 
 _NAME = "mempalace_drawers"
 
@@ -117,52 +117,53 @@ def _sorted_ids_meta(result):
     return sorted(zip(ids, (sorted(m.items()) for m in metas)))
 
 
+def _records(result):
+    return [
+        (i, d, sorted((m or {}).items()))
+        for i, d, m in zip(result.ids, result.documents, result.metadatas)
+    ]
+
+
 def _outputs(palace_path, col):
     wings = ["my_app", "my-app", "wing_my_app"]
-    wing_rooms = chroma._sqlite_wing_room_counts(palace_path, _NAME)
-    recent = chroma._sqlite_recent_records(
-        palace_path, _NAME, limit=4, equalities=[], order_field="filed_at"
-    )
-    recent_wing = chroma._sqlite_recent_records(
-        palace_path,
-        _NAME,
-        limit=10,
-        equalities=[("wing", tuple(wings)), ("room", ("notes",))],
-        order_field="filed_at",
+    wing_rooms = chroma_sqlite._sqlite_wing_room_counts(palace_path, _NAME)
+    recent = col.get_recent(limit=4)
+    recent_wing = col.get_recent(
+        limit=10, where={"$and": [{"wing": {"$in": wings}}, {"room": "notes"}]}
     )
     hits = col.lexical_search(query="vector", n_results=20)
     scoped_hits = col.lexical_search(query="vector", n_results=20, where={"wing": {"$in": wings}})
     return {
-        "embedding_count": chroma._sqlite_embedding_count(palace_path, _NAME),
-        "has_rows": chroma._sqlite_collection_has_rows(palace_path, _NAME),
-        "has_rows_missing": chroma._sqlite_collection_has_rows(palace_path, "nope"),
-        "recent": [(i, d, sorted((m or {}).items())) for i, d, m in recent],
-        "recent_wing": [(i, d, sorted((m or {}).items())) for i, d, m in recent_wing],
-        "wing_names": chroma.sqlite_wing_names(palace_path),
+        "embedding_count": chroma_sqlite._sqlite_embedding_count(palace_path, _NAME),
+        "has_rows": chroma_sqlite._sqlite_collection_has_rows(palace_path, _NAME),
+        "has_rows_missing": chroma_sqlite._sqlite_collection_has_rows(palace_path, "nope"),
+        "recent": _records(recent),
+        "recent_wing": _records(recent_wing),
+        "wing_names": chroma_sqlite.sqlite_wing_names(palace_path),
         "wing_rooms": (
             wing_rooms[0],
             sorted((w, sorted(r.items())) for w, r in wing_rooms[1].items()),
         ),
-        "hall_counts": sorted(chroma.sqlite_room_wing_hall_counts(palace_path, _NAME)),
-        "source_counts": sorted(chroma.sqlite_wing_source_counts(palace_path, _NAME)),
+        "hall_counts": sorted(chroma_sqlite.sqlite_room_wing_hall_counts(palace_path, _NAME)),
+        "source_counts": sorted(chroma_sqlite.sqlite_wing_source_counts(palace_path, _NAME)),
         "iter_metadata": [
             sorted((m or {}).items()) for m in col.iter_metadata(keys=["wing", "flag"])
         ],
         "iter_metadata_all": [sorted((m or {}).items()) for m in col.iter_metadata()],
-        "list_all": _sorted_ids_meta(chroma.sqlite_list_id_metadata(palace_path, _NAME)),
+        "list_all": _sorted_ids_meta(chroma_sqlite.sqlite_list_id_metadata(palace_path, _NAME)),
         "list_wings": _sorted_ids_meta(
-            chroma.sqlite_list_id_metadata(
+            chroma_sqlite.sqlite_list_id_metadata(
                 palace_path, _NAME, {"$and": [{"wing": {"$in": wings}}, {"room": "notes"}]}
             )
         ),
-        "documents": chroma.sqlite_documents_for_ids(
+        "documents": chroma_sqlite.sqlite_documents_for_ids(
             palace_path, _NAME, ["drawer_b", "drawer_c", "missing"]
         ),
-        "diary": chroma.sqlite_diary_rows(
+        "diary": chroma_sqlite.sqlite_diary_rows(
             palace_path, _NAME, agent_name="observer", wing=wings, limit=5
         ),
-        "drawer_direct": chroma.sqlite_drawer_rows(palace_path, _NAME, drawer_id="drawer_c"),
-        "drawer_group": chroma.sqlite_drawer_rows(palace_path, _NAME, drawer_id="logical"),
+        "drawer_direct": chroma_sqlite.sqlite_drawer_rows(palace_path, _NAME, drawer_id="drawer_c"),
+        "drawer_group": chroma_sqlite.sqlite_drawer_rows(palace_path, _NAME, drawer_id="logical"),
         "lexical": sorted((h.id, h.document) for h in hits.hits),
         "lexical_scoped": sorted((h.id, h.document) for h in scoped_hits.hits),
         "bm25": _bm25_hits(palace_path),
@@ -188,17 +189,19 @@ def test_every_sqlite_reader_returns_what_it_did(palace):
 
 def test_missing_database_reads_as_none(tmp_path):
     empty = str(tmp_path)
-    assert chroma._sqlite_embedding_count(empty, _NAME) is None
-    assert chroma._sqlite_wing_room_counts(empty, _NAME) is None
-    assert chroma.sqlite_wing_names(empty) is None
-    assert chroma.sqlite_room_wing_hall_counts(empty, _NAME) is None
-    assert chroma.sqlite_wing_source_counts(empty, _NAME) is None
-    assert chroma.sqlite_list_id_metadata(empty, _NAME) is None
-    assert chroma.sqlite_documents_for_ids(empty, _NAME, ["x"]) is None
-    assert chroma.sqlite_diary_rows(empty, _NAME, agent_name="a") is None
-    assert chroma.sqlite_drawer_rows(empty, _NAME, drawer_id="x") is None
+    assert chroma_sqlite._sqlite_embedding_count(empty, _NAME) is None
+    assert chroma_sqlite._sqlite_wing_room_counts(empty, _NAME) is None
+    assert chroma_sqlite.sqlite_wing_names(empty) is None
+    assert chroma_sqlite.sqlite_room_wing_hall_counts(empty, _NAME) is None
+    assert chroma_sqlite.sqlite_wing_source_counts(empty, _NAME) is None
+    assert chroma_sqlite.sqlite_list_id_metadata(empty, _NAME) is None
+    assert chroma_sqlite.sqlite_documents_for_ids(empty, _NAME, ["x"]) is None
+    assert chroma_sqlite.sqlite_diary_rows(empty, _NAME, agent_name="a") is None
+    assert chroma_sqlite.sqlite_drawer_rows(empty, _NAME, drawer_id="x") is None
     assert (
-        chroma._sqlite_recent_records(empty, _NAME, limit=1, equalities=[], order_field="filed_at")
+        chroma_sqlite._sqlite_recent_records(
+            empty, _NAME, limit=1, equalities=[], order_field="filed_at"
+        )
         is None
     )
 
@@ -538,9 +541,8 @@ EXPECTED = {
         ),
         (
             "diary_2",
-            "\x01mpesc:dear diary \\0 two",
+            "dear diary \x00 two",
             [
-                ("_mempalace_escaped", 1),
                 ("agent", "observer"),
                 ("filed_at", "2026-01-06"),
                 ("last_modified", "2026-01-06"),
@@ -591,9 +593,8 @@ EXPECTED = {
         ),
         (
             "drawer_b",
-            "\x01mpesc:nul\\0byte vector text",
+            "nul\x00byte vector text",
             [
-                ("_mempalace_escaped", 1),
                 ("filed_at", "2026-01-02"),
                 ("hall", "h2"),
                 ("last_modified", "2026-01-02"),

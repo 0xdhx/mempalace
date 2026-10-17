@@ -55,7 +55,7 @@ def _cached_wings(key, stamp, read) -> frozenset:
 
 def chroma_known_wings(palace_path: str) -> frozenset:
     """:func:`known_wings` for a Chroma palace, read without opening it."""
-    from .backends.chroma import sqlite_wing_names
+    from .backends.chroma_sqlite import sqlite_wing_names
 
     return _cached_wings(
         ("chroma", palace_path),

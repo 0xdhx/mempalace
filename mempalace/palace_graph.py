@@ -93,7 +93,7 @@ def sqlite_grouped_counts_reader(config=None):
             config.palace_path, explicit=os.environ.get("MEMPALACE_BACKEND_EXPLICIT")
         )
         if backend == "chroma":
-            from .backends.chroma import sqlite_room_wing_hall_counts
+            from .backends.chroma_sqlite import sqlite_room_wing_hall_counts
 
             db_name = "chroma.sqlite3"
         elif backend in {"sqlite_exact", "rust_exact"}:

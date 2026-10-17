@@ -32,7 +32,13 @@ from ..backends import (
     UnsupportedCapabilityError,
 )
 from ..backends._inproc_sqlite import open_reader as open_palace_reader
-from ..backends.chroma import _filtered_candidate_rows, _fts_candidate_rows
+from ..backends.chroma_sqlite import (
+    _decoded_rows,
+    _filtered_candidate_rows,
+    _fts_candidate_rows,
+    _match_sql,
+    _newest_row_ids,
+)
 from ..config import MempalaceConfig, wing_aliases
 from ..date_window import filed_at_in_window, parse_window
 from ..embedding import UnknownEmbeddingModelError, _model_error_class, model_error_result

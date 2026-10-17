@@ -5,7 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from mempalace.backends import chroma
+from mempalace.backends import chroma_sqlite as chroma
 
 _NAME = "mempalace_drawers"
 _MISSING = object()
