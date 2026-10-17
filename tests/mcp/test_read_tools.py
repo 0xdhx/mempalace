@@ -892,9 +892,10 @@ class TestMetadataFacets:
 
         from unittest.mock import call
 
+        wing = {"wing": {"$in": ["engineering", "wing_engineering"]}}
         assert col.facet_counts.call_args_list == [
-            call("room", where={"wing": "engineering"}),
-            call("wing", where={"wing": "engineering"}),
+            call("room", where=wing),
+            call("wing", where=wing),
         ]
 
     def test_tool_get_taxonomy_uses_metadata_facets(self, monkeypatch):

@@ -71,25 +71,54 @@ def normalize_wing_name(name: str) -> str:
     return slug[:120].strip("_.'")
 
 
-def wing_aliases(wing: str) -> list:
+# Where a session started in the home directory files (see hooks_cli).
+WORKSTATION_WINGS = frozenset({"mac_workstation", "windows_workstation", "linux_workstation"})
+
+
+def _cursor_wing_slug(name: str) -> str:
+    """The slug the Cursor hooks used before 3.10: every byte outside
+    ``[a-z0-9_-]`` became ``_``, runs squeezed, edges trimmed."""
+    raw = name.encode("utf-8")
+    slug = re.sub(rb"[^a-z0-9_-]", b"_", raw.lower()).decode("ascii")
+    return re.sub(r"_+", "_", slug).strip("_")
+
+
+def wing_aliases(wing: str, known=()) -> list:
     """Wing names under which drawers for ``wing``'s project may be stored.
 
     Earlier releases slugged projects differently per tool: the Claude Code
     and Antigravity hooks filed diaries (and Antigravity transcripts) under
-    ``wing_<slug>``, the Cursor hooks kept hyphens, and agent diaries kept
-    hyphens in ``wing_<agent>``. Existing drawers are never re-keyed, so a
-    wing filter matches every one of those spellings: the name as given, its
-    current slug with and without the ``wing_`` prefix, and the slug with
-    hyphens and with dots-as-underscores. The name as given comes first.
+    ``wing_<slug>``, the Cursor hooks kept hyphens and turned every other
+    byte outside ``[a-z0-9_-]`` into ``_``, ingest kept characters such as
+    ``+``, and a session in the home directory filed its diary under
+    ``wing_<user>``. Existing drawers are never re-keyed, so a wing filter
+    matches every one of those spellings: the name as given, its current
+    slug with and without the ``wing_`` prefix, the slug with hyphens, the
+    Cursor rule applied to both, and the old home diary wing for a
+    workstation wing. ``known`` (the palace's wing names) adds every stored
+    wing whose name slugs to the same thing. The name as given comes first.
     """
     bare = wing[len("wing_") :] if wing.startswith("wing_") else wing
     slug = normalize_wing_name(bare)
+    hyphens = slug.replace("_", "-")
+    variants = [slug, hyphens, _cursor_wing_slug(slug), _cursor_wing_slug(hyphens)]
     names = [wing]
-    for variant in (slug, slug.replace("_", "-"), slug.replace(".", "_")):
+    for variant in variants:
         if not variant:
             continue
         for name in (variant, f"wing_{variant}"):
             if name not in names:
+                names.append(name)
+    if slug in WORKSTATION_WINGS:
+        home = normalize_wing_name(Path.home().name)
+        if home and f"wing_{home}" not in names:
+            names.append(f"wing_{home}")
+    if slug:
+        for name in sorted(known):
+            if name in names or not isinstance(name, str):
+                continue
+            stored = name[len("wing_") :] if name.startswith("wing_") else name
+            if normalize_wing_name(stored) == slug:
                 names.append(name)
     return names
 

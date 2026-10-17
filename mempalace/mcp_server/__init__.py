@@ -139,6 +139,7 @@ from ..palace_graph import (  # noqa: E402
     traverse,
 )
 from ..query_sanitizer import sanitize_query, sanitizer_report  # noqa: E402
+from ..search_util import chroma_known_wings, known_wings  # noqa: E402
 from ..searcher import (  # noqa: E402
     SearchError,
     _distance_to_similarity,

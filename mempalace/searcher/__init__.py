@@ -54,6 +54,8 @@ from ..search_util import (
     _metric_for_collection,
     _metric_scale_distance,
     build_where_filter,
+    chroma_known_wings,
+    palace_wing_aliases,
 )
 from ..stored_text import decode_record, encode_filter
 

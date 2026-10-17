@@ -96,3 +96,76 @@ def test_diary_read_finds_entries_under_the_old_project_and_agent_wings(
     assert written["success"] and written["entry_id"].startswith("diary_wing_cursor_ide_"), written
     agent = mcp_server.tool_diary_read("cursor-ide", last_n=10, wing="wing_cursor_ide")
     assert {e["content"] for e in agent["entries"]} == {"old agent note", "new agent note"}
+
+
+def test_bm25_fallback_rooms_and_wake_up_match_every_old_spelling(
+    monkeypatch, config, palace_path, collection, kg
+):
+    from mempalace.backends import chroma as chroma_module
+    from mempalace.backends.base import BaseCollection
+    from mempalace.layers import Layer1
+    from mempalace.searcher import search_memories
+
+    _seed_old_palace(collection)
+    _patch_mcp_server(monkeypatch, config, kg)
+    from mempalace import mcp_server
+
+    expected = set(OLD_SPELLINGS.values())
+    for driven in (10**9, 0):
+        # Both candidate pickers: read the wing's drawers, or rank the palace.
+        monkeypatch.setattr(chroma_module, "_FTS_FILTER_DRIVEN_MAX", driven)
+        found = search_memories(
+            "release notes", palace_path, wing="my_app", vector_disabled=True, n_results=10
+        )
+        assert {hit["wing"] for hit in found["results"]} == expected, found
+
+    assert mcp_server.tool_list_rooms(wing="my_app")["rooms"] == {"notes": 3}
+
+    def _no_paged_window(*_args, **_kwargs):
+        raise AssertionError("wing-scoped L1 left the sqlite recency read")
+
+    monkeypatch.setattr(BaseCollection, "get_recent", _no_paged_window)
+    text = Layer1(palace_path=palace_path, wing="my_app").generate()
+    for name in OLD_SPELLINGS:
+        assert f"filed by {name}" in text, text
+
+
+def test_stored_wings_no_rule_derives_still_reach_their_project(
+    monkeypatch, config, palace_path, collection, kg
+):
+    from pathlib import Path
+
+    from mempalace.config import normalize_wing_name
+    from mempalace.hooks_cli import _workstation_wing
+
+    home_diary = f"wing_{normalize_wing_name(Path.home().name)}"
+    collection.add(
+        ids=["ingest_cpp", "cursor_cafe", "home_diary"],
+        documents=["c++tool build notes", "cafe notes from cursor", "home checkpoint"],
+        metadatas=[
+            # `mempalace mine` of ~/dev/c++tool kept the plus signs.
+            {"wing": "c++tool", "room": "notes", "filed_at": "2026-01-01T00:00:00"},
+            # The Cursor hooks turned each non-ASCII byte into `_`.
+            {"wing": "caf_notes", "room": "notes", "filed_at": "2026-01-01T00:00:00"},
+            # A session in the home directory filed its diary under the user name.
+            {
+                "wing": home_diary,
+                "room": "diary",
+                "agent": "claude",
+                "topic": "checkpoint",
+                "date": "2026-01-01",
+                "filed_at": "2026-01-01T00:00:00",
+            },
+        ],
+    )
+    _patch_mcp_server(monkeypatch, config, kg)
+    from mempalace import mcp_server
+
+    listed = mcp_server.tool_list_drawers(wing="c_tool")
+    assert [d["wing"] for d in listed["drawers"]] == ["c++tool"], listed
+    found = mcp_server.tool_search(query="c++tool build notes", wing="c_tool", limit=5)
+    assert [hit["wing"] for hit in found["results"]] == ["c++tool"], found
+    listed = mcp_server.tool_list_drawers(wing="café_notes")
+    assert [d["wing"] for d in listed["drawers"]] == ["caf_notes"], listed
+    diary = mcp_server.tool_diary_read("claude", last_n=10, wing=_workstation_wing())
+    assert [e["content"] for e in diary["entries"]] == ["home checkpoint"], diary

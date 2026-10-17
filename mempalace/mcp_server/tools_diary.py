@@ -178,7 +178,7 @@ def _sqlite_diary_read(agent_name: str, last_n: int, wing: str):
             _config.palace_path,
             _config.collection_name,
             agent_name=agent_name,
-            wing=wing_aliases(wing) if wing else "",
+            wing=_palace_wing_aliases(wing) if wing else "",
             limit=last_n,
         )
         if result is None:
@@ -238,7 +238,7 @@ def tool_diary_read(agent_name: str, last_n: int = 10, wing: str = ""):
     # empty-string-as-no-filter convention, for LLM ergonomics).
     conditions = [{"room": "diary"}, {"agent": agent_name}]
     if wing:
-        conditions.insert(0, {"wing": {"$in": wing_aliases(wing)}})
+        conditions.insert(0, {"wing": {"$in": _palace_wing_aliases(wing)}})
 
     try:
         where = {"$and": conditions}

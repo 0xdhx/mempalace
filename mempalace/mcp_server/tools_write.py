@@ -1352,7 +1352,8 @@ def tool_list_drawers(
         return {"error": str(e)}
 
     try:
-        where = build_where_filter(wing, room) or None
+        known = _palace_known_wings() if wing else frozenset()
+        where = build_where_filter(wing, room, known=known) or None
 
         def make_page(ids, metadatas):
             kept = [(i, m) for i, m in zip(ids, metadatas) if not is_bookkeeping(m, i)]

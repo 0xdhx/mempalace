@@ -2,15 +2,16 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from mempalace.config import normalize_wing_name, sanitize_name, wing_aliases
+from mempalace.config import WORKSTATION_WINGS, normalize_wing_name, sanitize_name, wing_aliases
 
 HOOKS = Path(__file__).resolve().parent.parent / "hooks"
 
-# ASCII directory names the shell hooks must slug exactly like Python.
+# Directory names the shell hooks must slug exactly like Python.
 SHELL_CORPUS = [
     "myproject",
     "MyApp",
@@ -29,6 +30,11 @@ SHELL_CORPUS = [
     "__init__",
     "C++ Tool",
     "x" * 200,
+    # Non-ASCII names go through Python itself.
+    "Café Notes",
+    "日本語",
+    "日本語-プロジェクト",
+    "émigré café",
 ]
 
 
@@ -51,7 +57,7 @@ def test_normalize_wing_name(name, slug):
     assert normalize_wing_name(name) == slug
 
 
-@pytest.mark.parametrize("name", SHELL_CORPUS + ["日本語-プロジェクト", "émigré café"])
+@pytest.mark.parametrize("name", SHELL_CORPUS)
 def test_every_slug_is_a_valid_wing(name):
     slug = normalize_wing_name(name)
     if slug:
@@ -73,11 +79,30 @@ def test_aliases_of_a_plain_wing_are_only_its_prefixed_twin():
     assert wing_aliases("backend") == ["backend", "wing_backend"]
 
 
+def test_aliases_cover_the_old_cursor_bytes_rule():
+    # The Cursor hooks turned each non-ASCII byte into `_` and squeezed runs.
+    assert "caf_notes" in wing_aliases("café_notes")
+    assert "caf_-notes" in wing_aliases("café_notes")
+
+
+def test_aliases_of_a_workstation_wing_include_the_old_home_diary_wing():
+    home = normalize_wing_name(Path.home().name)
+    for wing in WORKSTATION_WINGS:
+        assert (f"wing_{home}" in wing_aliases(wing)) == bool(home)
+
+
+def test_aliases_add_known_wings_that_slug_the_same():
+    known = {"c++tool", "wing_C++Tool", "c-tools", "other"}
+    assert wing_aliases("c_tool", known)[-2:] == ["c++tool", "wing_C++Tool"]
+    assert "c-tools" not in wing_aliases("c_tool", known)
+
+
 def _shell_slug(lib: Path, name: str) -> str:
     out = subprocess.run(
         ["bash", "-c", '. "$1" >/dev/null 2>&1; mempal_infer_wing "/work/$2"', "_", str(lib), name],
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        env={**os.environ, "MEMPAL_PYTHON": sys.executable},
         timeout=30,
     )
     assert out.returncode == 0, out.stderr

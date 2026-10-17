@@ -311,11 +311,14 @@ def _subtract_counts(counts: dict, key, n: int) -> None:
         counts.pop(key, None)
 
 
-def _drop_bookkeeping_facets(col, wings=None, rooms=None, taxonomy=None, wing=None) -> int:
-    """Take registry rows and sentinels out of facet tallies; return how many."""
+def _drop_bookkeeping_facets(col, wings=None, rooms=None, taxonomy=None, only=None) -> int:
+    """Take registry rows and sentinels out of facet tallies; return how many.
+
+    ``only`` limits the drop to rows in those wings.
+    """
     dropped = 0
     for w, room_counts in _bookkeeping_taxonomy(col).items():
-        if wing is not None and w != wing:
+        if only is not None and w not in only:
             continue
         for r, n in room_counts.items():
             dropped += n
@@ -531,12 +534,14 @@ def tool_list_rooms(wing: str = None):
         wing = _sanitize_optional_name(wing, "wing")
     except ValueError as e:
         return {"error": str(e)}
+    # A wing lists the rooms of every spelling its project was filed under.
     fast = _sqlite_taxonomy()
     if fast is not None:
         _total, wing_rooms = fast
+        wings = set(wing_aliases(wing, wing_rooms)) if wing else None
         rooms = {}
         for w, room_counts in wing_rooms.items():
-            if wing and w != wing:
+            if wings is not None and w not in wings:
                 continue
             for r, n in room_counts.items():
                 rooms[r] = rooms.get(r, 0) + n
@@ -546,7 +551,8 @@ def tool_list_rooms(wing: str = None):
         return _collection_error_or_no_palace()
     rooms = {}
     result = {"wing": wing or "all", "rooms": rooms}
-    where = {"wing": wing} if wing else None
+    wings = wing_aliases(wing, known_wings(col)) if wing else None
+    where = {"wing": {"$in": wings}} if wing else None
     try:
         try:
             if not _supports_metadata_facets(col):
@@ -555,7 +561,7 @@ def tool_list_rooms(wing: str = None):
             rooms.update(temp_rooms)
             try:
                 if wing:
-                    wing_count = col.facet_counts("wing", where={"wing": wing}).get(wing, 0)
+                    wing_count = sum(col.facet_counts("wing", where=where).values())
                     unknown_rooms = wing_count - sum(temp_rooms.values())
                 else:
                     unknown_rooms = col.count() - sum(temp_rooms.values())
@@ -563,7 +569,7 @@ def tool_list_rooms(wing: str = None):
                     rooms["unknown"] = rooms.get("unknown", 0) + unknown_rooms
             except (TypeError, ValueError):
                 pass
-            _drop_bookkeeping_facets(col, rooms=rooms, wing=wing)
+            _drop_bookkeeping_facets(col, rooms=rooms, only=wings)
         except Exception as e:
             if _supports_metadata_facets(col):
                 logger.warning(

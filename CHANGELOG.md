@@ -17,11 +17,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   wing as its transcript and as `mempalace mine` of the project, for example
   `my_app` instead of `wing_my_app`; a session started in the home directory
   files both into the machine's workstation wing. Cursor's hooks now turn
-  hyphens into `_` like every other producer, and an agent's default diary wing
+  hyphens into `_` like every other producer, the Cursor and Antigravity hooks
+  ask that same Python function for a folder name with non-ASCII characters
+  (`Café Notes` is `café_notes` everywhere), and an agent's default diary wing
   slugs the same way (`wing_cursor_ide`). Existing drawers are not renamed: a
-  wing filter in search, `list_drawers`, `diary_read` and wake-up also matches
-  the older spellings (`wing_<slug>`, the hyphenated slug, and dots written as
-  `_`), so drawers filed before the upgrade stay in the same results.
+  wing filter in search (the BM25 fallback included), `list_drawers`,
+  `list_rooms`, `diary_read`, wake-up, `compress`, `sync` and closet
+  regeneration also matches the older spellings: `wing_<slug>`, the
+  hyphenated slug, the old Cursor rule (every byte outside `[a-z0-9_-]`
+  written as `_`, so `café_notes` also reads `caf_notes`), any stored wing
+  whose name slugs to the same thing (`c_tool` reads `c++tool`), and, for the
+  workstation wing, the `wing_<user>` wing home-directory diaries used. Two
+  things to know: `list_wings`, `status` and the taxonomy still show one
+  project under each raw spelling it was filed with, until those drawers are
+  moved; and because the old Cursor rule wrote dots as `_`, a filter on
+  `my.app` also returns a separate `my_app` project's drawers.
 
 - **Every hook wrapper now picks its interpreter the same way.** The Claude
   Code plugin's Stop and PreCompact hooks now honour `MEMPAL_PYTHON`, and the
