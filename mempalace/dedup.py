@@ -29,7 +29,7 @@ import os
 import time
 from collections import defaultdict
 
-from .palace import get_collection
+from .palace import drawers_removed, get_collection
 
 
 COLLECTION_NAME = "mempalace_drawers"
@@ -215,6 +215,8 @@ def dedup_palace(
 
     for i, (src, drawer_ids) in enumerate(sorted_groups):
         kept, deleted = dedup_source_group(col, drawer_ids, threshold, dry_run)
+        if deleted and not dry_run:
+            drawers_removed(palace_path, aaak_ids=deleted)
         total_kept += len(kept)
         total_deleted += len(deleted)
 
