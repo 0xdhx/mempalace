@@ -97,8 +97,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   Its lossy AAAK summaries were stored alongside closet pointers, so they
   boosted search results like real closets. They now go to their own
   `mempalace_aaak` collection, one row per drawer with `kind="aaak"`, and
-  repair and migrate carry it over. Search already ignores summaries an older
-  `compress` left in the closets, and the next `compress` moves them out.
+  repair and migrate carry it over. Deleting or rewriting a drawer (by any
+  delete tool, `sync`, or a re-mine) deletes its summary too. Search already
+  ignores summaries an older `compress` left in the closets; the next
+  `compress`, `repair --mode from-sqlite` or `migrate` moves them out.
 
 ---
 
