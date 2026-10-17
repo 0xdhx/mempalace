@@ -33,6 +33,7 @@ import time
 import pytest
 import yaml
 
+from mempalace.lexical import bm25_scores
 from mempalace.miner import (
     _extract_entities_for_metadata,
     _load_known_entities,
@@ -47,7 +48,6 @@ from mempalace.palace import (
     purge_file_closets,
     upsert_closet_lines,
 )
-from mempalace.lexical import bm25_scores
 from mempalace.palace_graph import (
     create_tunnel,
     delete_tunnel,
