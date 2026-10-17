@@ -264,6 +264,39 @@ def _http_origin_allowed(origin: str) -> bool:
     return host in ("127.0.0.1", "localhost", "::1")
 
 
+def _http_same_origins(scheme: str, port: int) -> set:
+    """The exact origins of a loopback server's own pages, one per host spelling."""
+    hosts = ("127.0.0.1", "localhost", "[::1]")
+    return {f"{scheme}://{host}:{port}" for host in hosts}
+
+
+# Headers a local proxy (tailscale serve, nginx, cloudflared) commonly adds when
+# it relays traffic from elsewhere. Best effort only: a proxy that adds none, or
+# a TCP forwarder, still makes the hub public, which is why forwarding one
+# needs a token.
+_HTTP_PROXY_HEADERS = (
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-server",
+    "x-original-host",
+    "x-real-ip",
+    "x-client-ip",
+    "cf-connecting-ip",
+    "true-client-ip",
+    "forwarded",
+    "via",
+)
+
+
+def _http_proxied(headers) -> bool:
+    for name in headers.keys():
+        lowered = name.lower()
+        if lowered in _HTTP_PROXY_HEADERS or lowered.startswith("tailscale-"):
+            return True
+    return False
+
+
 def _http_client_identity(handler) -> tuple[str, dict]:
     headers = handler.headers
     peer = handler.client_address[0] if handler.client_address else ""
@@ -394,7 +427,24 @@ def _http_request_rejected(handler, require_auth: bool) -> bool:
             handler.send_error(403, "Forbidden")
             return True
     origin = handler.headers.get("Origin")
-    if origin and not _http_origin_allowed(origin):
+    if getattr(srv, "local_only_tokenless", False):
+        if _http_proxied(handler.headers):
+            logger.warning("HTTP request rejected: proxied request to a hub without a token")
+            handler.send_error(
+                403, "Forbidden", "Proxied access needs a token: set MEMPALACE_MCP_HTTP_TOKEN"
+            )
+            return True
+        # Browsers label every request; a cross-site <img> or <script> sends no
+        # Origin but does send this, so it can't hold a stream slot.
+        fetch_site = (handler.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if fetch_site not in ("", "same-origin", "none"):
+            logger.warning("HTTP request rejected: Sec-Fetch-Site %r", fetch_site)
+            handler.send_error(403, "Forbidden")
+            return True
+        allowed = origin is None or origin.strip().lower().rstrip("/") in srv.same_origins
+    else:
+        allowed = not origin or _http_origin_allowed(origin)
+    if not allowed:
         logger.warning("HTTP request rejected: cross-origin %r", origin)
         handler.send_error(403, "Forbidden")
         return True
@@ -1192,16 +1242,26 @@ def _http_serve_logstream_stream(handler) -> None:
         handler.close_connection = True
 
 
-def _http_resolve_token() -> str:
-    """The bearer token /mcp requires, or "" when serving deliberately without one.
+def _http_local_only(host: str) -> bool:
+    """A loopback bind that no fronting proxy publishes to other machines.
 
-    On by default for every bind (D-25): an unset ``MEMPALACE_MCP_HTTP_TOKEN``
-    reuses or mints the palace's stored token, which local clients read from
-    the same place. Only ``MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN`` (set by
-    ``mempalace serve --no-token`` / ``--allow-insecure``) serves without one.
+    ``MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS`` names the public host a proxy such as
+    ``tailscale serve`` forwards under, so such a hub is treated as remote.
+    """
+    return _http_is_loopback(host) and not os.environ.get(_HTTP_EXTRA_ALLOWED_HOSTS_ENV, "").strip()
+
+
+def _http_resolve_token(host: str) -> str:
+    """The bearer token /mcp requires, or "" when serving without one.
+
+    A local-only loopback bind needs no token unless ``MEMPALACE_MCP_HTTP_TOKEN``
+    sets one; the Host pin and Origin check guard it against browsers. Any other
+    bind reuses or mints the palace's stored token, which local clients read
+    from the same place, unless ``MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN``
+    (``mempalace serve --allow-insecure``) says a trusted proxy guards it.
     """
     token = os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "").strip()
-    if token or _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV):
+    if token or _http_local_only(host) or _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV):
         return token
     if not _config.palace_path:
         raise ValueError(
@@ -1225,7 +1285,7 @@ def _build_http_server(host: str, port: int):
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    auth_token = _http_resolve_token()
+    auth_token = _http_resolve_token(host)
 
     # Resolve TLS before bind so a bad cert/key fails loudly rather than at the
     # first request. TLS is transport encryption only — the bearer-token guard
@@ -1304,6 +1364,12 @@ def _build_http_server(host: str, port: int):
             path = urlparse(self.path).path
             if path != "/mcp":
                 self.send_error(404, "Not Found")
+                return
+            # A browser can send text/plain cross-origin without a CORS preflight;
+            # it cannot send application/json, so only JSON reaches the dispatcher.
+            media_type = (self.headers.get("Content-Type") or "").split(";", 1)[0]
+            if media_type.strip().lower() != "application/json":
+                self.send_error(415, "Unsupported Media Type", "POST /mcp needs application/json")
                 return
 
             try:
@@ -1393,6 +1459,8 @@ def _build_http_server(host: str, port: int):
     if tls_cert:
         httpd.socket = _wrap_tls(httpd.socket, tls_cert, tls_key)
         httpd.scheme = "https"
+    httpd.local_only_tokenless = not auth_token and _http_local_only(host)
+    httpd.same_origins = _http_same_origins(httpd.scheme, bound_port)
     return httpd
 
 
