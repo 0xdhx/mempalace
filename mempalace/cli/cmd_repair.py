@@ -426,7 +426,7 @@ def cmd_repair(args):
     except MineAlreadyRunning as exc:
         print(f"  Another writer already holds this palace: {exc}")
         print("  Repair stopped before reading or copying anything; nothing changed.")
-        raise SystemExit(2)
+        raise SystemExit(2) from None
 
     if not assume_yes:
         finished = _legacy_repair_after_prompt(backend, palace_path, collection_name, args)

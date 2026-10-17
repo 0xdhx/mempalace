@@ -938,7 +938,7 @@ def parse_exec_input(input_data: Any) -> Tuple[str, Dict[str, Any]]:  # noqa: C9
                 d = json.loads(payload_str)
                 return "checkpoint", d
             except Exception as e:
-                raise QueryParseError(f"Invalid JSON in CHECKPOINT: {e}")
+                raise QueryParseError(f"Invalid JSON in CHECKPOINT: {e}") from e
         raise QueryParseError("CHECKPOINT requires JSON payload {items: [...], diary?: {...}}")
 
     # --- Mining & Sync ---

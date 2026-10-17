@@ -1254,7 +1254,8 @@ _WRITE_STALL_EXIT_DEFAULT = 0.0
 _WRITE_STALL_EXIT_CODE = 75
 
 _write_stall_lock = threading.Lock()
-# Optional[dict]: {"tool": str, "since": float(monotonic), "warned": bool}
+# None, or the write in flight: its tool name, its monotonic start time
+# ("since") and whether a stall warning was already logged ("warned").
 _write_stall_inflight: Optional[dict] = None
 
 
