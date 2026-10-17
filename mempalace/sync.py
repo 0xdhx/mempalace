@@ -512,7 +512,7 @@ def _is_bookkeeping_row(meta: dict, drawer_id: str) -> bool:
     a real file and goes when the file does. Widening it would keep those
     sentinels for good instead.
     """
-    return is_bookkeeping(meta, drawer_id)
+    return _is_registry_row(meta, drawer_id) or is_bookkeeping(meta, drawer_id)
 
 
 def _source_holds_nothing(col, source) -> bool:
