@@ -180,7 +180,8 @@ def extract_subject(lines):
 
 def _read_lines(path: Path) -> list[str]:
     """Lines of ``path`` with their endings, decoded by ``fsio.decode_source``
-    so no byte turns into U+FFFD."""
+    so no byte turns into U+FFFD. Parts are written as UTF-8 with
+    ``surrogateescape``, which puts a stray byte back as it was."""
     return decode_source(path.read_bytes())[0].splitlines(keepends=True)
 
 
@@ -294,7 +295,7 @@ def split_file(filepath, output_dir, dry_run=False):
 
     for position, (chunk, is_preamble, index) in enumerate(segments, 1):
         name = _output_name(path, chunk, is_preamble, index)
-        data = "".join(chunk).encode("utf-8")
+        data = "".join(chunk).encode("utf-8", "surrogateescape")
         out_path, new = _write_chunk(out_dir, name, data, reserved, dry_run)
         if dry_run:
             print(f"  [{position}/{len(segments)}] {out_path.name}  ({len(chunk)} lines)")

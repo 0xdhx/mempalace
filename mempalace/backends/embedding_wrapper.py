@@ -40,6 +40,17 @@ def _merged_metadata(old, patch):
     return {key: value for key, value in metadata.items() if value is not None}
 
 
+def _embeddable(texts: list[str]) -> list[str]:
+    """``texts`` with lone surrogates as U+FFFD, for the embedder only.
+
+    A stray source byte is stored as a lone surrogate, which tokenizers and
+    JSON embedding APIs reject; the stored text keeps the byte.
+    """
+    from ..config import strip_lone_surrogates
+
+    return [strip_lone_surrogates(text) if isinstance(text, str) else text for text in texts]
+
+
 def _embed_texts(
     texts: list[str],
     *,
@@ -66,6 +77,7 @@ def _embed_texts(
         return []
     from ..embedding import configured_embedding_function, embedding_section
 
+    texts = _embeddable(texts)
     with embedding_section():
         ef = configured_embedding_function() if embedder is None else embedder
         if query and callable(getattr(ef, "embed_query", None)):

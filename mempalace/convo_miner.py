@@ -788,7 +788,7 @@ def _split_new_and_duplicate_conversations(
     new_items = []
     duplicates = []
     for conversation, text in zip(conversations, hashed):
-        content_hash = hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+        content_hash = hashlib.sha256(text.strip().encode("utf-8", "surrogateescape")).hexdigest()
         dup_source = mined_content_hashes.get((wing, content_hash))
         if dup_source is None or dup_source == source_file:
             new_items.append((content_hash, conversation))

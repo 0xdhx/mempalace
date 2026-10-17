@@ -28,6 +28,7 @@ from typing import Optional
 
 from mempalace._proc import pid_alive as _pid_alive
 from mempalace.config import MempalaceConfig
+from mempalace.fsio import decode_source
 from mempalace.write_routing import (
     ResolvedWriteRoutingPolicy,
     WriteRoutingDecision,
@@ -932,10 +933,10 @@ def _extract_recent_messages(transcript_path: str, count: int = _RECENT_MSG_COUN
         return []
     messages = []
     try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            for line in f:
+        with open(path, "rb") as f:
+            for raw_line in f:
                 try:
-                    entry = json.loads(line)
+                    entry = json.loads(decode_source(raw_line)[0])
                     # Claude Code format
                     msg = entry.get("message") or entry.get("event_message") or {}
                     if isinstance(msg, dict) and msg.get("role") == "user":

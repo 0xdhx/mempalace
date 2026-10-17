@@ -21,6 +21,7 @@ import codecs
 import errno
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -358,35 +359,81 @@ def move_aside(path: PathLike, *, label: str) -> Optional[str]:
     return target
 
 
+# The five bytes Windows-1252 leaves undefined. WHATWG's windows-1252, which
+# browsers use, maps each to the C1 control with the same number.
+WINDOWS_1252_UNDEFINED = frozenset({0x81, 0x8D, 0x8F, 0x90, 0x9D})
+_WINDOWS_1252_ERRORS = "mempalace.windows-1252"
+
+
+def _windows_1252_passthrough(exc):
+    if isinstance(exc, UnicodeDecodeError):
+        return "".join(chr(b) for b in exc.object[exc.start : exc.end]), exc.end
+    if isinstance(exc, UnicodeEncodeError):
+        chars = exc.object[exc.start : exc.end]
+        if all(ord(c) in WINDOWS_1252_UNDEFINED for c in chars):
+            return bytes(ord(c) for c in chars), exc.end
+    raise exc
+
+
+codecs.register_error(_WINDOWS_1252_ERRORS, _windows_1252_passthrough)
+
+
+def decode_windows_1252(raw: bytes) -> str:
+    """WHATWG windows-1252: cp1252 with the undefined bytes as C1 controls."""
+    return raw.decode("cp1252", _WINDOWS_1252_ERRORS)
+
+
+def encode_windows_1252(text: str) -> bytes:
+    """Inverse of ``decode_windows_1252``; raises for text it cannot encode."""
+    return text.encode("cp1252", _WINDOWS_1252_ERRORS)
+
+
+# Any character a valid multi-byte UTF-8 sequence decodes to: not ASCII and
+# not one of the lone surrogates surrogateescape gives a stray byte.
+_UTF8_MULTIBYTE = re.compile("[^\x00-\x7f\udc80-\udcff]")
+
+
 def decode_source(raw: bytes, *, universal_newlines: bool = False) -> Tuple[str, str]:
     """Decode source bytes so that no byte is lost: ``(text, encoding)``.
 
-    UTF-8 when it decodes, otherwise cp1252, otherwise latin-1, which maps
-    every byte, so this never raises and never yields U+FFFD for a bad byte.
-    A UTF-8 byte-order mark is dropped and reported as ``utf-8-sig``. Each
-    fallback decodes reversibly: ``text.encode(encoding)`` gives the bytes
-    back. ``universal_newlines`` turns CRLF and lone CR into LF, as reading
-    the file in text mode did.
+    - Valid UTF-8 is ``utf-8``, or ``utf-8-sig`` with its byte-order mark
+      dropped.
+    - UTF-8 with stray bytes keeps its UTF-8 text, and only the stray bytes
+      become lone surrogates U+DC80-U+DCFF: ``utf-8+surrogateescape`` (or
+      ``utf-8-sig+surrogateescape``). A file counts as UTF-8 here when it has
+      a byte-order mark or at least one valid multi-byte sequence.
+    - Anything else, ASCII plus bytes that never form UTF-8, is a legacy file
+      and decodes as WHATWG ``windows-1252``, which maps every byte.
+
+    ``encode_source(text, encoding)`` gives the bytes back. This never raises
+    and never yields U+FFFD for a bad byte. ``universal_newlines`` turns CRLF
+    and lone CR into LF, as reading the file in text mode did.
     """
-    encoding = None
-    if raw.startswith(codecs.BOM_UTF8):
-        try:
-            text, encoding = raw[len(codecs.BOM_UTF8) :].decode("utf-8"), "utf-8-sig"
-        except UnicodeDecodeError:
-            pass
-    else:
-        try:
-            text, encoding = raw.decode("utf-8"), "utf-8"
-        except UnicodeDecodeError:
-            pass
-    if encoding is None:
-        try:
-            text, encoding = raw.decode("cp1252"), "cp1252"
-        except UnicodeDecodeError:
-            text, encoding = raw.decode("latin-1"), "latin-1"
+    bom = raw.startswith(codecs.BOM_UTF8)
+    body = raw[len(codecs.BOM_UTF8) :] if bom else raw
+    encoding = "utf-8-sig" if bom else "utf-8"
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        text = body.decode("utf-8", "surrogateescape")
+        if bom or _UTF8_MULTIBYTE.search(text):
+            encoding += "+surrogateescape"
+        else:
+            text, encoding = decode_windows_1252(raw), "windows-1252"
     if universal_newlines:
         text = text.replace("\r\n", "\n").replace("\r", "\n")
     return text, encoding
+
+
+def encode_source(text: str, encoding: str) -> bytes:
+    """The bytes ``decode_source`` read ``text`` from, for its ``encoding``."""
+    if encoding == "windows-1252":
+        return encode_windows_1252(text)
+    codec, _, errors = encoding.partition("+")
+    if codec not in ("utf-8", "utf-8-sig") or errors not in ("", "surrogateescape"):
+        raise ValueError(f"not a source encoding: {encoding!r}")
+    data = text.encode("utf-8", errors or "strict")
+    return codecs.BOM_UTF8 + data if codec == "utf-8-sig" else data
 
 
 def encoding_metadata(encoding: str) -> dict:

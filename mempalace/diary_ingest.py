@@ -144,7 +144,7 @@ def ingest_diaries(
         prev_hash = prev_entry.get("content_hash")
         prev_size = prev_entry.get("size", 0)
         curr_size = len(text)
-        curr_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        curr_hash = hashlib.sha256(text.encode("utf-8", "surrogateescape")).hexdigest()
         if not force:
             if prev_hash is not None:
                 if curr_hash == prev_hash:
