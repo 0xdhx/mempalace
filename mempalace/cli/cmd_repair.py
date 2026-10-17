@@ -192,6 +192,12 @@ def _legacy_repair_after_prompt(backend, palace_path, collection_name, args):
         raise SystemExit(2) from exc
 
 
+def _exit_if_writer_active(result) -> None:
+    """Exit 2, like the other repair modes, when another writer held the palace."""
+    if result.get("reason") == "writer-active":
+        raise SystemExit(2)
+
+
 def cmd_repair(args):
     """Rebuild palace vector index from SQLite metadata.
 
@@ -226,7 +232,7 @@ def cmd_repair(args):
     if getattr(args, "mode", "legacy") == "max-seq-id":
         from ..repair import repair_max_seq_id
 
-        repair_max_seq_id(
+        result = repair_max_seq_id(
             palace_path,
             segment=getattr(args, "segment", None),
             from_sidecar=getattr(args, "from_sidecar", None),
@@ -234,6 +240,7 @@ def cmd_repair(args):
             dry_run=getattr(args, "dry_run", False),
             assume_yes=getattr(args, "yes", False),
         )
+        _exit_if_writer_active(result)
         return
 
     if not getattr(args, "dry_run", False):
@@ -346,6 +353,7 @@ def cmd_repair(args):
         assume_yes=getattr(args, "yes", False),
     )
     if preflight is not None:
+        _exit_if_writer_active(preflight)
         return
 
     print(f"\n{'=' * 55}")

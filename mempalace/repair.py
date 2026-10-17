@@ -241,6 +241,7 @@ def _get_palace_path():
 def _paginate_ids(col, where=None):
     """Pull all IDs in a collection using pagination."""
     ids = []
+    seen: set = set()
     page = 1000
     offset = 0
     while True:
@@ -266,7 +267,7 @@ def _paginate_ids(col, where=None):
                     f"does not depend on offset paging (e.g. --mode "
                     f"from-sqlite). Underlying error: {fallback_exc}"
                 ) from fallback_exc
-            new_ids = [i for i in r["ids"] if i not in set(ids)]
+            new_ids = [i for i in r["ids"] if i not in seen]
             if not new_ids:
                 # Offset is broken and the no-offset fallback always
                 # re-fetches the same first `page` results, so it can never
@@ -311,12 +312,14 @@ def _paginate_ids(col, where=None):
                         )
                 break
             ids.extend(new_ids)
+            seen.update(new_ids)
             offset += len(new_ids)
             continue
         n = len(r["ids"]) if r["ids"] else 0
         if n == 0:
             break
         ids.extend(r["ids"])
+        seen.update(r["ids"])
         offset += n
         if n < page:
             break
@@ -1558,6 +1561,7 @@ def maybe_repair_poisoned_max_seq_id_before_rebuild(
     backup: bool = True,
     dry_run: bool = False,
     assume_yes: bool = False,
+    progress: Callable[[str], None] = print,
 ) -> "dict | None":
     """Run non-destructive max_seq_id repair before a rebuild if needed.
 
@@ -1583,13 +1587,15 @@ def maybe_repair_poisoned_max_seq_id_before_rebuild(
     if not poisoned:
         return None
 
-    print("\n  Detected poisoned max_seq_id rows before repair rebuild.")
-    print(
+    progress("\n  Detected poisoned max_seq_id rows before repair rebuild.")
+    progress(
         "  This can make writes report success while embeddings_queue grows "
         "and embeddings stay static."
     )
-    print("  Running the non-destructive max_seq_id repair instead of rebuilding the collection.")
-    print(
+    progress(
+        "  Running the non-destructive max_seq_id repair instead of rebuilding the collection."
+    )
+    progress(
         "  Queued writes remain in chroma.sqlite3 for Chroma to drain after "
         "the bookmark is unpoisoned."
     )
@@ -1599,6 +1605,7 @@ def maybe_repair_poisoned_max_seq_id_before_rebuild(
         backup=backup,
         dry_run=dry_run,
         assume_yes=assume_yes,
+        progress=progress,
     )
 
 
@@ -1811,6 +1818,7 @@ def rebuild_index(
     preflight = maybe_repair_poisoned_max_seq_id_before_rebuild(
         palace_path,
         assume_yes=True,
+        progress=progress,
     )
     if preflight is not None:
         return
@@ -2995,6 +3003,7 @@ def repair_max_seq_id(
     backup: bool = True,
     dry_run: bool = False,
     assume_yes: bool = False,
+    progress: Callable[[str], None] = print,
 ) -> dict:
     """Un-poison ``max_seq_id`` rows corrupted by ``_fix_blob_seq_ids`` misfire.
 
@@ -3006,6 +3015,11 @@ def repair_max_seq_id(
     restores clean values either from a pre-corruption sidecar DB
     (exact) or heuristically (``MAX(embeddings.seq_id)`` over the owning
     collection).
+
+    The write runs under the palace writer lease, so it cannot interleave
+    with a mine or an MCP writer, and the plan is recomputed once the lease
+    is held. When another writer holds the palace nothing changes and the
+    result carries ``reason="writer-active"``.
     """
     from .migrate import confirm_destructive_action, contains_palace_database
 
@@ -3022,73 +3036,129 @@ def repair_max_seq_id(
         "backup": None,
     }
 
-    print(f"\n{'=' * 55}")
-    print("  MemPalace Repair -- max_seq_id Un-poison")
-    print(f"{'=' * 55}\n")
-    print(f"  Palace:  {palace_path}")
+    progress(f"\n{'=' * 55}")
+    progress("  MemPalace Repair -- max_seq_id Un-poison")
+    progress(f"{'=' * 55}\n")
+    progress(f"  Palace:  {palace_path}")
     if segment:
-        print(f"  Segment: {segment}")
+        progress(f"  Segment: {segment}")
     if from_sidecar:
-        print(f"  Sidecar: {from_sidecar}")
+        progress(f"  Sidecar: {from_sidecar}")
 
     if not os.path.isdir(palace_path):
-        print(f"  No palace found at {palace_path}")
+        progress(f"  No palace found at {palace_path}")
         result["aborted"] = True
         result["reason"] = "palace-missing"
         return result
     if not contains_palace_database(palace_path):
-        print(f"  No palace database at {palace_path}")
+        progress(f"  No palace database at {palace_path}")
         result["aborted"] = True
         result["reason"] = "db-missing"
         return result
 
-    poisoned = _detect_poisoned_max_seq_ids(db_path, segment=segment, threshold=threshold)
+    sidecar_map = _read_sidecar_seq_ids(from_sidecar) if from_sidecar else None
+    plan_args = {"segment": segment, "threshold": threshold, "sidecar_map": sidecar_map}
+    poisoned, plan = _plan_max_seq_id_repair(db_path, progress=progress, **plan_args)
     if not poisoned:
-        print("  No poisoned max_seq_id rows detected. Nothing to do.")
-        print(f"\n{'=' * 55}\n")
+        progress("  No poisoned max_seq_id rows detected. Nothing to do.")
+        progress(f"\n{'=' * 55}\n")
         return result
+    result["before"] = {seg_id: old for seg_id, old, _new in plan}
+    result["after"] = {seg_id: new for seg_id, _old, new in plan}
 
-    sidecar_map: dict[str, int] = {}
-    if from_sidecar:
-        sidecar_map = _read_sidecar_seq_ids(from_sidecar)
-
-    plan: list[tuple[str, int, int]] = []
-    with open_palace_writer(db_path) as conn:
-        cur = conn.cursor()
-        for seg_id, old_val in poisoned:
-            if from_sidecar:
-                if seg_id not in sidecar_map:
-                    print(f"  Skipped segment {seg_id}: no sidecar entry")
-                    continue
-                new_val = sidecar_map[seg_id]
-            else:
-                new_val = _compute_heuristic_seq_id(cur, seg_id)
-            plan.append((seg_id, old_val, new_val))
-            result["before"][seg_id] = old_val
-            result["after"][seg_id] = new_val
-
-    print()
-    print("  Report")
-    print(f"    poisoned rows        {len(poisoned):>6}")
-    print(f"    planned repairs      {len(plan):>6}")
+    progress("")
+    progress("  Report")
+    progress(f"    poisoned rows        {len(poisoned):>6}")
+    progress(f"    planned repairs      {len(plan):>6}")
     source = "sidecar" if from_sidecar else "heuristic (collection MAX)"
-    print(f"    clean-value source   {source}")
+    progress(f"    clean-value source   {source}")
     for seg_id, old_val, new_val in plan:
-        print(f"    {seg_id}  {old_val}  ->  {new_val}")
+        progress(f"    {seg_id}  {old_val}  ->  {new_val}")
 
     if dry_run:
-        print("\n  DRY RUN -- no rows modified.\n" + "=" * 55 + "\n")
+        progress("\n  DRY RUN -- no rows modified.\n" + "=" * 55 + "\n")
         return result
 
     if not plan:
-        print("  No actionable repairs.")
-        print(f"\n{'=' * 55}\n")
+        progress("  No actionable repairs.")
+        progress(f"\n{'=' * 55}\n")
         return result
 
     if not confirm_destructive_action("Repair max_seq_id", palace_path, assume_yes=assume_yes):
         result["aborted"] = True
         result["reason"] = "user-aborted"
         return result
+
+    from .palace import MineAlreadyRunning, mine_palace_lock
+
+    try:
+        with mine_palace_lock(palace_path):
+            _apply_max_seq_id_plan(palace_path, db_path, plan_args, backup, result, progress)
+    except MineAlreadyRunning as exc:
+        progress(f"\n  Another writer already holds this palace: {exc}")
+        progress("  Stop mines and MCP writers on it, then re-run; nothing changed.")
+        result["aborted"] = True
+        result["reason"] = "writer-active"
+        return result
+
+    if result["segment_repaired"]:
+        progress(f"\n  Repair complete. {len(result['segment_repaired'])} row(s) restored.")
+        progress(f"  Backup:  {result['backup'] or '(skipped)'}")
+    else:
+        progress("  No poisoned max_seq_id rows were left once the palace was locked.")
+    progress(f"\n{'=' * 55}\n")
+    return result
+
+
+def _plan_max_seq_id_repair(
+    db_path: str,
+    *,
+    segment: Optional[str],
+    threshold: int,
+    sidecar_map: Optional[dict[str, int]],
+    progress: Callable[[str], None],
+) -> tuple[list[tuple[str, int]], list[tuple[str, int, int]]]:
+    """Return the poisoned rows and the ``(segment, old, new)`` repairs for them."""
+    poisoned = _detect_poisoned_max_seq_ids(db_path, segment=segment, threshold=threshold)
+    plan: list[tuple[str, int, int]] = []
+    if not poisoned:
+        return poisoned, plan
+    with open_palace_writer(db_path) as conn:
+        cur = conn.cursor()
+        for seg_id, old_val in poisoned:
+            if sidecar_map is not None:
+                if seg_id not in sidecar_map:
+                    progress(f"  Skipped segment {seg_id}: no sidecar entry")
+                    continue
+                new_val = sidecar_map[seg_id]
+            else:
+                new_val = _compute_heuristic_seq_id(cur, seg_id)
+            plan.append((seg_id, old_val, new_val))
+    return poisoned, plan
+
+
+def _apply_max_seq_id_plan(
+    palace_path: str,
+    db_path: str,
+    plan_args: dict,
+    backup: bool,
+    result: dict,
+    progress: Callable[[str], None],
+) -> None:
+    """Back up, rewrite and verify ``max_seq_id``; the caller holds the lease."""
+    _poisoned, plan = _plan_max_seq_id_repair(db_path, progress=lambda _msg: None, **plan_args)
+    before = {seg_id: old for seg_id, old, _new in plan}
+    after = {seg_id: new for seg_id, _old, new in plan}
+    if (before, after) != (result["before"], result["after"]):
+        # Another writer moved the palace between the report and the lease.
+        result["plan_changed"] = True
+        if plan:
+            progress("  The plan changed once the palace was locked; applying:")
+            for seg_id, old_val, new_val in plan:
+                progress(f"    {seg_id}  {old_val}  ->  {new_val}")
+    result["before"], result["after"] = before, after
+    if not plan:
+        return
 
     if backup:
         import glob
@@ -3098,9 +3168,10 @@ def repair_max_seq_id(
 
         timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         backup_path = os.path.join(palace_path, f"chroma.sqlite3.max-seq-id-backup-{timestamp}")
-        shutil.copy2(db_path, backup_path)
+        # Through the backup API, so a writer's uncheckpointed WAL is in it.
+        _copy_sqlite_db(db_path, backup_path)
         result["backup"] = backup_path
-        print(f"  Backup:  {backup_path}")
+        progress(f"  Backup:  {backup_path}")
 
         # Retain only the most recent N backups (the copy just written is the
         # newest and is kept). Without this, every max-seq-id repair leaves a
@@ -3108,7 +3179,7 @@ def repair_max_seq_id(
         prune_backups(
             os.path.join(glob.escape(palace_path), "chroma.sqlite3.max-seq-id-backup-*"),
             MempalaceConfig().max_backups,
-            log=print,
+            log=progress,
         )
 
     _close_chroma_handles(palace_path)
@@ -3125,18 +3196,15 @@ def repair_max_seq_id(
             conn.rollback()
             raise
 
-    remaining = _detect_poisoned_max_seq_ids(db_path, segment=segment, threshold=threshold)
+    remaining = _detect_poisoned_max_seq_ids(
+        db_path, segment=plan_args["segment"], threshold=plan_args["threshold"]
+    )
     if remaining:
         raise MaxSeqIdVerificationError(
             f"Post-repair detection still found {len(remaining)} poisoned row(s): "
             f"{[sid for sid, _ in remaining]}. Backup at {result['backup']}."
         )
-
     result["segment_repaired"] = [seg_id for seg_id, _old, _new in plan]
-    print(f"\n  Repair complete. {len(plan)} row(s) restored.")
-    print(f"  Backup:  {result['backup'] or '(skipped)'}")
-    print(f"\n{'=' * 55}\n")
-    return result
 
 
 if __name__ == "__main__":
