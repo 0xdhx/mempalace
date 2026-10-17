@@ -30,13 +30,10 @@ dependencies = [
     "chromadb>=1.5.4,<2",
     "pyyaml>=6.0,<7",
     "tomli>=2.0.0; python_version < '3.11'",
-    # Multilingual embedding model deps. Onboarding now offers the
-    # embeddinggemma-300m ONNX model as the default for new installs, so
-    # these are required core deps (not optional extras). The 300 MB ONNX
-    # model itself is lazy-downloaded on first use, not at install time.
-    # Users who pick minilm during onboarding still get these installed
-    # but unused — small wheel-size cost in exchange for one fewer pip
-    # command in the multilingual setup path.
+    # Multilingual embedding model deps (embeddinggemma-300m ONNX), kept as
+    # core deps rather than optional extras so choosing the multilingual model
+    # needs no extra pip command. The 300 MB ONNX model itself is
+    # lazy-downloaded on first use, not at install time.
     "huggingface_hub>=0.20",
     "tokenizers>=0.15",
     "numpy>=1.24",
