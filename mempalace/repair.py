@@ -2523,7 +2523,7 @@ def _preview_legacy_repair(
     read-only SQLite ground truth :func:`check_extraction_safety` already
     trusts. That is a different source than the real run rebuilds from (it
     re-files what the chromadb collection layer returns), so the plan below
-    states the ``#1208`` contingency rather than promising the number.
+    states the truncation-guard contingency rather than promising the number.
 
     ``confirm_truncation_ok`` mirrors the real run's flag: it switches that
     contingency off, so the preview has to say the guard is disabled rather
@@ -2556,7 +2556,7 @@ def _preview_legacy_repair(
     if confirm_truncation_ok:
         print(
             f"  [{collection_name}] chroma.sqlite3 holds {n} rows, and --confirm-truncation-ok\n"
-            "  is set, so the #1208 truncation guard is DISABLED. A real run would re-file\n"
+            "  is set, so the truncation guard is DISABLED. A real run would re-file\n"
             f"  whatever the chromadb collection layer returns, even if that is fewer than {n}\n"
             "  rows, and the difference would be destroyed. It would, in order:"
         )
@@ -2564,7 +2564,7 @@ def _preview_legacy_repair(
         print(
             f"  [{collection_name}] chroma.sqlite3 holds {n} rows. A real run would extract them\n"
             "  through the chromadb collection layer first and abort without changes if that\n"
-            f"  returns fewer than {n} (#1208 truncation guard). It would then, in order:"
+            f"  returns fewer than {n} (the truncation guard). It would then, in order:"
         )
     if os.path.exists(backup_path):
         print(f"    1. DELETE the existing backup at {backup_path} -- or refuse outright")
@@ -2869,7 +2869,7 @@ def status(palace_path=None, collection_name: Optional[str] = None) -> dict:
             "  chroma.sqlite3 (for example a failed chromadb HNSW compaction). The\n"
             "  drawer rows are intact in SQLite, so --mode from-sqlite recovers them.\n"
             "  Do not re-mine from source files: that would drop drawers added via\n"
-            "  the MCP server and diary entries, which have no source file (#1843)."
+            "  the MCP server and diary entries, which have no source file."
         )
     print()
     return {"drawers": drawers, "closets": closets}

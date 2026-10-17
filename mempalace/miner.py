@@ -663,7 +663,7 @@ def chunk_text(
         raise ValueError(
             f"chunk_overlap ({chunk_overlap}) must be at most chunk_size // 2 "
             f"({chunk_size // 2}); a larger overlap can loop forever on "
-            f"short-line content (#2056)"
+            f"short-line content"
         )
     if not isinstance(min_chunk_size, int) or min_chunk_size < 0:
         raise ValueError(f"min_chunk_size must be a non-negative int, got {min_chunk_size!r}")
