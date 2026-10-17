@@ -398,6 +398,7 @@ def _search_result_envelope(
     pool_size: int,
     date_window_active: bool,
     stats: dict = None,
+    distance_metric: str = None,
 ) -> dict:
     """Assemble the ``search_memories`` response dict.
 
@@ -406,7 +407,8 @@ def _search_result_envelope(
     ``date_filter_pool_truncated`` flags it so a thin result under a date
     filter is never mistaken for "that's all there was". ``stats`` adds what
     a filter dropped (``filtered_by_max_distance``) or a candidate source
-    that failed (``candidate_strategy_fallback``).
+    that failed (``candidate_strategy_fallback``). ``distance_metric`` names
+    the scale each hit's raw ``distance`` is on.
     """
     result = {
         "query": query,
@@ -420,6 +422,8 @@ def _search_result_envelope(
         "total_before_filter": candidates_fetched,
         "results": hits,
     }
+    if distance_metric:
+        result["distance_metric"] = distance_metric
     if date_window_active and candidates_fetched >= pool_size:
         result["date_filter_pool_truncated"] = True
     if stats:
