@@ -93,7 +93,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   carry it; `mempalace_get_drawer` with `include_source_bytes: true` returns
   the drawer's exact source bytes as base64. Exports write the original
   bytes, and MemPalace processes talking to each other (proxy and hub, the
-  daemon, peer sync) pass them exactly. A drawer whose source was not plain UTF-8 carries
+  daemon, peer sync) pass them exactly. `mempalace_update_drawer` with new
+  content drops `source_encoding` and `transforms`, since that text did not
+  come from the source file. A drawer whose source was not plain UTF-8 carries
   `source_encoding` (`utf-8-sig`, `utf-8+surrogateescape`,
   `utf-8-sig+surrogateescape` or `windows-1252`), and
   `fsio.encode_source(text, source_encoding)` gives the source bytes back.

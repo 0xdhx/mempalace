@@ -1276,9 +1276,16 @@ def _with_source_bytes(payload: dict) -> dict:
     from ..fsio import encode_source
 
     encoding = payload.get("metadata", {}).get("source_encoding")
-    if encoding:
+    if not encoding:
+        return payload
+    try:
         raw = encode_source(payload["content"], encoding)
-        payload["source_bytes_base64"] = base64.b64encode(raw).decode("ascii")
+    except (UnicodeEncodeError, ValueError):
+        # The text no longer fits the stamp (a drawer edited before stamps
+        # were dropped on update); the drawer still comes back.
+        payload["source_bytes_note"] = f"content is not representable as {encoding}"
+        return payload
+    payload["source_bytes_base64"] = base64.b64encode(raw).decode("ascii")
     return payload
 
 
@@ -1474,6 +1481,22 @@ def tool_list_drawers(
         return {"error": str(e)}
 
 
+# Stamps that say how the source file was read. Text a caller writes into a
+# drawer did not come from that file, so they no longer describe it.
+_SOURCE_READ_KEYS = ("source_encoding", "transforms")
+
+
+def _drop_source_read_stamps(col, meta: dict) -> None:
+    for key in _SOURCE_READ_KEYS:
+        if key not in meta:
+            continue
+        if getattr(col, "upsert_merges_metadata", False) is True:
+            # Chroma keeps a key the write leaves out; None removes it.
+            meta[key] = None
+        else:
+            del meta[key]
+
+
 def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, room: str = None):
     """Update an existing logical drawer's content and/or metadata."""
     global _metadata_cache
@@ -1501,6 +1524,8 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
                 return {"success": False, "error": str(e)}
 
         new_meta = dict(old_meta)
+        if content is not None:
+            _drop_source_read_stamps(col, new_meta)
 
         if wing is not None:
             try:
