@@ -92,6 +92,12 @@ def _capability_missing():
     return (NotImplementedError, TypeError, UnsupportedCapabilityError)
 
 
+def _palace_missing():
+    from .backends.base import PalaceNotFoundError
+
+    return PalaceNotFoundError
+
+
 # The one reader thread a budgeted fetch may have in flight. A read that
 # overran its deadline keeps running; until it ends, later fetches fail fast
 # instead of piling up threads on a hung backend.
@@ -134,15 +140,16 @@ def _read_before(deadline, read):
     return box["value"]
 
 
-def _read_with_retry(read, deadline, missing: tuple):
+def _read_with_retry(read, deadline, no_retry: tuple):
     """``read()``, retried briefly while ``deadline`` allows, then re-raised.
 
-    A missing capability (``missing``) and a timed-out read are not retried.
+    Errors in ``no_retry`` (a missing capability or palace) and a timed-out
+    read are not retried; they will not change on a second try.
     """
     for attempt in range(_READ_ATTEMPTS):
         try:
             return _read_before(deadline, read)
-        except (TimeoutError,) + missing:
+        except (TimeoutError,) + no_retry:
             raise
         except Exception:
             remaining = _READ_RETRY_DELAY if deadline is None else deadline - time.monotonic()
@@ -163,49 +170,56 @@ def fetch_recent_window(
 
     The whole fetch fits in ``budget`` seconds. A read that fails is retried
     within it and then raised: a palace that cannot be read is not an empty
-    one, and a scan cut short is not the whole window. ``budget=None`` reads
-    inline on the calling thread with no deadline, for a caller that holds a
-    lock the read must not outlive.
+    one, and a scan cut short is not the whole window. A palace or collection
+    that does not exist yet is not a read failure: it has no recent drawers.
+    ``budget=None`` reads inline on the calling thread with no deadline, for a
+    caller that holds a lock the read must not outlive.
     """
-    missing = _capability_missing()  # resolved before the clock starts
+    # Resolved before the clock starts.
+    missing = _capability_missing()
+    palace_missing = _palace_missing()
+    no_retry = missing + (palace_missing,)
     deadline = None if budget is None else time.monotonic() + budget
     where = {"wing": wing} if wing else None
-    getter = getattr(col, "get_recent", None)
-    if getter is not None:
-        try:
-            result = _read_with_retry(
-                lambda: getter(
-                    limit=max_scan,
-                    where=where,
-                    order_field="filed_at",
-                    include=["documents", "metadatas"],
-                ),
-                deadline,
-                missing,
-            )
-            return list(result.documents or []), list(result.metadatas or [])
-        except missing:
-            pass  # capability missing — page it manually
+    try:
+        getter = getattr(col, "get_recent", None)
+        if getter is not None:
+            try:
+                result = _read_with_retry(
+                    lambda: getter(
+                        limit=max_scan,
+                        where=where,
+                        order_field="filed_at",
+                        include=["documents", "metadatas"],
+                    ),
+                    deadline,
+                    no_retry,
+                )
+                return list(result.documents or []), list(result.metadatas or [])
+            except missing:
+                pass  # capability missing — page it manually
 
-    # Fetch in batches to avoid SQLite variable limit (~999)
-    batch_size = 500
-    docs, metas = [], []
-    offset = 0
-    while True:
-        kwargs = {"include": ["documents", "metadatas"], "limit": batch_size, "offset": offset}
-        if where:
-            kwargs["where"] = where
-        batch = _read_with_retry(lambda: col.get(**kwargs), deadline, missing)
-        batch_docs = batch.get("documents") or []
-        batch_metas = batch.get("metadatas") or []
-        if not batch_docs:
-            break
-        docs.extend(batch_docs)
-        metas.extend(batch_metas)
-        offset += len(batch_docs)
-        if len(batch_docs) < batch_size or len(docs) >= max_scan:
-            break
-    return docs, metas
+        # Fetch in batches to avoid SQLite variable limit (~999)
+        batch_size = 500
+        docs, metas = [], []
+        offset = 0
+        while True:
+            kwargs = {"include": ["documents", "metadatas"], "limit": batch_size, "offset": offset}
+            if where:
+                kwargs["where"] = where
+            batch = _read_with_retry(lambda: col.get(**kwargs), deadline, no_retry)
+            batch_docs = batch.get("documents") or []
+            batch_metas = batch.get("metadatas") or []
+            if not batch_docs:
+                break
+            docs.extend(batch_docs)
+            metas.extend(batch_metas)
+            offset += len(batch_docs)
+            if len(batch_docs) < batch_size or len(docs) >= max_scan:
+                break
+        return docs, metas
+    except palace_missing:
+        return [], []
 
 
 def recent_read_failure(exc: Exception) -> str:
@@ -293,6 +307,8 @@ class Layer1:
 
         try:
             docs, metas = self._fetch_candidates(col)
+        except ImportError:
+            raise  # a broken install, not a palace read: fail like develop did
         except Exception as exc:
             return f"## L1 — {recent_read_failure(exc)}"
 
@@ -600,6 +616,9 @@ class MemoryStack:
             self.l1.wing = wing
         try:
             parts.append(self.l1.generate())
+        except ImportError:
+            # mempalace cannot run here; exit non-zero so hooks inject nothing.
+            raise
         except Exception as exc:  # identity is still worth waking up with
             parts.append(f"## L1 — {recent_read_failure(exc)}")
 

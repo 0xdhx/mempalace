@@ -472,6 +472,59 @@ def test_stuck_reads_leave_one_reader_thread_and_later_fetches_fail_fast():
     assert fetch_recent_window(col)[0] == ["Readable again."]
 
 
+def test_layer1_palace_that_does_not_exist_yet_has_no_memories():
+    """A missing palace or collection is not a read failure (develop's wording)."""
+    from mempalace.backends.base import CollectionNotInitializedError, PalaceNotFoundError
+
+    for exc in (PalaceNotFoundError("no palace"), CollectionNotInitializedError("no table")):
+        mock_col = MagicMock()
+        mock_col.get_recent.side_effect = exc
+        with (
+            patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+            patch("mempalace.layers._get_collection", return_value=mock_col),
+        ):
+            mock_cfg.return_value.palace_path = "/fake"
+            result = Layer1(palace_path="/fake").generate()
+
+        assert result == "## L1 — No memories yet."
+        assert mock_col.get_recent.call_count == 1  # not retried
+        mock_col.get.assert_not_called()
+
+
+def test_layer1_scan_of_a_palace_that_does_not_exist_yet_has_no_memories():
+    from mempalace.backends.base import CollectionNotInitializedError
+
+    mock_col = _mock_legacy_collection()
+    mock_col.get.side_effect = CollectionNotInitializedError("no table")
+    with (
+        patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+        patch("mempalace.layers._get_collection", return_value=mock_col),
+    ):
+        mock_cfg.return_value.palace_path = "/fake"
+        result = Layer1(palace_path="/fake").generate()
+
+    assert result == "## L1 — No memories yet."
+
+
+def test_wake_up_fails_when_mempalace_cannot_run(tmp_path):
+    """A broken install (missing dependency) still exits wake-up with an error,
+    so hooks inject nothing, instead of a 'could not be read' wake-up."""
+    stack = MemoryStack(palace_path=str(tmp_path / "palace"), identity_path=str(tmp_path / "id"))
+    with patch.object(stack.l1, "generate", side_effect=ModuleNotFoundError("chromadb")):
+        with pytest.raises(ModuleNotFoundError):
+            stack.wake_up()
+
+    mock_col = MagicMock()
+    mock_col.get_recent.side_effect = ModuleNotFoundError("numpy")
+    with (
+        patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+        patch("mempalace.layers._get_collection", return_value=mock_col),
+    ):
+        mock_cfg.return_value.palace_path = "/fake"
+        with pytest.raises(ModuleNotFoundError):
+            Layer1(palace_path="/fake").generate()
+
+
 def test_wake_up_keeps_identity_when_l1_fails(tmp_path):
     """L0 is returned even if generating L1 blows up."""
     identity = tmp_path / "identity.txt"
