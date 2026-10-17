@@ -244,7 +244,7 @@ def open_aaak_collection(palace_path: str):
     """The AAAK collection, or None when ``compress`` never created it."""
     try:
         return get_aaak_collection(palace_path, create=False)
-    except CollectionNotInitializedError:
+    except (CollectionNotInitializedError, PalaceNotFoundError):
         return None
 
 
