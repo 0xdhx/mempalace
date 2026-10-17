@@ -13,6 +13,7 @@ from mempalace.query_sanitizer import (
     MIN_QUERY_LENGTH,
     SAFE_QUERY_LENGTH,
     sanitize_query,
+    sanitizer_report,
 )
 
 
@@ -259,3 +260,20 @@ class TestSanitizerSaysWhatItChanged:
 
     def test_original_length_counts_the_raw_input(self):
         assert sanitize_query("  short query  ")["original_length"] == 15
+
+
+class TestSanitizerReport:
+    def test_no_report_when_nothing_changed(self):
+        assert sanitizer_report(sanitize_query("what did we decide?")) is None
+
+    def test_a_changed_query_reports_what_changed(self):
+        report = sanitizer_report(
+            sanitize_query("You are a helpful assistant. " * 40 + "Where is the config?")
+        )
+        assert report["truncated"] is True
+        assert report["clean_query"] == "Where is the config"
+        assert report["original_length"] > report["clean_length"]
+
+    def test_an_empty_query_has_every_field(self):
+        assert sanitize_query("")["truncated"] is False
+        assert sanitize_query("   ")["replaced_lone_surrogates"] is False

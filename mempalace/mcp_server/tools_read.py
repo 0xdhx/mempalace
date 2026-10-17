@@ -751,16 +751,10 @@ def tool_search(
         result["vector_disabled"] = True
         result["vector_disabled_reason"] = _vector_disabled_reason
     # Attach sanitizer metadata for transparency
-    if sanitized["was_sanitized"]:
+    report = sanitizer_report(sanitized)
+    if report:
         result["query_sanitized"] = True
-        result["sanitizer"] = {
-            "method": sanitized["method"],
-            "original_length": sanitized["original_length"],
-            "clean_length": sanitized["clean_length"],
-            "truncated": sanitized["truncated"],
-            "replaced_lone_surrogates": sanitized["replaced_lone_surrogates"],
-            "clean_query": sanitized["clean_query"],
-        }
+        result["sanitizer"] = report
     if context:
         result["context_received"] = True
     return result

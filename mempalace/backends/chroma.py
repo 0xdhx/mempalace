@@ -4402,12 +4402,17 @@ class ChromaBackend(BaseBackend):
         palace_ref, collection_name, create, options = _normalize_get_collection_args(args, kwargs)
         self.require_namespace_support(palace_ref)
         caller_vectors = bool(options and options.get("caller_vectors", False))
+        # A read-only open must not create chroma.sqlite3 or rewrite the
+        # collection's configuration (the HNSW thread pin below is a write).
+        read_only = bool(options and options.get("read_only", False)) and not create
 
         palace_path = palace_ref.local_path
         if palace_path is None:
             raise PalaceNotFoundError("ChromaBackend requires PalaceRef.local_path")
 
         if not create and not os.path.isdir(palace_path):
+            raise PalaceNotFoundError(palace_path)
+        if read_only and not os.path.isfile(os.path.join(palace_path, "chroma.sqlite3")):
             raise PalaceNotFoundError(palace_path)
 
         if caller_vectors:
@@ -4466,7 +4471,7 @@ class ChromaBackend(BaseBackend):
                     raise
             if caller_vectors:
                 _require_caller_vector_collection(collection)
-            else:
+            elif not read_only:
                 _pin_hnsw_threads(collection)
             # Our own client construction and collection open just wrote to
             # chroma.sqlite3; re-baseline so the next _client() call does not read

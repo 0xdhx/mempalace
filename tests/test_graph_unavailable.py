@@ -19,6 +19,8 @@ def test_a_palace_without_drawers_is_an_empty_graph(tmp_path):
     palace = tmp_path / "palace"
     palace.mkdir()
     assert palace_graph._get_collection(_config(palace)) is None
+    # A graph read creates nothing, not even an empty chroma.sqlite3.
+    assert list(palace.iterdir()) == []
 
 
 def test_any_other_open_failure_raises_graph_unavailable(tmp_path, monkeypatch):
@@ -32,17 +34,64 @@ def test_any_other_open_failure_raises_graph_unavailable(tmp_path, monkeypatch):
     assert "locked" not in str(info.value)
 
 
-def test_the_graph_opens_the_palace_read_only(tmp_path, monkeypatch):
-    seen = {}
+def _drawer_rows(palace):
+    import sqlite3
 
-    def opened(*args, **kwargs):
-        seen.update(kwargs)
-        return None
+    db = sqlite3.connect(f"file:{palace / 'chroma.sqlite3'}?mode=ro", uri=True)
+    try:
+        return {
+            table: db.execute(f"SELECT * FROM {table} ORDER BY 1").fetchall()
+            for table in ("embeddings", "embedding_metadata")
+        }
+    finally:
+        db.close()
 
-    monkeypatch.setattr(palace_graph, "_get_palace_collection", opened)
-    palace_graph._get_collection(_config(tmp_path))
-    assert seen["read_only"] is True
-    assert seen["create"] is False
+
+def test_graph_reads_change_no_drawer_rows(tmp_path, monkeypatch):
+    # chromadb's own client rewrites bookkeeping pages and the HNSW files on
+    # every open, and the pre-open safety fixes may stamp collection config,
+    # so the file bytes can't be compared. The graph read must not pin HNSW
+    # threads, and no drawer or drawer-metadata row may move.
+    from mempalace.backends import chroma as chroma_backend
+    from mempalace.backends import get_backend
+    from mempalace.palace import get_collection
+
+    palace = tmp_path / "palace"
+    col = get_collection(str(palace), create=True, backend="chroma")
+    col.upsert(
+        ids=["d1", "d2"],
+        documents=["alpha note", "beta note"],
+        metadatas=[{"wing": "w1", "room": "r1"}, {"wing": "w2", "room": "r1"}],
+    )
+    get_backend("chroma").close_palace(str(palace))
+    before = _drawer_rows(palace)
+
+    pinned = []
+    monkeypatch.setattr(chroma_backend, "_pin_hnsw_threads", pinned.append)
+    config = _config(palace)
+    for _ in range(2):
+        graph_col = palace_graph._get_collection(config)
+        palace_graph.invalidate_graph_cache()
+        nodes, _ = palace_graph.build_graph(col=graph_col, config=config)
+        assert nodes["r1"]["wings"] == ["w1", "w2"]
+    get_backend("chroma").close_palace(str(palace))
+
+    assert pinned == []
+    assert _drawer_rows(palace) == before
+
+
+def test_a_failed_drawer_read_raises_graph_unavailable(tmp_path):
+    class Broken:
+        def count(self):
+            return 1
+
+        def get(self, **kwargs):
+            raise RuntimeError("Error loading hnsw index")
+
+    palace_graph.invalidate_graph_cache()
+    with pytest.raises(GraphUnavailable) as info:
+        palace_graph.build_graph(col=Broken(), config=_config(tmp_path))
+    assert "hnsw" not in str(info.value)
 
 
 def test_build_graph_does_not_report_an_unreadable_palace_as_empty(tmp_path, monkeypatch):
@@ -70,7 +119,7 @@ def test_mcp_graph_tools_answer_an_unreadable_palace_with_an_error(monkeypatch, 
         result = mcp_server.tool_traverse_graph("room")
     else:
         result = mcp_server.tool_find_tunnels("wing_a", "wing_b")
-    assert result == {"error": "palace at /some/palace could not be read for the graph"}
+    assert result == {"error": "palace at /some/palace could not be read"}
 
 
 def test_mcp_create_tunnel_answers_an_unreadable_palace_with_an_error(monkeypatch):
@@ -81,4 +130,4 @@ def test_mcp_create_tunnel_answers_an_unreadable_palace_with_an_error(monkeypatc
 
     monkeypatch.setattr(mcp_server, "create_tunnel", unavailable)
     result = mcp_server.tool_create_tunnel("wing_a", "room_a", "wing_b", "room_b")
-    assert result == {"error": "palace could not be read for the graph"}
+    assert result == {"error": "palace could not be read"}

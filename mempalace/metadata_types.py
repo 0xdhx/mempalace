@@ -32,15 +32,21 @@ TIMESTAMP_FIELDS = frozenset({"filed_at", "created_at"})
 _INT_TEXT = re.compile(r"[+-]?[0-9]+")
 _FLOAT_TEXT = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
 _BOOL_TEXT = {"true": True, "1": True, "false": False, "0": False}
+# Backends store integers as signed 64-bit; a bigger one stays as given.
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _int64(number, value):
+    return number if _INT64_MIN <= number <= _INT64_MAX else value
 
 
 def _as_int(value):
     if isinstance(value, bool):
         return value
     if isinstance(value, float) and math.isfinite(value) and value.is_integer():
-        return int(value)
+        return _int64(int(value), value)
     if isinstance(value, str) and _INT_TEXT.fullmatch(value.strip()):
-        return int(value.strip())
+        return _int64(int(value.strip()), value)
     return value
 
 
@@ -95,3 +101,13 @@ def coerce_metadata_types(metadata):
                 coerced = dict(metadata)
             coerced[key] = new
     return coerced if coerced is not None else metadata
+
+
+def is_sentinel(metadata):
+    """Whether a drawer's metadata marks it a sentinel.
+
+    Legacy rows can hold ``"false"`` or ``"0"``, which plain truthiness reads
+    as a sentinel; any other value keeps its usual truthiness.
+    """
+    flag = _as_bool((metadata or {}).get("is_sentinel"))
+    return flag is not False and bool(flag)

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mempalace.metadata_types import coerce_metadata_types
+from mempalace.metadata_types import coerce_metadata_types, is_sentinel
 
 
 def test_numeric_and_flag_text_becomes_its_declared_type():
@@ -73,3 +73,30 @@ def test_a_write_stores_declared_types_so_range_filters_compare_numbers(tmp_path
     # As text, "9" > "10"; as numbers only the tenth chunk passes.
     hits = col.get(where={"chunk_index": {"$gt": 9}}, include=[])
     assert hits["ids"] == ["b"]
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (True, True),
+        ("true", True),
+        (1, True),
+        ("false", False),
+        ("0", False),
+        (0, False),
+        (None, False),
+        ("", False),
+        ("yes", True),
+    ],
+)
+def test_is_sentinel_reads_legacy_text_flags(value, expected):
+    assert is_sentinel({"is_sentinel": value}) is expected
+    assert is_sentinel(None) is False
+
+
+def test_an_integer_beyond_64_bits_is_kept_as_given():
+    big = str(2**63)
+    assert coerce_metadata_types({"chunk_index": big})["chunk_index"] == big
+    assert coerce_metadata_types({"chunk_index": str(2**63 - 1)})["chunk_index"] == 2**63 - 1
+    huge = float(2**70)
+    assert coerce_metadata_types({"chunk_index": huge})["chunk_index"] == huge

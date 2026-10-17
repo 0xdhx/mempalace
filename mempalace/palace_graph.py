@@ -185,7 +185,7 @@ def invalidate_graph_cache():
 
 
 class GraphUnavailable(RuntimeError):
-    """The palace exists but could not be read for the graph.
+    """The palace exists but its drawers could not be read.
 
     A palace with no drawers collection yet is not this error: the graph is
     empty. A lock, a corrupt database or any other failure is, so a caller
@@ -194,7 +194,7 @@ class GraphUnavailable(RuntimeError):
 
     def __init__(self, palace_path=None):
         where = f" at {palace_path}" if palace_path else ""
-        super().__init__(f"palace{where} could not be read for the graph")
+        super().__init__(f"palace{where} could not be read")
 
 
 def _get_collection(config=None):
@@ -277,28 +277,33 @@ def build_graph(col=None, config=None):
 
     room_data = defaultdict(lambda: {"wings": set(), "halls": set(), "count": 0, "dates": set()})
 
-    for meta in _iter_all_metadata(col):
-        # ChromaDB can return ``None`` for drawers without metadata
-        # (legacy data, partial writes — upstream #1020 territory).
-        # Skip these silently rather than crash the whole graph
-        # build — a single None drawer shouldn't take down /stats
-        # or any caller of build_graph for the entire palace. Caught
-        # 2026-04-25 by palace-daemon's verify-routes.sh smoke test
-        # against the canonical 151K palace. Closes the same gap as
-        # upstream #999 / fork PR #1094 in a different read path.
-        if meta is None:
-            continue
-        room = meta.get("room", "")
-        wing = meta.get("wing", "")
-        hall = meta.get("hall", "")
-        date = meta.get("date", "")
-        if room and wing:
-            room_data[room]["wings"].add(wing)
-            if hall:
-                room_data[room]["halls"].add(hall)
-            if date:
-                room_data[room]["dates"].add(date)
-            room_data[room]["count"] += 1
+    try:
+        for meta in _iter_all_metadata(col):
+            # ChromaDB can return ``None`` for drawers without metadata
+            # (legacy data, partial writes — upstream #1020 territory).
+            # Skip these silently rather than crash the whole graph
+            # build — a single None drawer shouldn't take down /stats
+            # or any caller of build_graph for the entire palace. Caught
+            # 2026-04-25 by palace-daemon's verify-routes.sh smoke test
+            # against the canonical 151K palace. Closes the same gap as
+            # upstream #999 / fork PR #1094 in a different read path.
+            if meta is None:
+                continue
+            room = meta.get("room", "")
+            wing = meta.get("wing", "")
+            hall = meta.get("hall", "")
+            date = meta.get("date", "")
+            if room and wing:
+                room_data[room]["wings"].add(wing)
+                if hall:
+                    room_data[room]["halls"].add(hall)
+                if date:
+                    room_data[room]["dates"].add(date)
+                room_data[room]["count"] += 1
+    except Exception as exc:
+        palace_path = (config or MempalaceConfig()).palace_path
+        logger.warning("Graph read of the palace at %s failed", palace_path, exc_info=True)
+        raise GraphUnavailable(palace_path) from exc
 
     # Build edges from rooms that span multiple wings
     edges = []

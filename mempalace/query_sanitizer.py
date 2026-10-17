@@ -57,6 +57,23 @@ def _sanitized(clean_query: str, method: str, original_length: int, replaced: bo
     }
 
 
+def sanitizer_report(sanitized: dict):
+    """What a search result says about the sanitizer, or None if it changed nothing."""
+    if not sanitized["was_sanitized"]:
+        return None
+    return {
+        key: sanitized[key]
+        for key in (
+            "method",
+            "original_length",
+            "clean_length",
+            "truncated",
+            "replaced_lone_surrogates",
+            "clean_query",
+        )
+    }
+
+
 def sanitize_query(raw_query: str) -> dict:
     """
     Extract the actual search intent from a potentially contaminated query.
@@ -81,15 +98,7 @@ def sanitize_query(raw_query: str) -> dict:
                 - "tail_truncation": fallback — took the last MAX_QUERY_LENGTH chars
     """
     if not raw_query or not raw_query.strip():
-        return {
-            "clean_query": raw_query or "",
-            "was_sanitized": False,
-            "original_length": len(raw_query) if raw_query else 0,
-            "clean_length": len(raw_query) if raw_query else 0,
-            "truncated": False,
-            "replaced_lone_surrogates": False,
-            "method": "passthrough",
-        }
+        return _sanitized(raw_query or "", "passthrough", len(raw_query or ""), False)
 
     # Replace lone surrogates before any further processing so downstream
     # embed calls don't crash on UTF-8 encode (#1235).

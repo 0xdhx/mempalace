@@ -80,6 +80,7 @@ from mempalace.convo_miner import file_conversation_exchange
 from mempalace.knowledge_graph import KnowledgeGraph
 from mempalace.layers import Layer0
 from mempalace.palace import MineAlreadyRunning, get_collection
+from mempalace.query_sanitizer import sanitize_query, sanitizer_report
 from mempalace.searcher import search_memories
 
 # When this plugin is loaded by Hermes, ``agent.memory_provider`` is on the
@@ -1380,8 +1381,9 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         if not query:
             return {"error": "Missing required parameter: query"}
         n = max(1, min(int(n_results or 5), 50))
+        sanitized = sanitize_query(query)
         data = search_memories(
-            query,
+            sanitized["clean_query"],
             palace_path=self._palace_path,
             wing=wing or "",
             room=room or "",
@@ -1390,7 +1392,12 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         if isinstance(data, dict) and "error" in data:
             return data
         hits = data.get("results", []) if isinstance(data, dict) else []
-        return {"results": hits, "count": len(hits)}
+        result = {"results": hits, "count": len(hits)}
+        report = sanitizer_report(sanitized)
+        if report:
+            result["query_sanitized"] = True
+            result["sanitizer"] = report
+        return result
 
     def _scan_metadatas(
         self, col: Any, where: Optional[Dict[str, Any]] = None
