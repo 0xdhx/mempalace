@@ -92,12 +92,23 @@ def _capability_missing():
     return (NotImplementedError, TypeError, UnsupportedCapabilityError)
 
 
-def _read_before(deadline: float, read):
-    """``read()``, but stop waiting for it at ``deadline``.
+# The one reader thread a budgeted fetch may have in flight. A read that
+# overran its deadline keeps running; until it ends, later fetches fail fast
+# instead of piling up threads on a hung backend.
+_inflight_reader: "threading.Thread | None" = None
+_inflight_guard = threading.Lock()
 
-    A read blocked in SQLite's busy timeout cannot be interrupted, so it runs on
-    a daemon thread that is abandoned if it overruns; its result is discarded.
+
+def _read_before(deadline, read):
+    """``read()``, but stop waiting for it at ``deadline`` (``None``: inline).
+
+    A read blocked in SQLite's busy timeout cannot be interrupted, so a
+    budgeted read runs on a daemon thread that is abandoned if it overruns; its
+    result is discarded. Only one such thread runs per process.
     """
+    global _inflight_reader
+    if deadline is None:
+        return read()
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         raise TimeoutError("the palace read did not finish within the wake-up budget")
@@ -109,8 +120,12 @@ def _read_before(deadline: float, read):
         except BaseException as exc:  # handed back to the caller below
             box["error"] = exc
 
-    worker = threading.Thread(target=run, name="mempalace-recent-read", daemon=True)
-    worker.start()
+    with _inflight_guard:
+        if _inflight_reader is not None and _inflight_reader.is_alive():
+            raise TimeoutError("an earlier palace read is still running")
+        worker = threading.Thread(target=run, name="mempalace-recent-read", daemon=True)
+        _inflight_reader = worker
+        worker.start()
     worker.join(remaining)
     if worker.is_alive():
         raise TimeoutError("the palace read did not finish within the wake-up budget")
@@ -119,7 +134,7 @@ def _read_before(deadline: float, read):
     return box["value"]
 
 
-def _read_with_retry(read, deadline: float, missing: tuple):
+def _read_with_retry(read, deadline, missing: tuple):
     """``read()``, retried briefly while ``deadline`` allows, then re-raised.
 
     A missing capability (``missing``) and a timed-out read are not retried.
@@ -130,13 +145,15 @@ def _read_with_retry(read, deadline: float, missing: tuple):
         except (TimeoutError,) + missing:
             raise
         except Exception:
-            remaining = deadline - time.monotonic()
+            remaining = _READ_RETRY_DELAY if deadline is None else deadline - time.monotonic()
             if attempt == _READ_ATTEMPTS - 1 or remaining <= 0:
                 raise
             time.sleep(min(_READ_RETRY_DELAY, remaining))
 
 
-def fetch_recent_window(col, *, wing=None, max_scan: int = 2000) -> tuple[list, list]:
+def fetch_recent_window(
+    col, *, wing=None, max_scan: int = 2000, budget=_RECENT_READ_BUDGET
+) -> tuple[list, list]:
     """``(documents, metadatas)`` for the ``max_scan`` most recently filed drawers.
 
     Uses the backend's ``get_recent`` capability, which pushes ``ORDER BY
@@ -144,12 +161,14 @@ def fetch_recent_window(col, *, wing=None, max_scan: int = 2000) -> tuple[list, 
     falls back to the scan-then-sort default in ``BaseCollection``. A collection
     without the capability is paged through ``get`` instead.
 
-    The whole fetch fits in ``_RECENT_READ_BUDGET``. A read that fails is
-    retried within it and then raised: a palace that cannot be read is not an
-    empty one, and a scan cut short is not the whole window.
+    The whole fetch fits in ``budget`` seconds. A read that fails is retried
+    within it and then raised: a palace that cannot be read is not an empty
+    one, and a scan cut short is not the whole window. ``budget=None`` reads
+    inline on the calling thread with no deadline, for a caller that holds a
+    lock the read must not outlive.
     """
     missing = _capability_missing()  # resolved before the clock starts
-    deadline = time.monotonic() + _RECENT_READ_BUDGET
+    deadline = None if budget is None else time.monotonic() + budget
     where = {"wing": wing} if wing else None
     getter = getattr(col, "get_recent", None)
     if getter is not None:

@@ -3,6 +3,8 @@
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from mempalace.backends.base import BaseCollection, GetResult
 from mempalace.layers import Layer0, Layer1, Layer2, Layer3, MemoryStack
 
@@ -390,29 +392,84 @@ def test_layer1_falls_back_to_scan_when_capability_missing():
     assert mock_col.get.called
 
 
+def _release_stuck_reader(release):
+    import mempalace.layers as layers_mod
+
+    release.set()
+    reader = layers_mod._inflight_reader
+    if reader is not None:
+        reader.join(5)
+
+
 def test_layer1_read_that_blocks_past_the_budget_is_cut_off():
     """A read stuck in SQLite's busy timeout does not hold wake-up past its budget."""
+    import threading
     import time as _time
 
+    release = threading.Event()
     mock_col = MagicMock()
 
     def blocked(**kwargs):
-        _time.sleep(2.0)
+        release.wait(5)
         raise AssertionError("the abandoned read's result must not be used")
 
     mock_col.get_recent.side_effect = blocked
-    with (
-        patch("mempalace.layers.MempalaceConfig") as mock_cfg,
-        patch("mempalace.layers._get_collection", return_value=mock_col),
-    ):
-        mock_cfg.return_value.palace_path = "/fake"
-        started = _time.monotonic()
-        result = Layer1(palace_path="/fake").generate()
-        elapsed = _time.monotonic() - started
+    try:
+        with (
+            patch("mempalace.layers.MempalaceConfig") as mock_cfg,
+            patch("mempalace.layers._get_collection", return_value=mock_col),
+        ):
+            mock_cfg.return_value.palace_path = "/fake"
+            started = _time.monotonic()
+            result = Layer1(palace_path="/fake").generate()
+            elapsed = _time.monotonic() - started
+    finally:
+        _release_stuck_reader(release)
 
     assert "could not be read right now (TimeoutError)" in result
     assert elapsed < 0.45
     mock_col.get.assert_not_called()
+
+
+def test_stuck_reads_leave_one_reader_thread_and_later_fetches_fail_fast():
+    """While an abandoned read is still running, new fetches do not start another."""
+    import threading
+    import time as _time
+
+    from mempalace.layers import fetch_recent_window
+
+    release = threading.Event()
+    calls = []
+
+    def stuck(**kwargs):
+        calls.append(1)
+        release.wait(5)
+        return GetResult(ids=[], documents=[], metadatas=[])
+
+    col = MagicMock()
+    col.get_recent.side_effect = stuck
+    try:
+        with pytest.raises(TimeoutError):
+            fetch_recent_window(col)
+        timings = []
+        for _ in range(20):
+            started = _time.monotonic()
+            with pytest.raises(TimeoutError, match="still running"):
+                fetch_recent_window(col)
+            timings.append(_time.monotonic() - started)
+        readers = [t for t in threading.enumerate() if t.name == "mempalace-recent-read"]
+    finally:
+        _release_stuck_reader(release)
+
+    assert len(calls) == 1
+    assert len(readers) == 1
+    assert max(timings) < 0.05
+
+    col.get_recent.side_effect = None
+    col.get_recent.return_value = GetResult(
+        ids=["a"], documents=["Readable again."], metadatas=[{"room": "r"}]
+    )
+    assert fetch_recent_window(col)[0] == ["Readable again."]
 
 
 def test_wake_up_keeps_identity_when_l1_fails(tmp_path):

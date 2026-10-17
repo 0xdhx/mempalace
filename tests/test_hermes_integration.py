@@ -1094,6 +1094,29 @@ def test_l1_story_reports_an_unreadable_collection(integration_module, monkeypat
     assert "could not be read right now (OperationalError)" in story
 
 
+def test_l1_story_reads_inline_while_the_caller_holds_the_collection_lock(integration_module):
+    """The read runs on the caller's thread and is never cut off, so the
+    provider's _collection_lock is held for all of it (no abandoned reader
+    racing a writer on the shared Chroma client)."""
+    import time
+
+    lock = threading.Lock()
+    seen = []
+
+    class _Slow:
+        def get(self, **kwargs):
+            time.sleep(0.5)  # longer than the wake-up budget
+            seen.append((threading.current_thread() is caller, lock.locked()))
+            return {"documents": ["A slow but complete read."], "metadatas": [{"room": "r"}]}
+
+    caller = threading.current_thread()
+    with lock:
+        story = integration_module._l1_story_from_collection(_Slow())
+
+    assert seen and seen[0] == (True, True)
+    assert "A slow but complete read." in story
+
+
 def test_l1_story_reads_the_newest_drawers(integration_module):
     class _Col:
         def get(self, **kwargs):

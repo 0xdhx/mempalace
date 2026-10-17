@@ -66,8 +66,8 @@ def test_default_update_skips_missing_ids(backend_cls, tmp_path, monkeypatch):
         backend.close()
 
 
-def test_default_update_keeps_each_rows_stored_vector():
-    """One record without a stored vector does not drop the others' vectors."""
+def test_default_update_is_one_upsert_even_when_a_vector_is_missing():
+    """A row without a stored vector re-embeds the batch in one atomic upsert."""
     from unittest.mock import MagicMock
 
     from mempalace.backends.base import BaseCollection, GetResult
@@ -82,10 +82,7 @@ def test_default_update_keeps_each_rows_stored_vector():
     BaseCollection.update(col, ids=["a", "b"], metadatas=[{"room": "x"}, {"room": "y"}])
 
     calls = [call.kwargs for call in col.upsert.call_args_list]
-    assert [(c["ids"], c["embeddings"]) for c in calls] == [
-        (["a"], [[1.0, 0.0]]),
-        (["b"], None),
-    ]
+    assert [(c["ids"], c["embeddings"]) for c in calls] == [(["a", "b"], None)]
 
 
 def test_local_backends_do_not_claim_namespace_isolation():

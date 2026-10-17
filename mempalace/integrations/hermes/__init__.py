@@ -113,7 +113,9 @@ def _l1_story_from_collection(
     from pathlib import Path as _Path
 
     try:
-        docs, metas = fetch_recent_window(collection, wing=wing or None, max_scan=2000)
+        # Inline, no deadline: the caller holds _collection_lock for the whole
+        # read, and an abandoned reader thread would outlive it.
+        docs, metas = fetch_recent_window(collection, wing=wing or None, max_scan=2000, budget=None)
     except Exception as exc:
         return f"## L1 -- {recent_read_failure(exc)}"
 
