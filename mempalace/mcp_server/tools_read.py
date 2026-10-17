@@ -751,14 +751,10 @@ def tool_search(
         result["vector_disabled"] = True
         result["vector_disabled_reason"] = _vector_disabled_reason
     # Attach sanitizer metadata for transparency
-    if sanitized["was_sanitized"]:
+    report = sanitizer_report(sanitized)
+    if report:
         result["query_sanitized"] = True
-        result["sanitizer"] = {
-            "method": sanitized["method"],
-            "original_length": sanitized["original_length"],
-            "clean_length": sanitized["clean_length"],
-            "clean_query": sanitized["clean_query"],
-        }
+        result["sanitizer"] = report
     if context:
         result["context_received"] = True
     return result
@@ -838,7 +834,10 @@ def tool_traverse_graph(start_room: str, max_hops: int = 2):
         if not col:
             return _collection_error_or_no_palace()
         return traverse(start_room, col=col, max_hops=max_hops)
-    return traverse(start_room, max_hops=max_hops, config=_config)
+    try:
+        return traverse(start_room, max_hops=max_hops, config=_config)
+    except GraphUnavailable as e:
+        return {"error": str(e)}
 
 
 def tool_find_tunnels(wing_a: str = None, wing_b: str = None):
@@ -853,7 +852,10 @@ def tool_find_tunnels(wing_a: str = None, wing_b: str = None):
         if not col:
             return _collection_error_or_no_palace()
         return find_tunnels(wing_a, wing_b, col=col)
-    return find_tunnels(wing_a, wing_b, config=_config)
+    try:
+        return find_tunnels(wing_a, wing_b, config=_config)
+    except GraphUnavailable as e:
+        return {"error": str(e)}
 
 
 def tool_graph_stats():
@@ -912,7 +914,7 @@ def tool_create_tunnel(
             source_drawer_id=source_drawer_id,
             target_drawer_id=target_drawer_id,
         )
-    except ValueError as e:
+    except (ValueError, GraphUnavailable) as e:
         return {"error": str(e)}
 
 

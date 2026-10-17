@@ -42,6 +42,7 @@ from ..entity_detector import (
     _collapse_long_ascii_runs,
     _get_coca_filter,
 )
+from ..metadata_types import coerce_metadata_types
 
 logger = logging.getLogger("mempalace_mcp")
 

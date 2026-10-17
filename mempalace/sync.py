@@ -18,6 +18,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Final, Literal, Optional, TypedDict
 
+from .metadata_types import is_sentinel
 from .miner import is_gitignored, load_gitignore_matcher
 from .palace import (
     MineAlreadyRunning,
@@ -513,7 +514,7 @@ def _is_bookkeeping_row(meta: dict, drawer_id: str) -> bool:
     """
     if _is_registry_row(meta, drawer_id):
         return True
-    if (meta or {}).get("is_sentinel"):
+    if is_sentinel(meta):
         return True
     return bool(drawer_id) and drawer_id.startswith("sentinel_")
 
