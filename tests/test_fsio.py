@@ -270,3 +270,37 @@ def test_an_fsync_io_error_is_not_swallowed(tmp_path, monkeypatch):
 
     assert dest.read_bytes() == original
     assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_move_aside_retries_a_rename_a_reader_blocks(tmp_path, monkeypatch):
+    """Windows refuses to rename a file another process has open; the reader
+    lets go, so moving the file aside is retried rather than raised."""
+    path = tmp_path / "registry.json"
+    path.write_bytes(b"{not json")
+    real_replace = os.replace
+    refusals = []
+
+    def held_twice(src, dst):
+        if len(refusals) < 2:
+            refusals.append(dst)
+            raise _SharingViolation(errno.EACCES, "being used by another process")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", held_twice)
+    monkeypatch.setattr(fsio.time, "sleep", lambda s: None)
+
+    kept = fsio.move_aside(path, label="corrupt")
+
+    assert len(refusals) == 2
+    assert not path.exists()
+    assert (tmp_path / os.path.basename(kept)).read_bytes() == b"{not json"
+
+
+def test_atomic_write_bytes_keeps_the_bytes_exactly(tmp_path):
+    dest = tmp_path / "log.jsonl"
+    dest.write_bytes(b"old\n")
+
+    fsio.atomic_write_bytes(dest, b"a\nb\r\nc\n")
+
+    assert dest.read_bytes() == b"a\nb\r\nc\n"
+    assert [p.name for p in tmp_path.iterdir()] == ["log.jsonl"]

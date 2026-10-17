@@ -127,20 +127,28 @@ def _chmod_quiet(path: PathLike, mode: int) -> None:
         pass
 
 
-def write_in_place(path: PathLike, write_body: Callable[[Any], None]) -> None:
+def _open_body(target, mode: str, binary: bool):
+    if binary:
+        return open(target, mode + "b")
+    return open(target, mode, encoding="utf-8")
+
+
+def write_in_place(
+    path: PathLike, write_body: Callable[[Any], None], *, binary: bool = False
+) -> None:
     """Write without a rename, for a directory that refuses a new name.
 
     This truncates ``path`` before the new bytes are durable. The publish
     uses it only when the directory will not take a temporary file.
     """
-    with open(path, "w", encoding="utf-8") as handle:
+    with _open_body(path, "w", binary) as handle:
         write_body(handle)
         handle.flush()
         _fsync_file(handle.fileno())
     _chmod_quiet(path, 0o600)
 
 
-def _fill_temp(fd: int, tmp: str, write_body: Callable[[Any], None]) -> None:
+def _fill_temp(fd: int, tmp: str, write_body: Callable[[Any], None], binary: bool) -> None:
     """Serialize into ``fd`` and fsync before anything is published.
 
     The mode is set before the write. Under a umask that clears the owner's
@@ -150,7 +158,7 @@ def _fill_temp(fd: int, tmp: str, write_body: Callable[[Any], None]) -> None:
     try:
         _chmod_quiet(tmp, 0o600)
         os.ftruncate(fd, 0)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        with _open_body(fd, "w", binary) as handle:
             write_body(handle)
             handle.flush()
             _fsync_file(handle.fileno())
@@ -206,7 +214,7 @@ def _warn_in_place(path: Path, *, why: str) -> None:
 
 
 def _finish_failed_replace(
-    exc: BaseException, tmp: str, path: Path, write_body: Callable[[Any], None]
+    exc: BaseException, tmp: str, path: Path, write_body: Callable[[Any], None], binary: bool
 ) -> None:
     """Publish in place when the directory itself refused the rename.
 
@@ -226,7 +234,7 @@ def _finish_failed_replace(
         unlink_quietly(tmp)
         raise exc
     try:
-        write_in_place(path, write_body)
+        write_in_place(path, write_body, binary=binary)
     except BaseException:
         print(
             f"  ! {path.name} was not written and may have been truncated; "
@@ -244,10 +252,13 @@ def _finish_failed_replace(
     _warn_in_place(path, why="the rename")
 
 
-def atomic_publish(path: PathLike, write_body: Callable[[Any], None]) -> None:
+def atomic_publish(
+    path: PathLike, write_body: Callable[[Any], None], *, binary: bool = False
+) -> None:
     """Replace ``path`` with what ``write_body`` writes, or leave it untouched.
 
-    The write falls back to ``write_in_place`` only when the directory
+    ``write_body`` gets a UTF-8 text handle, or a bytes handle when
+    ``binary`` is set (no newline translation). The write falls back to ``write_in_place`` only when the directory
     refuses a new name (``EACCES``, ``EPERM``, ``EROFS``) while the
     destination itself may still be writable. Every other failure propagates
     and does not truncate ``path``.
@@ -258,15 +269,15 @@ def atomic_publish(path: PathLike, write_body: Callable[[Any], None]) -> None:
     except OSError as exc:
         if exc.errno not in _IN_PLACE_ERRNOS:
             raise
-        write_in_place(path, write_body)
+        write_in_place(path, write_body, binary=binary)
         _warn_in_place(path, why="a temporary file")
         return
 
-    _fill_temp(fd, tmp, write_body)
+    _fill_temp(fd, tmp, write_body, binary)
     try:
         _replace(tmp, path)
     except BaseException as exc:
-        _finish_failed_replace(exc, tmp, path, write_body)
+        _finish_failed_replace(exc, tmp, path, write_body, binary)
         return
     fsync_directory(path.parent)
 
@@ -279,6 +290,11 @@ def atomic_write_json(path: PathLike, payload: Any) -> None:
 def atomic_write_text(path: PathLike, text: str) -> None:
     """Replace ``path`` with ``text``. Same crash rules as ``atomic_write_json``."""
     atomic_publish(path, lambda handle: handle.write(text))
+
+
+def atomic_write_bytes(path: PathLike, data: bytes) -> None:
+    """Replace ``path`` with ``data`` byte for byte. Same crash rules as above."""
+    atomic_publish(path, lambda handle: handle.write(data), binary=True)
 
 
 class CorruptStateError(OSError):
@@ -349,7 +365,7 @@ def move_aside(path: PathLike, *, label: str) -> Optional[str]:
     fd, target = open_new_temp_file(path.parent, prefix=f"{path.name}.{label}-{stamp}-")
     os.close(fd)
     try:
-        os.replace(str(path), target)
+        _replace(str(path), Path(target))
     except FileNotFoundError:
         unlink_quietly(target)
         return None

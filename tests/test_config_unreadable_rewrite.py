@@ -510,7 +510,7 @@ def test_a_failed_write_in_place_keeps_the_finished_copy(tmp_path, monkeypatch, 
             raise OSError(errno.EPERM, "Operation not permitted")
         return real_replace(src, dst, *args, **kwargs)
 
-    def dies(path, write_body):
+    def dies(path, write_body, **kwargs):
         raise OSError(errno.EIO, "Input/output error")
 
     monkeypatch.setattr(os, "replace", refused)

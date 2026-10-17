@@ -293,3 +293,29 @@ def test_windows_blocking_lock_raises_on_a_non_contention_error(tmp_path, monkey
     with open(tmp_path / "bad.lock", "w+b") as lf:
         with pytest.raises(OSError):
             _lock_mine_lock_file(lf, blocking=True)
+
+
+@windows_only
+def test_windows_open_fails_fast_on_a_directory_at_the_lock_path(tmp_path):
+    lock_path = tmp_path / "dir.lock"
+    lock_path.mkdir()
+    started = time.monotonic()
+    with pytest.raises(PermissionError):
+        _open_mine_lock_file(str(lock_path), create=True)
+    assert time.monotonic() - started < 0.5
+
+
+@windows_only
+def test_windows_open_fails_fast_on_a_read_only_lock_file(tmp_path):
+    import stat
+
+    lock_path = tmp_path / "ro.lock"
+    lock_path.write_bytes(b"")
+    os.chmod(lock_path, stat.S_IREAD)
+    try:
+        started = time.monotonic()
+        with pytest.raises(PermissionError):
+            _open_mine_lock_file(str(lock_path), create=True)
+        assert time.monotonic() - started < 0.5
+    finally:
+        os.chmod(lock_path, stat.S_IREAD | stat.S_IWRITE)
