@@ -12,7 +12,6 @@ import errno
 import os
 import sys
 import json
-import hashlib
 import logging
 import stat
 from pathlib import Path
@@ -47,7 +46,6 @@ from .palace import (
     mine_palace_lock,
     mine_yield_point,
     palace_write_serial,
-    prefetch_content_hashes,
     prefetch_mined_set,
     print_files_failed,
     raise_if_files_failed,
@@ -234,7 +232,6 @@ def _register_file(
     wing: str,
     agent: str,
     extract_mode: str,
-    content_hash: Optional[str] = None,
     source_mtime: Optional[float] = None,
 ):
     """Write a sentinel so file_already_mined() returns True for 0-chunk files.
@@ -247,11 +244,6 @@ def _register_file(
     grows past the min-chunk-size floor (e.g. a short session that gets
     extended) is correctly detected as changed on the next mine instead of
     being skipped forever by this sentinel.
-
-    Also used to register a file recognized as a content-duplicate of an
-    already-mined transcript under a different path (see
-    ``prefetch_content_hashes``) — stamping it here means the next run skips
-    it via the cheap mtime check instead of re-normalizing and re-hashing it.
     """
     if source_mtime is None:
         try:
@@ -275,8 +267,6 @@ def _register_file(
         meta[key] = version
     if source_mtime is not None:
         meta["source_mtime"] = source_mtime
-    if content_hash is not None:
-        meta["content_hash"] = content_hash
     write_file_drawers(
         collection,
         source_file,
@@ -665,7 +655,6 @@ def _file_chunks_locked(
     agent,
     extract_mode,
     authored_at=None,
-    content_hash=None,
     source_dir_ino=None,
     source_mtime: Optional[float] = None,
     transforms: str = "",
@@ -734,12 +723,6 @@ def _file_chunks_locked(
                 # can tell a neighbour in the same directory from one on a
                 # volume mounted there since (#2320).
                 meta["source_dir_ino"] = source_dir_ino
-            # Stamp content_hash only on chunk 0 so multi-conversation
-            # privacy-export hashes are not O(N²)-duplicated across every
-            # chunk row. ``prefetch_content_hashes`` still finds them — it
-            # scans all drawers and splits comma-joined hash fields.
-            if content_hash is not None and chunk.get("chunk_index", 0) == 0:
-                meta["content_hash"] = content_hash
             drawer_id = make_convo_drawer_id(
                 wing, chunk_room, source_file, extract_mode, chunk["chunk_index"]
             )
@@ -777,40 +760,6 @@ def _is_ai_tool_path(path: Path) -> bool:
         if parts[i] == ".claude" and parts[i + 1] == "projects":
             return True
     return False
-
-
-def _split_new_and_duplicate_conversations(
-    conversations: list,
-    wing: str,
-    source_file: str,
-    mined_content_hashes: dict,
-    verbatim: Optional[list] = None,
-) -> tuple:
-    """Hash each conversation and split them into (new, duplicate) lists.
-
-    ``verbatim`` is the same conversations as written when spell correction
-    rewrote them; the hash is taken from it, so turning the opt-in on does
-    not file a conversation a second time.
-
-    A conversation is a duplicate when its hash is already registered under
-    a *different* source_file in the same wing — mining the same transcript
-    into a second wing is a deliberate re-file, not a repeat, so the lookup
-    is scoped to (wing, hash). Returns ([(hash, text), ...] new, [(hash,
-    dup_source_file), ...] duplicates).
-    """
-    hashed = [c for c in verbatim or () if c]
-    if len(hashed) != len(conversations):
-        hashed = conversations
-    new_items = []
-    duplicates = []
-    for conversation, text in zip(conversations, hashed):
-        content_hash = hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
-        dup_source = mined_content_hashes.get((wing, content_hash))
-        if dup_source is None or dup_source == source_file:
-            new_items.append((content_hash, conversation))
-        else:
-            duplicates.append((content_hash, dup_source))
-    return new_items, duplicates
 
 
 def _is_unchanged_since_last_mine(source_file: str, mined_mtimes: dict) -> bool:
@@ -953,12 +902,6 @@ def _normalize_convo_conversations(
 
     On success the second item is the mtime from the same ``fstat`` as the
     read. Callers stamp that value; they must not stat the file again.
-
-    Kept as separate conversations rather than joined into one string so
-    dedup can hash and skip per conversation — a Claude.ai privacy export
-    bundles every conversation into a single file, and hashing the joined
-    bundle means one new conversation added to a re-export changes the
-    whole-file hash and hides the conversations that didn't change.
     """
     try:
         conversations, source_mtime = normalize_conversations_with_mtime(str(filepath))
@@ -1084,18 +1027,6 @@ def _mine_convos_impl(
         if collection is not None
         else {}
     )
-    # content_hash -> source_file for transcripts already filed. Repeated
-    # exports from Claude/ChatGPT commonly land under a new filename each
-    # run even when the conversation itself is unchanged, so the
-    # source_file-keyed skip above ("mined_mtimes") never recognizes them —
-    # this catches the same conversation reappearing at a new path. Not
-    # scoped to candidate_source_files: see prefetch_content_hashes's
-    # docstring for why that would silently miss bundle rows.
-    mined_content_hashes: dict = (
-        prefetch_content_hashes(collection, extract_mode=extract_mode)
-        if collection is not None
-        else {}
-    )
 
     total_drawers = 0
     files_mined = 0
@@ -1140,40 +1071,10 @@ def _mine_convos_impl(
                 continue
             conversations, source_mtime = normalized
 
-            # Hash and dedup per conversation, not per file: a Claude/ChatGPT
-            # privacy export bundles every conversation into one file, so a
-            # re-export that adds one new conversation changes the whole-file
-            # hash and would hide the conversations that didn't change if we
-            # hashed the joined bundle. Conversations whose hash is already
-            # filed under a different source_file in this wing are dropped;
-            # the rest are re-joined and mined as usual.
-            new_items, duplicates = _split_new_and_duplicate_conversations(
-                conversations,
-                wing,
-                source_file,
-                mined_content_hashes,
-                verbatim=normalize_run.verbatim,
-            )
-            if not new_items:
-                if not dry_run:
-                    _register_file(
-                        collection,
-                        source_file,
-                        wing,
-                        agent,
-                        extract_mode,
-                        source_mtime=source_mtime,
-                    )
-                dup_source = duplicates[0][1]
-                print(
-                    f"  = [{i:4}/{len(files)}] {filepath.name[:50]:50} "
-                    f"duplicate of {Path(dup_source).name}"
-                )
-                files_skipped += 1
-                continue
-
-            content = "\n\n".join(text for _, text in new_items)
-            content_hash = ",".join(h for h, _ in new_items)
+            # Each file keeps its own drawers even when another file holds the
+            # same conversation: dropping the copy would hide it from anything
+            # scoped to this source.
+            content = "\n\n".join(conversations)
 
             # Chunk — either exchange pairs or general extraction
             if extract_mode == "general":
@@ -1239,7 +1140,6 @@ def _mine_convos_impl(
                 agent,
                 extract_mode,
                 authored_at=_extract_authored_at(filepath),
-                content_hash=content_hash,
                 source_dir_ino=source_directory_identity(filepath),
                 source_mtime=source_mtime,
                 transforms=normalize_run.transforms,
@@ -1250,8 +1150,6 @@ def _mine_convos_impl(
             for r, n in room_delta.items():
                 room_counts[r] += n
 
-            for h, _ in new_items:
-                mined_content_hashes[(wing, h)] = source_file
             total_drawers += drawers_added
             files_mined += 1
             print(f"  + [{i:4}/{len(files)}] {filepath.name[:50]:50} +{drawers_added}")

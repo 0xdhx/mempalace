@@ -1061,10 +1061,10 @@ def test_chunker_versions_only_gate_the_convo_scopes():
 
 
 def test_prefetch_scans_read_chroma_sqlite_instead_of_paging(tmp_path, monkeypatch):
-    """Both whole-collection prefetches stream chroma.sqlite3: Chroma's
+    """The whole-collection prefetch streams chroma.sqlite3: Chroma's
     count() loads the HNSW index and its get(offset) paging is quadratic."""
     from mempalace.backends.chroma import ChromaCollection
-    from mempalace.palace import get_collection, prefetch_content_hashes
+    from mempalace.palace import get_collection
 
     col = get_collection(str(tmp_path / "palace"), create=True)
     current = {
@@ -1079,22 +1079,10 @@ def test_prefetch_scans_read_chroma_sqlite_instead_of_paging(tmp_path, monkeypat
         documents=["a zero", "a one", "b zero", "old"],
         embeddings=[[0.1, 0.2], [0.2, 0.1], [0.3, 0.3], [0.4, 0.1]],
         metadatas=[
-            {
-                **current,
-                "source_file": "/a",
-                "source_mtime": 1.0,
-                "chunk_total": 2,
-                "content_hash": "ha",
-            },
             {**current, "source_file": "/a", "source_mtime": 1.0, "chunk_total": 2},
-            {
-                **current,
-                "source_file": "/b",
-                "source_mtime": 2.0,
-                "chunk_total": 1,
-                "content_hash": "hb",
-            },
-            {**current, "source_file": "/c", "convo_chunker_version": 1, "content_hash": "hc"},
+            {**current, "source_file": "/a", "source_mtime": 1.0, "chunk_total": 2},
+            {**current, "source_file": "/b", "source_mtime": 2.0, "chunk_total": 1},
+            {**current, "source_file": "/c", "convo_chunker_version": 1},
         ],
     )
 
@@ -1104,10 +1092,6 @@ def test_prefetch_scans_read_chroma_sqlite_instead_of_paging(tmp_path, monkeypat
     monkeypatch.setattr(ChromaCollection, "count", _no_paging)
     monkeypatch.setattr(ChromaCollection, "get", _no_paging)
     assert prefetch_mined_set(col, extract_mode="exchange") == {"/a": 1.0, "/b": 2.0}
-    assert prefetch_content_hashes(col, extract_mode="exchange") == {
-        ("w", "ha"): "/a",
-        ("w", "hb"): "/b",
-    }
 
 
 def test_file_already_mined_extract_mode_paginates_large_sources():
@@ -3424,8 +3408,8 @@ def _mined_rows_palace(tmp_path):
         documents=["a", "b"],
         embeddings=[[0.1, 0.2], [0.2, 0.1]],
         metadatas=[
-            {**current, "source_file": "/a", "source_mtime": 1.0, "content_hash": "ha"},
-            {**current, "source_file": "/b", "source_mtime": 2.0, "content_hash": "hb"},
+            {**current, "source_file": "/a", "source_mtime": 1.0},
+            {**current, "source_file": "/b", "source_mtime": 2.0},
         ],
     )
     return col
@@ -3433,9 +3417,8 @@ def _mined_rows_palace(tmp_path):
 
 def test_prefetch_discards_a_failed_fast_scan_and_pages_instead(tmp_path, monkeypatch):
     """A fast scan that fails after some rows must not leave a partial
-    registry: it reads as "not mined" and "no duplicate"."""
+    registry: it reads as "not mined"."""
     from mempalace.backends.chroma import ChromaCollection
-    from mempalace.palace import prefetch_content_hashes
 
     col = _mined_rows_palace(tmp_path)
     real = ChromaCollection.iter_metadata
@@ -3457,17 +3440,13 @@ def test_prefetch_discards_a_failed_fast_scan_and_pages_instead(tmp_path, monkey
 
     monkeypatch.setattr(ChromaCollection, "iter_metadata", breaks_after_one_row)
     assert prefetch_mined_set(col, extract_mode="exchange") == {"/a": 1.0, "/b": 2.0}
-    assert prefetch_content_hashes(col, extract_mode="exchange") == {
-        ("w", "ha"): "/a",
-        ("w", "hb"): "/b",
-    }
 
 
 def test_prefetch_raises_when_no_complete_scan_is_possible(tmp_path, monkeypatch):
     import sqlite3
 
     import mempalace.palace as palace_pkg
-    from mempalace.palace import MinedSetUnavailable, prefetch_content_hashes
+    from mempalace.palace import MinedSetUnavailable
 
     col = _mined_rows_palace(tmp_path)
 
@@ -3479,8 +3458,6 @@ def test_prefetch_raises_when_no_complete_scan_is_possible(tmp_path, monkeypatch
     monkeypatch.setattr(palace_pkg, "_paged_metadata", broken)
     with pytest.raises(MinedSetUnavailable):
         prefetch_mined_set(col, extract_mode="exchange")
-    with pytest.raises(MinedSetUnavailable):
-        prefetch_content_hashes(col, extract_mode="exchange")
 
 
 def _prefetch_cases_palace(tmp_path):

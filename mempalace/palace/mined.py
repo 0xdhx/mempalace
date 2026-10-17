@@ -69,7 +69,6 @@ _MINED_SCAN_KEYS = (
     "normalize_version",
     "convo_chunker_version",
     "general_extractor_version",
-    "content_hash",
     "wing",
 )
 
@@ -106,17 +105,16 @@ def _fast_collection_metadata(collection, keys, require_key=None, equals=None):
     return None
 
 
-def _scan_collection_metadata(collection, keys, absorb, reset, require_key=None) -> None:
+def _scan_collection_metadata(collection, keys, absorb, reset) -> None:
     """Feed every drawer's metadata to ``absorb``: completely, or raise.
 
     The fast sqlite read goes first. If it fails partway, what it gathered is
-    discarded through ``reset`` and the collection is paged instead, where
-    ``require_key`` is only a hint the caller re-checks. If paging fails too,
-    :class:`MinedSetUnavailable` stops the caller.
+    discarded through ``reset`` and the collection is paged instead. If paging
+    fails too, :class:`MinedSetUnavailable` stops the caller.
     """
     from ..backends.chroma import MetadataRecoveryPending
 
-    fast = _fast_collection_metadata(collection, keys, require_key)
+    fast = _fast_collection_metadata(collection, keys)
     if fast is not None:
         try:
             for meta in fast:
@@ -448,72 +446,3 @@ def prefetch_complete_mtimes(collection, source_files) -> Optional[dict[str, tup
         if mtimes:
             complete[src] = mtimes
     return complete
-
-
-def prefetch_content_hashes(
-    collection, extract_mode: Optional[str] = None
-) -> dict[tuple[str, str], str]:
-    """Pre-fetch (wing, content_hash) -> source_file for drawers already
-    filed at the current NORMALIZE_VERSION, in one bulk pass.
-
-    Repeated exports from Claude/ChatGPT land under a new filename each run
-    (timestamped bundle, regenerated slug, etc.) even when the conversation
-    itself hasn't changed. `prefetch_mined_set` only recognizes a file as
-    already-mined by its exact path, so the same conversation re-exported
-    under a new path always looked "new" and got re-mined as a duplicate
-    drawer. This does the same bulk scan but keyed on the SHA-256 of the
-    normalized transcript text, so the convo miner can recognize "this exact
-    conversation is already filed under a different path" and skip it.
-
-    Keyed by (wing, content_hash) rather than content_hash alone — mining
-    the same transcript into a second wing is a deliberate re-file, not a
-    duplicate, and should produce real drawers in that wing rather than
-    just the registry sentinel.
-
-    A drawer's ``content_hash`` metadata may hold several comma-joined
-    SHA-256 hashes: a privacy-export bundle normalizes to one conversation
-    per drawer set, but the hash is computed per conversation so that a
-    re-export with one new conversation added doesn't change the hash of
-    the ones that didn't. Only the first source_file seen for a given
-    (wing, hash) pair is kept — good enough to detect and skip a repeat,
-    the point is not to track every alias.
-
-    Deliberately NOT scoped by candidate source_files the way
-    prefetch_mined_set is: a stored `content_hash` can hold several
-    comma-joined hashes (one privacy-export bundle drawer covers several
-    conversations), so a `where`-filtered query can only match a document
-    whose entire stored value equals one candidate hash and would silently
-    miss any bundle row. An incomplete result here is worse than none,
-    because a caller reading the returned dict has no way to tell "no
-    duplicate" from "the query couldn't see this row". Narrowing this scan
-    correctly needs either a schema change (one hash per metadata field
-    instead of a joined list) or a second index; out of scope for the fix
-    that scoped prefetch_mined_set. See test_mine_convos_skips_same_content_
-    under_new_filename and test_mine_convos_skips_same_conversation_within_
-    re_exported_bundle, which a source_files-scoped or skipped version of
-    this function broke.
-    """
-    hashes: dict[tuple[str, str], str] = {}
-
-    def _absorb(meta):
-        meta = meta or {}
-        content_hash_field = meta.get("content_hash")
-        src = meta.get("source_file")
-        wing = meta.get("wing")
-        if not content_hash_field or not src or not wing:
-            return
-        if not _metadata_matches_extract_mode(meta, extract_mode):
-            return
-        if not _meta_is_current(meta, extract_mode):
-            return
-        for content_hash in content_hash_field.split(","):
-            key = (wing, content_hash)
-            if content_hash and key not in hashes:
-                hashes[key] = src
-
-    # Only drawers carrying a content_hash can match, and on Chroma the
-    # (key, string_value) index finds them without reading the rest.
-    _scan_collection_metadata(
-        collection, _MINED_SCAN_KEYS, _absorb, hashes.clear, require_key="content_hash"
-    )
-    return hashes
