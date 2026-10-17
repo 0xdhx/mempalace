@@ -299,8 +299,13 @@ class Layer1:
 
     def generate(self) -> str:
         """Pull top drawers from the palace and format as compact L1 text."""
+        # The open runs on this thread, outside the read budget, so a broken
+        # install (an ImportError while loading the backend) fails wake-up
+        # here whatever the timing.
         try:
             col = _open_for_read(self.palace_path)
+        except ImportError:
+            raise
         except Exception as exc:
             message = _read_open_failure(exc)
             return message if message.startswith("## ") else f"## L1 — {message}"

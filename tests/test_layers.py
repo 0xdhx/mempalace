@@ -9,6 +9,12 @@ from mempalace.backends.base import BaseCollection, GetResult
 from mempalace.layers import Layer0, Layer1, Layer2, Layer3, MemoryStack
 
 
+@pytest.fixture(autouse=True)
+def _no_reader_left_in_flight(monkeypatch):
+    """A reader abandoned by one test must not make the next fetch fail fast."""
+    monkeypatch.setattr("mempalace.layers._inflight_reader", None)
+
+
 # ── Layer0 — with identity file ─────────────────────────────────────────
 
 
@@ -508,19 +514,28 @@ def test_layer1_scan_of_a_palace_that_does_not_exist_yet_has_no_memories():
 
 def test_wake_up_fails_when_mempalace_cannot_run(tmp_path):
     """A broken install (missing dependency) still exits wake-up with an error,
-    so hooks inject nothing, instead of a 'could not be read' wake-up."""
-    stack = MemoryStack(palace_path=str(tmp_path / "palace"), identity_path=str(tmp_path / "id"))
-    with patch.object(stack.l1, "generate", side_effect=ModuleNotFoundError("chromadb")):
-        with pytest.raises(ModuleNotFoundError):
-            stack.wake_up()
+    so hooks inject nothing, instead of a 'could not be read' wake-up.
 
-    mock_col = MagicMock()
-    mock_col.get_recent.side_effect = ModuleNotFoundError("numpy")
+    The ImportError surfaces while opening the palace, on the caller's thread
+    and outside the read budget, so the outcome does not depend on timing: the
+    open here is slower than the whole budget before it fails.
+    """
+    import time as _time
+
+    def slow_broken_open(*args, **kwargs):
+        _time.sleep(0.5)  # longer than the 300 ms read budget
+        raise ModuleNotFoundError("No module named 'chromadb'")
+
     with (
         patch("mempalace.layers.MempalaceConfig") as mock_cfg,
-        patch("mempalace.layers._get_collection", return_value=mock_col),
+        patch("mempalace.layers._get_collection", side_effect=slow_broken_open),
     ):
-        mock_cfg.return_value.palace_path = "/fake"
+        mock_cfg.return_value.palace_path = str(tmp_path / "palace")
+        stack = MemoryStack(
+            palace_path=str(tmp_path / "palace"), identity_path=str(tmp_path / "id")
+        )
+        with pytest.raises(ModuleNotFoundError):
+            stack.wake_up()
         with pytest.raises(ModuleNotFoundError):
             Layer1(palace_path="/fake").generate()
 
