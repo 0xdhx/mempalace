@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+from _mcp_server_helpers import _patch_mcp_server
+
 from mempalace.backends import CollectionNotInitializedError
 from mempalace.cli import cmd_compress
 from mempalace.palace import (
@@ -15,6 +17,7 @@ from mempalace.palace import (
     get_collection,
     is_aaak_row,
     move_aaak_out_of_closets,
+    write_file_drawers,
 )
 from mempalace.searcher import _closet_boosts
 
@@ -128,8 +131,25 @@ def test_an_older_aaak_row_no_longer_boosts_lexical_closet_search():
 
     boosts = _closet_boosts(closets, query="kubernetes rollout", n_results=5, where={})
 
-    # The real closet ranks first once the AAAK row is skipped.
-    assert boosts == {"real.md": (1, 0.0, "kubernetes rollout notes")}
+    # The AAAK row takes no rank: the real closet is first.
+    assert boosts == {"real.md": (0, 0.0, "kubernetes rollout notes")}
+
+
+def test_older_aaak_rows_crowding_the_window_do_not_hide_a_real_closet(tmp_path):
+    palace = str(tmp_path / "palace")
+    closets = get_closets_collection(palace, create=True)
+    summaries = 12
+    closets.upsert(
+        ids=[f"drawer_w_r_{i}" for i in range(summaries)] + ["closet_w_r_real_01"],
+        documents=["kubernetes rollout notes"] * summaries + ["kubernetes rollout plan"],
+        metadatas=[{**_LEGACY_AAAK, "source_file": f"aaak{i}.md"} for i in range(summaries)]
+        + [_REAL_CLOSET],
+    )
+
+    boosts = _closet_boosts(closets, query="kubernetes rollout notes", n_results=2, where={})
+
+    assert set(boosts) == {"real.md"}
+    assert boosts["real.md"][0] == 0
 
 
 def test_closet_rows_are_never_mistaken_for_aaak():
@@ -175,3 +195,152 @@ def test_a_palace_without_aaak_rows_keeps_the_historical_collection_list(tmp_pat
     )
 
     assert AAAK_COLLECTION_NAME not in repair._recoverable_collections(str(palace))
+
+
+def _summarize(palace, rows):
+    """File AAAK summaries the way ``compress`` does: ``(drawer_id, source_file)``."""
+    get_aaak_collection(palace, create=True).upsert(
+        ids=[drawer_id for drawer_id, _ in rows],
+        documents=[f"SUMMARY|{drawer_id}" for drawer_id, _ in rows],
+        metadatas=[{"kind": "aaak", "source_file": source} for _, source in rows],
+    )
+
+
+def _summary_ids(palace):
+    return sorted(get_aaak_collection(palace, create=False).get(include=[])["ids"])
+
+
+def test_deleting_a_drawer_deletes_its_summary(
+    monkeypatch, config, palace_path, seeded_collection, kg
+):
+    _patch_mcp_server(monkeypatch, config, kg)
+    from mempalace.mcp_server import tool_delete_drawer
+
+    _summarize(
+        palace_path,
+        [("drawer_proj_backend_aaa", "auth.py"), ("drawer_proj_backend_bbb", "db.py")],
+    )
+
+    assert tool_delete_drawer("drawer_proj_backend_aaa")["success"] is True
+
+    assert _summary_ids(palace_path) == ["drawer_proj_backend_bbb"]
+
+
+def test_deleting_drawers_in_bulk_deletes_their_summaries(
+    monkeypatch, config, palace_path, seeded_collection, kg
+):
+    _patch_mcp_server(monkeypatch, config, kg)
+    from mempalace.mcp_server import tool_delete_drawers
+
+    _summarize(
+        palace_path,
+        [
+            ("drawer_proj_backend_aaa", "auth.py"),
+            ("drawer_proj_backend_bbb", "db.py"),
+            ("drawer_notes_planning_ddd", "sprint.md"),
+        ],
+    )
+
+    tool_delete_drawers(["drawer_proj_backend_aaa", "drawer_proj_backend_bbb"])
+
+    assert _summary_ids(palace_path) == ["drawer_notes_planning_ddd"]
+
+
+def test_deleting_a_source_deletes_every_summary_from_it(
+    monkeypatch, config, palace_path, seeded_collection, kg
+):
+    _patch_mcp_server(monkeypatch, config, kg)
+    from mempalace.mcp_server import tool_delete_by_source
+
+    _summarize(
+        palace_path,
+        [
+            ("drawer_proj_backend_aaa", "auth.py"),
+            ("drawer_from_an_older_mine", "auth.py"),
+            ("drawer_proj_backend_bbb", "db.py"),
+        ],
+    )
+
+    assert tool_delete_by_source("auth.py", dry_run=False)["success"] is True
+
+    assert _summary_ids(palace_path) == ["drawer_proj_backend_bbb"]
+
+
+def test_rewriting_a_drawers_text_deletes_its_summary(
+    monkeypatch, config, palace_path, seeded_collection, kg
+):
+    _patch_mcp_server(monkeypatch, config, kg)
+    from mempalace.mcp_server import tool_update_drawer
+
+    _summarize(palace_path, [("drawer_proj_backend_aaa", "auth.py")])
+
+    tool_update_drawer("drawer_proj_backend_aaa", wing="project_moved")
+    assert _summary_ids(palace_path) == ["drawer_proj_backend_aaa"]
+
+    tool_update_drawer("drawer_proj_backend_aaa", content="Sessions now use opaque tokens.")
+    assert _summary_ids(palace_path) == []
+
+
+def test_a_re_mine_deletes_the_files_summaries(tmp_path):
+    palace = str(tmp_path / "palace")
+    drawers = get_collection(palace, create=True)
+    meta = {"wing": "w", "room": "r", "source_file": "notes.md", "chunk_index": 0}
+    write_file_drawers(drawers, "notes.md", [("drawer_notes_0", "old text", meta)])
+    _summarize(palace, [("drawer_notes_0", "notes.md"), ("drawer_other_0", "other.md")])
+    aaak = get_aaak_collection(palace, create=False)
+
+    write_file_drawers(drawers, "notes.md", [("drawer_notes_0", "new", meta)], prune=False)
+    assert _summary_ids(palace) == ["drawer_notes_0", "drawer_other_0"]
+
+    write_file_drawers(drawers, "notes.md", [("drawer_notes_0", "new text", meta)], aaak_col=aaak)
+    assert _summary_ids(palace) == ["drawer_other_0"]
+
+
+def test_migrate_moves_older_summaries_out_of_the_closets(tmp_path):
+    from mempalace.backends.chroma import ChromaBackend
+    from mempalace.migrate import migrate
+
+    palace = str(tmp_path / "palace")
+    # Seed through a backend that is closed again: Windows won't move a
+    # palace aside while a handle inside it is open.
+    backend = ChromaBackend()
+    try:
+        backend.get_or_create_collection(palace, "mempalace_drawers").add(
+            ids=["drawer_w_r_aaak"],
+            documents=["verbatim drawer text"],
+            metadatas=[{"wing": "w", "room": "r", "source_file": "aaak.md"}],
+        )
+        backend.get_or_create_collection(palace, "mempalace_closets").add(
+            ids=["closet_w_r_abc_01", "drawer_w_r_aaak"],
+            documents=["kubernetes rollout notes", "KUBERNETES.ROLLOUT|★★"],
+            metadatas=[_REAL_CLOSET, _LEGACY_AAAK],
+        )
+    finally:
+        backend.close()
+
+    with patch("mempalace.migrate.collection_write_roundtrip_works", return_value=False):
+        assert migrate(palace, confirm=True) is True
+
+    assert get_closets_collection(palace, create=False).get(include=[])["ids"] == [
+        "closet_w_r_abc_01"
+    ]
+    assert _summary_ids(palace) == ["drawer_w_r_aaak"]
+
+
+def test_repair_from_sqlite_moves_older_summaries_out_of_the_closets(tmp_path):
+    from mempalace import repair
+
+    source = str(tmp_path / "source")
+    get_collection(source, "mempalace_drawers", create=True).upsert(
+        ids=["drawer_w_r_aaak"], documents=["text"], metadatas=[{"wing": "w", "room": "r"}]
+    )
+    _seed_closets(source)
+    dest = str(tmp_path / "dest")
+    repair.rebuild_from_sqlite(source, dest)
+
+    repair.move_aaak_after_rebuild(dest)
+
+    assert get_closets_collection(dest, create=False).get(include=[])["ids"] == [
+        "closet_w_r_abc_01"
+    ]
+    assert _summary_ids(dest) == ["drawer_w_r_aaak"]

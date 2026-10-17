@@ -202,6 +202,25 @@ def _recoverable_collections(palace_path: Optional[str] = None) -> tuple[str, ..
     return tuple(dict.fromkeys(collections))
 
 
+def move_aaak_after_rebuild(palace_path: str, *, dry_run: bool = False) -> None:
+    """Move AAAK summaries an older ``compress`` left in the closets.
+
+    Runs once the rebuilt palace is in place; a failure is reported and never
+    undoes the rebuild, since the next ``compress`` retries the move.
+    """
+    from .palace import move_aaak_out_of_closets
+
+    if dry_run:
+        return
+    try:
+        moved = move_aaak_out_of_closets(palace_path)
+    except Exception as exc:
+        print(f"  WARNING: AAAK summaries in the closets were not moved: {exc!r}")
+        return
+    if moved:
+        print(f"  Moved {moved} AAAK summaries out of the closets collection.")
+
+
 # Back-compat alias for callers that imported the constant. New code
 # should call ``_recoverable_collections()`` so config changes are picked
 # up at call time.

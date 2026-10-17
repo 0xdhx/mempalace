@@ -240,6 +240,35 @@ def purge_file_closets(closets_col, source_file: str) -> None:
         logger.debug("Closet purge failed for %s", source_file, exc_info=True)
 
 
+def open_aaak_collection(palace_path: str):
+    """The AAAK collection, or None when ``compress`` never created it."""
+    try:
+        return get_aaak_collection(palace_path, create=False)
+    except CollectionNotInitializedError:
+        return None
+
+
+def purge_aaak_rows(aaak_col, *, source_file=None, drawer_ids=(), batch_size: int = 500) -> int:
+    """Delete the AAAK summaries of deleted or rewritten drawers.
+
+    A summary quotes its drawer, so it goes with it: rows keyed by any of
+    ``drawer_ids`` and every row of ``source_file``. Returns the number deleted.
+    """
+    if aaak_col is None:
+        return 0
+    ids = set()
+    drawer_ids = list(dict.fromkeys(drawer_ids))
+    for start in range(0, len(drawer_ids), batch_size):
+        batch = drawer_ids[start : start + batch_size]
+        ids.update(aaak_col.get(ids=batch, include=[]).get("ids") or [])
+    if source_file:
+        ids.update(aaak_col.get(where={"source_file": source_file}, include=[]).get("ids") or [])
+    ordered = sorted(ids)
+    for start in range(0, len(ordered), batch_size):
+        aaak_col.delete(ids=ordered[start : start + batch_size])
+    return len(ordered)
+
+
 def is_aaak_row(metadata) -> bool:
     """Whether a row is an AAAK summary rather than a closet pointer.
 
