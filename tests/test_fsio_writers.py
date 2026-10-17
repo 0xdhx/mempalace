@@ -164,3 +164,24 @@ def test_a_reader_holding_the_mesh_state_does_not_fail_the_round(tmp_path, home)
     )
 
     assert json.loads(path.read_text(encoding="utf-8"))["peers"] == {"new": 1}
+
+
+def test_a_link_at_a_room_file_is_replaced_not_written_through(tmp_path):
+    """These state files were written by temp file and rename, which replaces a
+    link at the name; following it would rewrite whatever it points at."""
+    config, _ = _plans(tmp_path)
+    room_set = rooms.RoomSet(wing="wing_a", rooms=[])
+    path = pathlib.Path(rooms.room_set_path(config, "wing_a"))
+    path.parent.mkdir(parents=True)
+    victim = tmp_path / "victim.json"
+    victim.write_text("untouched", encoding="utf-8")
+    try:
+        os.symlink(victim, path)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable here: {exc}")
+
+    rooms.save_room_set(config, room_set)
+
+    assert not os.path.islink(path)
+    assert json.loads(path.read_text(encoding="utf-8"))["wing"] == "wing_a"
+    assert victim.read_text(encoding="utf-8") == "untouched"

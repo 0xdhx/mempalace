@@ -308,7 +308,7 @@ def proposal_path(config: MempalaceConfig) -> str:
 def save_proposal(config: MempalaceConfig, plan: dict) -> str:
     path = proposal_path(config)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    atomic_write_json(path, plan, private=False)
+    atomic_write_json(path, plan, private=False, follow_symlinks=False)
     return path
 
 

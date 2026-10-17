@@ -29,7 +29,7 @@ from urllib.parse import parse_qs, urlparse
 
 from ._proc import kernel32 as _kernel32, pid_alive as _pid_alive
 from .config import MempalaceConfig
-from .fsio import atomic_write_text
+from .fsio import atomic_write_text, read_published_bytes
 from .palace import (
     MineAlreadyRunning,
     backend_requires_single_writer,
@@ -156,7 +156,7 @@ def ensure_token(palace_path: str) -> str:
 def read_token(palace_path: str) -> str:
     token_path = state_dir(palace_path) / "token"
     try:
-        return token_path.read_text(encoding="utf-8").strip()
+        return read_published_bytes(token_path).decode("utf-8").strip()
     except OSError as exc:
         raise DaemonError(f"daemon token not found for {palace_path}") from exc
 
@@ -175,9 +175,8 @@ def queue_path(palace_path: str) -> Path:
 
 def _read_endpoint(palace_path: str) -> dict[str, Any]:
     try:
-        with open(endpoint_path(palace_path), encoding="utf-8") as fh:
-            return json.load(fh)
-    except (OSError, json.JSONDecodeError) as exc:
+        return json.loads(read_published_bytes(endpoint_path(palace_path)).decode("utf-8"))
+    except (OSError, ValueError) as exc:
         raise DaemonError("daemon endpoint not found") from exc
 
 

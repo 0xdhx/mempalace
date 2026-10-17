@@ -304,12 +304,15 @@ def atomic_publish(
     fsync_directory(path.parent)
 
 
-def atomic_write_json(path: PathLike, payload: Any, *, private: bool = True) -> None:
+def atomic_write_json(
+    path: PathLike, payload: Any, *, private: bool = True, follow_symlinks: bool = True
+) -> None:
     """Serialize ``payload`` (indented, UTF-8, non-ASCII kept) into ``path``."""
     atomic_publish(
         path,
         lambda handle: json.dump(payload, handle, indent=2, ensure_ascii=False),
         private=private,
+        follow_symlinks=follow_symlinks,
     )
 
 

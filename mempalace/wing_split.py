@@ -203,7 +203,7 @@ def split_plan_path(config: MempalaceConfig, wing: str) -> str:
 def save_split_plan(config: MempalaceConfig, plan: dict) -> str:
     path = split_plan_path(config, plan["wing"])
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    atomic_write_json(path, plan, private=False)
+    atomic_write_json(path, plan, private=False, follow_symlinks=False)
     return path
 
 
@@ -303,7 +303,7 @@ def write_split_pending(config: MempalaceConfig, wing: str, plan: dict) -> str:
         "plan_sha256": split_plan_fingerprint(plan),
     }
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
-    atomic_write_text(path, text, private=False)
+    atomic_write_text(path, text, private=False, follow_symlinks=False)
     return path
 
 

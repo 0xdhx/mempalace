@@ -181,7 +181,7 @@ def normalize_plan_path(config: MempalaceConfig) -> str:
 def save_normalize_plan(config: MempalaceConfig, plan: dict) -> str:
     path = normalize_plan_path(config)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    atomic_write_json(path, plan, private=False)
+    atomic_write_json(path, plan, private=False, follow_symlinks=False)
     return path
 
 

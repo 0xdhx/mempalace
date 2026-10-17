@@ -718,14 +718,16 @@ class TestWatchCursorFile:
         assert read_watch_state(str(as_dir)) == (None, WATCH_STATE_CORRUPT)
 
         # Permission denied, simulated so the test is platform-independent.
-        real_open = open
+        from mempalace import logstream
 
-        def denied(path, *a, **k):
+        real_read = logstream.read_published_bytes
+
+        def denied(path):
             if str(path).endswith("locked.json"):
                 raise PermissionError(13, "Permission denied")
-            return real_open(path, *a, **k)
+            return real_read(path)
 
-        monkeypatch.setattr("builtins.open", denied)
+        monkeypatch.setattr(logstream, "read_published_bytes", denied)
         assert read_watch_state(str(tmp_path / "locked.json")) == (None, WATCH_STATE_CORRUPT)
 
         # A genuinely missing file is still absent, i.e. a real first run.

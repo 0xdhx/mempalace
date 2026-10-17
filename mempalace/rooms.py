@@ -155,7 +155,7 @@ def room_set_path(config: MempalaceConfig, wing: str) -> str:
 def save_room_set(config: MempalaceConfig, room_set: RoomSet) -> str:
     path = room_set_path(config, room_set.wing)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    atomic_write_json(path, room_set.to_dict(), private=False)
+    atomic_write_json(path, room_set.to_dict(), private=False, follow_symlinks=False)
     return path
 
 
@@ -786,7 +786,7 @@ def save_pending_apply(
         # reinterpret an intermediate room or mutate a closet that left this wing.
         "closet_moves": {cid: list(entry) for cid, entry in sorted(moves.items())},
     }
-    atomic_write_json(path, payload, private=False)
+    atomic_write_json(path, payload, private=False, follow_symlinks=False)
     return path
 
 

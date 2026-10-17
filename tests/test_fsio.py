@@ -444,3 +444,19 @@ def test_a_denied_read_is_not_retried_off_windows(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         fsio.read_published_bytes(dest)
     assert len(calls) == 1
+
+
+def test_a_link_planted_at_the_old_pid_temp_name_is_never_followed(tmp_path):
+    """The temporary file used to be ``<name>.tmp-<pid>`` opened without
+    ``O_EXCL``; on Windows, which has no ``O_NOFOLLOW``, a link planted there
+    sent the write to its target and the rename left a link in place."""
+    victim = tmp_path / "victim.txt"
+    victim.write_text("untouched", encoding="utf-8")
+    dest = tmp_path / "corrupt_ids.txt"
+    _symlink_or_skip(tmp_path / f"corrupt_ids.txt.tmp-{os.getpid()}", victim)
+
+    fsio.atomic_write_text(dest, "drawer_bad\n", follow_symlinks=False)
+
+    assert not os.path.islink(dest)
+    assert dest.read_text(encoding="utf-8") == "drawer_bad\n"
+    assert victim.read_text(encoding="utf-8") == "untouched"

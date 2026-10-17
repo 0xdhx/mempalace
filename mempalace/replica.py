@@ -61,5 +61,6 @@ def get_replica_id(palace_path: str) -> str:
         path,
         json.dumps({"replica_id": replica_id, "minted_at_note": "RFC 004 step 0"}, indent=2) + "\n",
         private=False,
+        follow_symlinks=False,
     )
     return replica_id
