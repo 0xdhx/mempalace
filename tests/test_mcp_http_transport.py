@@ -1038,10 +1038,34 @@ def test_tokenless_loopback_hub_refuses_proxied_requests(monkeypatch, tmp_path):
             {"X-Real-IP": "203.0.113.7"},
             {"Forwarded": "for=203.0.113.7"},
             {"Tailscale-User-Login": "someone@example.com"},
+            {"X-Forwarded-Proto": "https"},
+            {"X-Forwarded-Server": "proxy"},
+            {"X-Original-Host": "memory.example.com"},
+            {"CF-Connecting-IP": "203.0.113.7"},
+            {"True-Client-IP": "203.0.113.7"},
+            {"X-Client-IP": "203.0.113.7"},
+            {"Via": "1.1 proxy"},
         ):
             status, body = _post(port, "/mcp", ping, headers=header)
             assert status == 403, header
             assert b"token" in body
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_tokenless_loopback_hub_refuses_cross_site_browser_requests(monkeypatch, tmp_path):
+    """A page's <img src=.../logstream/stream> sends no Origin but does send
+    Sec-Fetch-Site, so it can't hold a stream slot; own clients send neither."""
+    httpd, _palace = _tokenless_loopback_hub(monkeypatch, tmp_path)
+    port = httpd.server_address[1]
+    try:
+        for site, expected in (("cross-site", 403), ("same-site", 403)):
+            status, _ = _get(port, "/logstream/stream", headers={"Sec-Fetch-Site": site})
+            assert status == expected, site
+        assert _get(port, "/healthz", headers={"Sec-Fetch-Site": "none"})[0] == 200
+        assert _get(port, "/healthz", headers={"Sec-Fetch-Site": "same-origin"})[0] == 200
+        assert _get(port, "/healthz")[0] == 200
     finally:
         httpd.shutdown()
         httpd.server_close()

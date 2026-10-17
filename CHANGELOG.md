@@ -32,19 +32,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **A loopback HTTP MCP server needs no token; anything reachable from another
   machine does.** `mempalace serve` and `mempalace-mcp --transport http` on
   `127.0.0.1`, `::1` or `localhost` serve local clients with no header, as
-  before. Without a token the hub refuses what could come from elsewhere:
-  requests a local proxy relayed (`X-Forwarded-For`, `X-Forwarded-Host`,
-  `X-Real-IP`, `Forwarded`, `Tailscale-*`), any browser `Origin` other than its
-  own exact address, and DNS-rebound `Host` names. `POST /mcp` now needs
+  before. Without a token the hub refuses browser pages (any `Origin` other
+  than its own exact address, any cross-site `Sec-Fetch-Site`) and DNS-rebound
+  `Host` names, and it refuses requests carrying the usual proxy headers
+  (`X-Forwarded-*`, `X-Real-IP`, `Forwarded`, `Via`, `Tailscale-*` and others).
+  That proxy check is best effort: a forwarder that adds no headers, or a TCP
+  forwarder such as `ssh -R` or `socat`, makes a tokenless hub public, so
+  configure a token whenever anything forwards to it. `POST /mcp` now needs
   `Content-Type: application/json` on every hub, so a page cannot post to it
   without a CORS preflight. Pass `--token` or set `MEMPALACE_MCP_HTTP_TOKEN` to
-  require a token on loopback too. A network bind, or a loopback bind fronted by
-  a proxy (`MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` set), reuses or creates the
-  palace's token at `~/.mempalace/server/<key>/token` (`0600`), where local
-  `mempalace` clients already look; remote clients send `Authorization: Bearer
-  <token>`.
-  `--no-token` is accepted and does nothing on a plain loopback bind. The token
-  is never printed at startup; its path is.
+  require a token on loopback. A network bind, or a loopback bind fronted by a
+  proxy (`MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` set), reuses or creates the palace's
+  token at `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace`
+  clients already look; remote clients send `Authorization: Bearer <token>`.
+  `--no-token` does nothing on a plain loopback bind and is refused on any
+  other; only `--allow-insecure` serves a reachable hub without a token. The
+  token is never printed at startup; its path is.
 - **MCP tool arguments are checked against the tool's schema before the tool
   runs.** Wrong types, out-of-range limits, unknown enum values and over-long
   strings return `-32602` with the parameter named, instead of reaching the tool

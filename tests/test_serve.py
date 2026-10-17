@@ -195,6 +195,15 @@ def test_no_token_is_refused_on_a_network_bind(isolated_home, capture_exec):
     assert "argv" not in capture_exec
 
 
+def test_no_token_is_refused_on_a_proxied_loopback_bind(isolated_home, capture_exec, monkeypatch):
+    """A proxy publishes this hub, so only --allow-insecure may make it tokenless."""
+    monkeypatch.setenv("MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS", "memory.example.com")
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_serve(_serve_args(isolated_home, host="127.0.0.1", no_token=True))
+    assert exc.value.code == 2
+    assert "argv" not in capture_exec
+
+
 def test_non_loopback_autogenerates_token_in_env_not_argv(isolated_home, capture_exec):
     with pytest.raises(_ExecCalled):
         cli.cmd_serve(_serve_args(isolated_home, host="0.0.0.0"))

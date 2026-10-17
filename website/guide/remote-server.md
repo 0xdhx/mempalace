@@ -143,7 +143,7 @@ Read the token from the printed path to hand it to remote clients. Useful flags:
 | `--tls-cert` / `--tls-key` | _(none)_ | PEM cert + key to terminate **TLS natively** (server speaks `https`) |
 | `--read-only` | off | Expose recall only — the tools that change state are hidden and refused |
 | `--token` | auto on network binds | Use a specific bearer token (also enforces one on loopback) |
-| `--no-token` | off | Accepted for compatibility: a plain loopback bind already needs none (refused on a network bind) |
+| `--no-token` | off | Accepted for compatibility: a plain loopback bind already needs none (refused on a network bind or a proxied loopback bind) |
 | `--allow-insecure` | off | Permit a non-loopback bind with no token (only behind a trusted proxy) |
 
 The token always travels via the environment, never the command line, so it
@@ -247,13 +247,20 @@ messages between machines.
 
   Clients connect to `https://yourbox.your-tailnet.ts.net/mcp` with the same
   bearer token. `MEMPALACE_MCP_EXTRA_ALLOWED_HOSTS` (comma-separated `host`
-  or `host:port` values) is required because proxies preserve the public
-  name in the `Host` header, which the loopback bind's DNS-rebinding pin
-  would otherwise reject. Setting it also marks the hub as reachable from
-  other machines, so it requires a token like a network bind. A loopback hub
-  serving without a token refuses any request carrying proxy headers
-  (`X-Forwarded-For`, `X-Forwarded-Host`, `X-Real-IP`, `Forwarded`,
-  `Tailscale-*`): configure a token for proxied access.
+  or `host:port` values) lists the public names a proxy may pass through in
+  the `Host` header (`tailscale serve` and many nginx setups do), which the
+  loopback bind's DNS-rebinding pin would otherwise reject. Setting it also
+  marks the hub as reachable from other machines, so it requires a token like
+  a network bind, and `--no-token` is refused.
+
+  **Configure a token whenever anything forwards to the hub.** A loopback hub
+  serving without one refuses requests carrying the usual proxy headers
+  (`X-Forwarded-*`, `X-Real-IP`, `X-Client-IP`, `X-Original-Host`,
+  `CF-Connecting-IP`, `True-Client-IP`, `Forwarded`, `Via`, `Tailscale-*`), but
+  that check is best effort. An nginx `proxy_pass` that rewrites `Host` to
+  `127.0.0.1` and adds no headers, or a TCP forwarder such as `ssh -R`, `socat`,
+  HAProxy in TCP mode or `tailscale serve --tcp`, makes a tokenless hub public
+  with nothing for it to detect.
 - **Backups** are now your storage backend's responsibility (Milvus / Zilliz
   Cloud backups, Qdrant snapshots, or Postgres backups) rather than a single
   laptop's palace directory.

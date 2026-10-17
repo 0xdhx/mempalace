@@ -270,10 +270,23 @@ def _http_same_origins(scheme: str, port: int) -> set:
     return {f"{scheme}://{host}:{port}" for host in hosts}
 
 
-# A local proxy (tailscale serve, nginx, cloudflared) adds these when it relays
-# traffic from elsewhere; a hub serving without a token must not be reachable
-# that way.
-_HTTP_PROXY_HEADERS = ("x-forwarded-for", "x-forwarded-host", "x-real-ip", "forwarded")
+# Headers a local proxy (tailscale serve, nginx, cloudflared) commonly adds when
+# it relays traffic from elsewhere. Best effort only: a proxy that adds none, or
+# a TCP forwarder, still makes the hub public, which is why forwarding one
+# needs a token.
+_HTTP_PROXY_HEADERS = (
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-server",
+    "x-original-host",
+    "x-real-ip",
+    "x-client-ip",
+    "cf-connecting-ip",
+    "true-client-ip",
+    "forwarded",
+    "via",
+)
 
 
 def _http_proxied(headers) -> bool:
@@ -420,6 +433,13 @@ def _http_request_rejected(handler, require_auth: bool) -> bool:
             handler.send_error(
                 403, "Forbidden", "Proxied access needs a token: set MEMPALACE_MCP_HTTP_TOKEN"
             )
+            return True
+        # Browsers label every request; a cross-site <img> or <script> sends no
+        # Origin but does send this, so it can't hold a stream slot.
+        fetch_site = (handler.headers.get("Sec-Fetch-Site") or "").strip().lower()
+        if fetch_site not in ("", "same-origin", "none"):
+            logger.warning("HTTP request rejected: Sec-Fetch-Site %r", fetch_site)
+            handler.send_error(403, "Forbidden")
             return True
         allowed = origin is None or origin.strip().lower().rstrip("/") in srv.same_origins
     else:
