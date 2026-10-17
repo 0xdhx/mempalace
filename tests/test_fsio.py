@@ -304,3 +304,35 @@ def test_atomic_write_bytes_keeps_the_bytes_exactly(tmp_path):
 
     assert dest.read_bytes() == b"a\nb\r\nc\n"
     assert [p.name for p in tmp_path.iterdir()] == ["log.jsonl"]
+
+
+def _symlink_or_skip(link, target):
+    try:
+        os.symlink(target, link)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"symlinks unavailable here: {exc}")
+
+
+def test_a_followed_link_writes_its_target(tmp_path):
+    target = tmp_path / "real.txt"
+    target.write_text("old", encoding="utf-8")
+    link = tmp_path / "link.txt"
+    _symlink_or_skip(link, target)
+
+    fsio.atomic_write_text(link, "new")
+
+    assert os.path.islink(link)
+    assert target.read_text(encoding="utf-8") == "new"
+
+
+def test_an_unfollowed_link_is_replaced_and_its_target_left_alone(tmp_path):
+    target = tmp_path / "victim.txt"
+    target.write_text("untouched", encoding="utf-8")
+    link = tmp_path / "corrupt_ids.txt"
+    _symlink_or_skip(link, target)
+
+    fsio.atomic_write_text(link, "drawer_bad\n", follow_symlinks=False)
+
+    assert not os.path.islink(link)
+    assert link.read_text(encoding="utf-8") == "drawer_bad\n"
+    assert target.read_text(encoding="utf-8") == "untouched"
