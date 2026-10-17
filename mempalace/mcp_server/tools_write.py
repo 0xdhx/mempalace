@@ -690,6 +690,7 @@ def _delete_record(col, drawer_id: str, record, *, bulk: bool = False):
 
     source_file = record["metadata"].get("source_file")
     closets_deleted = _purge_source_closets(source_file, commit=True) if source_file else 0
+    _purge_aaak(drawer_ids=[drawer_id, *record["ids"]])
 
     logger.info(
         "Deleted drawer: %s (%s rows, %s closet(s) purged)%s",
@@ -1088,6 +1089,24 @@ def _purge_source_closets(source_file: str, *, commit: bool) -> int:
         return 0
 
 
+def _purge_aaak(*, source_file=None, drawer_ids=()) -> None:
+    """Delete the AAAK summaries of drawers that were deleted or rewritten.
+
+    A summary quotes its drawer, so it must not outlive it. Best-effort like
+    the closet purge: the drawer change has already committed.
+    """
+    from ..palace import open_aaak_collection, purge_aaak_rows
+
+    try:
+        purge_aaak_rows(
+            open_aaak_collection(_config.palace_path),
+            source_file=source_file,
+            drawer_ids=drawer_ids,
+        )
+    except Exception as exc:
+        logger.warning("AAAK purge failed for %s: %s", source_file or "drawers", exc)
+
+
 def tool_delete_by_source(source_file: str, dry_run: bool = True):
     """Delete every drawer whose ``source_file`` metadata matches exactly.
 
@@ -1188,6 +1207,7 @@ def tool_delete_by_source(source_file: str, dry_run: bool = True):
         # so a closet-purge hiccup must not turn a successful delete into an
         # error — it just leaves index cruft a later `repair` / re-mine clears.
         closets_deleted = _purge_source_closets(source_file, commit=True)
+        _purge_aaak(source_file=source_file)
         logger.info(
             "Deleted %d drawer(s) and %d closet(s) from source: %s",
             match_count,
@@ -1564,6 +1584,8 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
             if content is not None and source_file
             else 0
         )
+        if content is not None:
+            _purge_aaak(drawer_ids=[drawer_id, *record["ids"]])
         _invalidate_overview_caches()
         if revision_id:
             outcome["revision_id"] = revision_id

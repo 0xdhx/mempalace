@@ -248,7 +248,12 @@ def cmd_repair(args):
 
     if getattr(args, "mode", "legacy") == "from-sqlite":
         from ..migrate import confirm_destructive_action
-        from ..repair import RebuildCleanupError, RebuildPartialError, rebuild_from_sqlite
+        from ..repair import (
+            RebuildCleanupError,
+            RebuildPartialError,
+            move_aaak_after_rebuild,
+            rebuild_from_sqlite,
+        )
 
         source_path = getattr(args, "source", None)
         source_path = (
@@ -311,6 +316,7 @@ def cmd_repair(args):
         # a populated dict with 0-valued counts).
         if not counts:
             sys.exit(1)
+        move_aaak_after_rebuild(palace_path, dry_run=dry_run)
         return
 
     db_path = os.path.join(palace_path, "chroma.sqlite3")

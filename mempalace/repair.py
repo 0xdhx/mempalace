@@ -187,17 +187,38 @@ def _recoverable_collections(palace_path: Optional[str] = None) -> tuple[str, ..
     # Media assets are first-class palace data too. The SQLite recovery path
     # must either restore them with their original modality vectors or fail
     # explicitly, rather than producing a palace that silently lost them.
-    from .palace import ASSETS_COLLECTION_NAME
+    from .palace import AAAK_COLLECTION_NAME, ASSETS_COLLECTION_NAME
 
     collections = [_drawers_collection_name(), CLOSETS_COLLECTION_NAME]
-    # Keep the historical result shape for palaces without assets. When a
-    # source path is supplied, SQLite ground truth decides whether there are
-    # asset rows to restore and whether native media support is required.
+    # Keep the historical result shape for palaces without assets or AAAK
+    # summaries. When a source path is supplied, SQLite ground truth decides
+    # whether there are rows to restore (and, for assets, whether native media
+    # support is required).
     if palace_path is not None:
-        asset_count = sqlite_drawer_count(palace_path, ASSETS_COLLECTION_NAME)
-        if asset_count is None or asset_count > 0:
-            collections.append(ASSETS_COLLECTION_NAME)
+        for name in (ASSETS_COLLECTION_NAME, AAAK_COLLECTION_NAME):
+            count = sqlite_drawer_count(palace_path, name)
+            if count is None or count > 0:
+                collections.append(name)
     return tuple(dict.fromkeys(collections))
+
+
+def move_aaak_after_rebuild(palace_path: str, *, dry_run: bool = False) -> None:
+    """Move AAAK summaries an older ``compress`` left in the closets.
+
+    Runs once the rebuilt palace is in place; a failure is reported and never
+    undoes the rebuild, since the next ``compress`` retries the move.
+    """
+    from .palace import move_aaak_out_of_closets
+
+    if dry_run:
+        return
+    try:
+        moved = move_aaak_out_of_closets(palace_path)
+    except Exception as exc:
+        print(f"  WARNING: AAAK summaries in the closets were not moved: {exc!r}")
+        return
+    if moved:
+        print(f"  Moved {moved} AAAK summaries out of the closets collection.")
 
 
 # Back-compat alias for callers that imported the constant. New code
