@@ -468,6 +468,21 @@ def initialize_last_modified_metadata(metadatas):
     return result
 
 
+def validate_write_batch(ids, *, unique_ids: bool = False, **columns) -> None:
+    """Raise ``ValueError`` for a malformed write batch.
+
+    Each column passed (``None`` is skipped) must match ``ids`` in length,
+    checked in the order given; ``unique_ids`` also refuses repeated ids, as
+    ``add`` does on backends that report a duplicate instead of overwriting.
+    """
+    n = len(ids)
+    for label, value in columns.items():
+        if value is not None and len(value) != n:
+            raise ValueError(f"{label} length {len(value)} does not match ids length {n}")
+    if unique_ids and len(set(ids)) != n:
+        raise ValueError("add ids must be unique")
+
+
 class BaseCollection(ABC):
     """Per-collection read/write surface every backend must implement."""
 
@@ -818,14 +833,7 @@ class BaseCollection(ABC):
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
 
-        n = len(ids)
-        for label, value in (
-            ("documents", documents),
-            ("metadatas", metadatas),
-            ("embeddings", embeddings),
-        ):
-            if value is not None and len(value) != n:
-                raise ValueError(f"{label} length {len(value)} does not match ids length {n}")
+        validate_write_batch(ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
 
         existing = self.get(ids=list(ids), include=["documents", "metadatas", "embeddings"])
         stored_embeddings = existing.embeddings

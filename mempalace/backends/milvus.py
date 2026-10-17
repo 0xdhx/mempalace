@@ -48,6 +48,7 @@ from .base import (
     QueryResult,
     UnsupportedFilterError,
     _IncludeSpec,
+    validate_write_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -454,18 +455,7 @@ class MilvusCollection(BaseCollection):
         metadatas: Optional[list[dict]],
         embeddings: list[list[float]],
     ) -> tuple[list[dict], int]:
-        if len(documents) != len(ids):
-            raise ValueError(
-                f"documents length {len(documents)} does not match ids length {len(ids)}"
-            )
-        if metadatas is not None and len(metadatas) != len(ids):
-            raise ValueError(
-                f"metadatas length {len(metadatas)} does not match ids length {len(ids)}"
-            )
-        if len(embeddings) != len(ids):
-            raise ValueError(
-                f"embeddings length {len(embeddings)} does not match ids length {len(ids)}"
-            )
+        validate_write_batch(ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
         vectors, dimension = normalize_vectors(embeddings, "milvus")
         for idx, doc_id in enumerate(ids):
             if not isinstance(doc_id, str) or not doc_id:
@@ -503,8 +493,7 @@ class MilvusCollection(BaseCollection):
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
         if embeddings is None:
             raise ValueError("milvus requires explicit embeddings")
-        if len(set(ids)) != len(ids):
-            raise ValueError("add ids must be unique")
+        validate_write_batch(ids, unique_ids=True)
         rows, dimension = self._prepare_rows(
             documents=documents,
             ids=ids,

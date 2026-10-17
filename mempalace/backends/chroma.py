@@ -54,6 +54,7 @@ from .base import (
     QueryResult,
     _IncludeSpec,
     initialize_last_modified_metadata,
+    validate_write_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -3173,6 +3174,19 @@ def _count_write() -> None:
         _write_serial += 1
 
 
+def _validate_list_batch(ids, documents, metadatas, embeddings) -> None:
+    # prepare_stored_write zips documents with metadata, so a longer column would be
+    # silently truncated. A bare string id is Chroma's one-record shape and is
+    # normalised later, so only list batches are checked here.
+    if not isinstance(ids, str):
+        validate_write_batch(
+            ids,
+            documents=None if isinstance(documents, str) else documents,
+            metadatas=metadatas,
+            embeddings=embeddings,
+        )
+
+
 class ChromaCollection(BaseCollection):
     """Thin adapter translating ChromaDB dict returns into typed results.
 
@@ -3266,6 +3280,7 @@ class ChromaCollection(BaseCollection):
         if getattr(self, "_require_embeddings", False) and embeddings is None:
             raise ValueError("caller-vector collection requires explicit embeddings")
 
+        _validate_list_batch(ids, documents, metadatas, embeddings)
         documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {
             "documents": documents,
@@ -3300,6 +3315,7 @@ class ChromaCollection(BaseCollection):
         if getattr(self, "_require_embeddings", False) and embeddings is None:
             raise ValueError("caller-vector collection requires explicit embeddings")
 
+        _validate_list_batch(ids, documents, metadatas, embeddings)
         documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {
             "documents": documents,
@@ -3351,6 +3367,7 @@ class ChromaCollection(BaseCollection):
 
         if documents is None and metadatas is None and embeddings is None:
             raise ValueError("update requires at least one of documents, metadatas, embeddings")
+        _validate_list_batch(ids, documents, metadatas, embeddings)
         documents, ids, metadatas = prepare_stored_write(documents, ids, metadatas)
         kwargs: dict[str, Any] = {"ids": ids}
         if documents is not None:

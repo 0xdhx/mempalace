@@ -96,6 +96,44 @@ def assert_update_skips_missing_ids(backend, col, *, embedding=None):
     assert got.metadatas[0].get("wing") == "conformance", "update() dropped existing metadata"
 
 
+def assert_write_batch_validated(backend, col, *, embedding=None, add_refuses_duplicates=False):
+    """Assert a malformed write batch raises ``ValueError`` and writes nothing.
+
+    A column whose length differs from ``ids`` is refused by ``add`` and
+    ``upsert``; with ``add_refuses_duplicates`` a repeated id in ``add`` is
+    refused too instead of being stored once.
+    """
+    import pytest
+
+    explicit = "requires_explicit_embeddings" in backend.capabilities
+    vector = list(embedding if embedding is not None else _PROBE_EMBEDDING)
+
+    def batch(ids, documents, metadatas=None, embeddings=None):
+        kwargs = {"ids": ids, "documents": documents}
+        if metadatas is not None:
+            kwargs["metadatas"] = metadatas
+        if embeddings is not None:
+            kwargs["embeddings"] = embeddings
+        elif explicit:
+            kwargs["embeddings"] = [vector for _ in ids]
+        return kwargs
+
+    malformed = [
+        batch(["a"], ["one", "two"]),
+        batch(["a", "b"], ["one", "two"], metadatas=[{"wing": "w"}]),
+    ]
+    if explicit:
+        malformed.append(batch(["a", "b"], ["one", "two"], embeddings=[vector]))
+    for write in (col.add, col.upsert):
+        for kwargs in malformed:
+            with pytest.raises(ValueError):
+                write(**kwargs)
+    if add_refuses_duplicates:
+        with pytest.raises(ValueError):
+            col.add(**batch(["dup", "dup"], ["first", "second"]))
+    assert col.count() == 0, "a refused write batch stored records"
+
+
 _FILTER_ROWS = [
     ("f1", "alpha note", {"wing": "a", "n": 1, "flag": True}),
     ("f2", "beta note", {"wing": "b", "n": 5, "flag": False}),
