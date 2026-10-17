@@ -29,11 +29,10 @@ from .fsio import decode_source, encoding_metadata
 from .miner import _extract_entities_for_metadata
 from .palace import (
     build_closet_lines,
+    drawers_removed,
     get_closets_collection,
     get_collection,
     mine_lock,
-    open_aaak_collection,
-    purge_aaak_rows,
     purge_file_closets,
     upsert_closet_lines,
 )
@@ -85,7 +84,7 @@ def _diary_drawer_id_entry(wing: str, date_str: str, entry_idx: int, entry_chunk
     return f"drawer_diary_v2_{suffix}"
 
 
-def _purge_prior_drawers(drawers_col, aaak_col, source_file: str) -> None:
+def _purge_prior_drawers(drawers_col, palace_path: str, source_file: str) -> None:
     """Drop a rebuilt diary file's earlier drawers and their AAAK summaries."""
     try:
         drawers_col.delete(where={"source_file": source_file})
@@ -98,10 +97,7 @@ def _purge_prior_drawers(drawers_col, aaak_col, source_file: str) -> None:
         # load-bearing write, and if it also fails the state file
         # is left unchanged so the next pass retries cleanly.
         logger.debug("legacy purge skipped for %s: %s", source_file, exc, exc_info=True)
-    try:
-        purge_aaak_rows(aaak_col, source_file=source_file)
-    except Exception:
-        logger.warning("AAAK purge failed for %s", source_file, exc_info=True)
+    drawers_removed(palace_path, aaak_source=source_file)
 
 
 def _diary_closet_id_base(wing: str, date_str: str) -> str:
@@ -143,7 +139,6 @@ def ingest_diaries(
 
     drawers_col = get_collection(palace_path)
     closets_col = get_closets_collection(palace_path)
-    aaak_col = open_aaak_collection(palace_path)
     chunk_size = MempalaceConfig().chunk_size
 
     days_updated = 0
@@ -216,7 +211,7 @@ def ingest_diaries(
             # deletion would otherwise leave trailing orphan drawers), and
             # (c) in-place edits that shift content across entry boundaries.
             if full_rebuild:
-                _purge_prior_drawers(drawers_col, aaak_col, source_file)
+                _purge_prior_drawers(drawers_col, palace_path, source_file)
 
             # Per-entry drawers, with character chunking inside any entry
             # whose serialized text exceeds chunk_size. ``chunk_index`` is

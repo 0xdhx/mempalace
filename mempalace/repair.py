@@ -777,22 +777,27 @@ def prune_corrupt(palace_path=None, confirm=False, collection_name: Optional[str
     print(f"  Collection size before: {before:,}")
 
     batch = 100
-    deleted = 0
+    removed_ids = []
     failed = 0
     for i in range(0, len(bad_ids), batch):
         chunk = bad_ids[i : i + batch]
         try:
             col.delete(ids=chunk)
-            deleted += len(chunk)
+            removed_ids += chunk
         except Exception:
             for sid in chunk:
                 try:
                     col.delete(ids=[sid])
-                    deleted += 1
+                    removed_ids.append(sid)
                 except Exception:
                     failed += 1
         if (i // batch) % 20 == 0:
-            print(f"    deleted {deleted}/{len(bad_ids)}  (failed: {failed})")
+            print(f"    deleted {len(removed_ids)}/{len(bad_ids)}  (failed: {failed})")
+    deleted = len(removed_ids)
+    if removed_ids:
+        from .palace import drawers_removed
+
+        drawers_removed(palace_path, aaak_ids=removed_ids)
 
     after = col.count()
     print(f"\n  Deleted: {deleted:,}")

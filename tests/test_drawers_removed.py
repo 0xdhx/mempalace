@@ -6,7 +6,6 @@ them, after the drawer change commits and without ever undoing it.
 
 from unittest.mock import patch
 
-import pytest
 from _mcp_server_helpers import _patch_mcp_server
 
 from mempalace.palace import (
@@ -156,7 +155,7 @@ def test_a_failed_purge_never_undoes_the_delete(
 
     with (
         patch("mempalace.revisions.purge_drawer_revisions", side_effect=OSError("disk")),
-        patch("mempalace.palace.purge_aaak_rows", side_effect=RuntimeError("aaak")),
+        patch("mempalace.palace._delete_aaak_rows", side_effect=RuntimeError("aaak")),
     ):
         result = tool_delete_drawer("drawer_proj_backend_aaa")
 
@@ -192,7 +191,6 @@ def test_a_re_mine_drops_the_files_summaries(tmp_path):
     assert _summary_ids(palace) == ["drawer_other_0"]
 
 
-@pytest.mark.xfail(strict=True, reason="dedup and prune_corrupt leave AAAK summaries behind")
 def test_dedup_drops_the_summaries_of_the_drawers_it_removes(tmp_path, capsys):
     from mempalace.dedup import dedup_palace
 
@@ -211,7 +209,6 @@ def test_dedup_drops_the_summaries_of_the_drawers_it_removes(tmp_path, capsys):
     assert _summary_ids(palace) == ["drawer_keep"]
 
 
-@pytest.mark.xfail(strict=True, reason="dedup and prune_corrupt leave AAAK summaries behind")
 def test_prune_corrupt_drops_the_summaries_of_the_rows_it_removes(tmp_path, capsys):
     from mempalace.repair import prune_corrupt
 

@@ -1150,12 +1150,12 @@ class TestWriteTools:
     def test_update_drawer_purges_closets_only_after_the_write(
         self, monkeypatch, config, palace_path, seeded_collection, kg
     ):
-        from mempalace import mcp_server
+        from mempalace import mcp_server, palace
 
         _patch_mcp_server(monkeypatch, config, kg)
         order = []
         real_get = mcp_server._get_collection
-        real_purge = mcp_server._purge_source_closets
+        real_purge = palace.purge_source_closets
 
         def _recording_collection(create=False):
             col = real_get(create=create)
@@ -1168,12 +1168,12 @@ class TestWriteTools:
             col.update = _update
             return col
 
-        def _recording_purge(source_file, *, commit):
+        def _recording_purge(palace_path, source_file, *, commit=True):
             order.append("purge")
-            return real_purge(source_file, commit=commit)
+            return real_purge(palace_path, source_file, commit=commit)
 
         monkeypatch.setattr(mcp_server, "_get_collection", _recording_collection)
-        monkeypatch.setattr(mcp_server, "_purge_source_closets", _recording_purge)
+        monkeypatch.setattr(palace, "purge_source_closets", _recording_purge)
 
         result = mcp_server.tool_update_drawer(
             "drawer_proj_backend_aaa", content="updated after the closet check"
