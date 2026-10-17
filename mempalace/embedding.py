@@ -13,7 +13,7 @@ Three embedding-model options are available, selected via
 * ``embeddinggemma`` — ``onnx-community/embeddinggemma-300m-ONNX`` (q8), 384-dim
   via Matryoshka truncation, multilingual (100+ languages). Cross-lingual cos
   ~0.88 on parallel translations vs MiniLM's ~0.35. Recommended for any
-  non-English use; onboarding offers it as the default. The ~300 MB ONNX
+  non-English use (``mempalace init --embedding-model embeddinggemma``). The ~300 MB ONNX
   model is lazy-downloaded from HuggingFace on first use. Switching models
   on an existing palace requires ``mempalace repair rebuild-index``
   (different vector space). Its ``session.run()`` sub-batch size (32 docs by
