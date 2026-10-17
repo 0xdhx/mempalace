@@ -90,6 +90,24 @@ def _cosine_scale_distance(distance: float, metric: str = "cosine") -> float:
     return distance
 
 
+def _boosted_cosine_distance(distance: float, boost: float, metric: str = "cosine") -> float:
+    """A closet-boosted distance on the cosine scale, clamped to ``[0, 2]``.
+
+    Without the clamp a boost larger than the distance goes negative and
+    sorts the best hybrid matches last.
+    """
+    return max(0.0, min(2.0, _cosine_scale_distance(distance, metric) - boost))
+
+
+def _metric_scale_distance(distance: float, metric: str = "cosine") -> float:
+    """Inverse of :func:`_cosine_scale_distance`: a cosine-scale distance back
+    on ``metric``'s own scale."""
+    m = (metric or "cosine").lower()
+    if m == "l2":
+        return distance * 2.0
+    return distance
+
+
 def _metric_for_collection(col) -> str:
     """Resolve a collection's declared distance metric, defaulting to cosine.
 

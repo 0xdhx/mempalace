@@ -85,6 +85,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   revision now keep the search local when set in the environment, and a
   change to them in `config.json` no longer reuses a hub started with the
   old values.
+- **A closet match keeps lifting its drawer in the final search order.** The
+  hybrid re-rank scored every hit from its raw vector distance, so the rank
+  boost a matching closet gave a drawer was dropped and a closet-backed drawer
+  could fall behind a plain one. The boost is now part of the hybrid score. The
+  boost's distance cap and clamp, and the light server's relevance confidence,
+  now read distances on the cosine scale, so palaces using `l2` or `ip` rank and
+  report the same way as cosine ones. Search responses name the raw distance's
+  scale in `distance_metric`.
 
 ---
 
