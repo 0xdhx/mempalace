@@ -50,6 +50,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   new. Files an older palace registered as duplicates are mined again once the
   conversation parsing version changes.
 
+- **`mempalace init` writes only what you chose into a new `config.json`.**
+  It used to copy the palace path, collection name, topic wings and hall
+  keywords into the file, which froze those defaults against later releases
+  and froze a `MEMPALACE_PALACE_PATH` from your shell into the config. A new
+  file now holds only `--palace`, `--lang` and `--backend`; the defaults keep
+  applying from the code and the default palace keeps following the config
+  directory. `--palace` together with `--lang` now records both (`--lang` used
+  to create the file first, so the palace path was lost). Existing
+  `config.json` files are not touched. If you rely on `MEMPALACE_PALACE_PATH`
+  for processes started without it, pass `--palace` to `init` or set
+  `palace_path` in `config.json`.
+
 ### Bug Fixes
 
 - **Embedding a single string gives one vector.** The MiniLM and
@@ -62,6 +74,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   a later identity record, such as the one a repair writes, kept no dimension.
   Only a successful probe is cached now, and the first failure for a model is
   logged as a warning.
+- MemPalace's own project files are handled under every name the miner
+  reads. A project using `mempalace.yml` or the legacy `mempal.yaml` no longer
+  has that file sampled by entity and corpus-origin detection on a re-run of
+  `init`, and `init` adds the config file the project actually uses to
+  `.gitignore` instead of always `mempalace.yaml`. The skip lists now come
+  from one place. `init` also no longer overwrites an `entities.json` that
+  holds AAAK entity codes for `mempalace compress`.
 - **Mining no longer turns bytes that are not UTF-8 into U+FFFD.** Project,
   conversation, diary and sweep ingest decoded files as UTF-8 and replaced
   anything else with the replacement character, so a cp1252 file lost its

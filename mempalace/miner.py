@@ -56,7 +56,11 @@ from .hallways import compute_hallways_for_wing
 from .ids import ID_RECIPE, make_drawer_id_from_chunk
 
 # Re-exported: callers and tests import these from the miner (#2676).
-from .project_config import PROJECT_CONFIG_FILENAMES, find_project_config  # noqa: F401
+from .project_config import (  # noqa: F401
+    MEMPALACE_PROJECT_FILES,
+    PROJECT_CONFIG_FILENAMES,
+    find_project_config,
+)
 from .source_identity import source_directory_identity
 
 logger = logging.getLogger("mempalace_mcp")
@@ -162,11 +166,7 @@ READABLE_EXTENSIONS = {
 } | PHP_EXTENSIONS
 
 SKIP_FILENAMES = {
-    "entities.json",
-    "mempalace.yaml",
-    "mempalace.yml",
-    "mempal.yaml",
-    "mempal.yml",
+    *MEMPALACE_PROJECT_FILES,
     ".gitignore",
     "package-lock.json",
     "pnpm-lock.yaml",
