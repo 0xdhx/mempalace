@@ -6,7 +6,11 @@ under their own fake/live client in ``test_qdrant_backend.py``.
 """
 
 import pytest
-from _backend_conformance import assert_partition_isolation, assert_update_skips_missing_ids
+from _backend_conformance import (
+    assert_partition_isolation,
+    assert_update_skips_missing_ids,
+    assert_where_filters_conform,
+)
 
 from mempalace.backends import PalaceRef
 from mempalace.backends.chroma import ChromaBackend
@@ -45,6 +49,18 @@ def test_update_skips_missing_ids(backend_cls, tmp_path):
         ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
         col = backend.get_collection(palace=ref, collection_name="mempalace_drawers", create=True)
         assert_update_skips_missing_ids(backend, col)
+    finally:
+        backend.close()
+
+
+@pytest.mark.parametrize("backend_cls", _LOCAL_BACKENDS)
+def test_where_filters_conform(backend_cls, tmp_path):
+    """Every backend answers the same ``where`` filters with the same rows."""
+    backend = backend_cls()
+    try:
+        ref = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+        col = backend.get_collection(palace=ref, collection_name="mempalace_drawers", create=True)
+        assert_where_filters_conform(backend, col)
     finally:
         backend.close()
 
