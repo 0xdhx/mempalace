@@ -386,7 +386,7 @@ class Layer1:
         # The candidate window this sorts is now the MAX_SCAN *most recently
         # filed* drawers rather than the first MAX_SCAN the backend happened to
         # hand back, so on a palace larger than MAX_SCAN the newest drawers are
-        # actually in the running (#1630's known limitation).
+        # actually in the running.
         scored = []
         for doc, meta in zip(docs, metas):
             meta = meta or {}

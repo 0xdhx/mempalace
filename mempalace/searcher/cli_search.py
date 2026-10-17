@@ -192,7 +192,7 @@ def search(
     Search the palace. Returns verbatim drawer content.
     Optionally filter by wing (project) or room (aspect), and/or narrow to
     drawers whose ``filed_at`` falls in the ``[since, before)`` window —
-    same semantics as ``search_memories``/``list_drawers`` (#1128/#463).
+    same semantics as ``search_memories``/``list_drawers``.
     """
     if include_media or query_task != "search":
         result = search_memories(
