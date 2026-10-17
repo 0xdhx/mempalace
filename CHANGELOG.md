@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **Every hook wrapper now picks its interpreter the same way.** The Claude
+  Code plugin's Stop and PreCompact hooks now honour `MEMPAL_PYTHON`, and the
+  Codex plugin hook now falls back to `python3` or `python` when `mempalace`
+  is not on `PATH` (before, it tried only `mempalace`). The order everywhere is
+  `MEMPAL_PYTHON`, `mempalace`, `python3`, `python`, taking the first that can
+  import mempalace. Plugin hooks still exit 1 when none can; the legacy hooks
+  under `hooks/` still reply `{}`.
+
 - **`python -m mempalace.dedup` is gone.** It deleted near-duplicate drawers
   and also any drawer shorter than 20 characters, so it could remove real
   memories. Nothing else in MemPalace called it. A re-mine already replaces a

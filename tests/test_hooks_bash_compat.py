@@ -232,13 +232,8 @@ class TestSessionEndWrappers:
     @_SESSION_END_HOOKS
     def test_dispatches_session_end_through_cli(self, hook):
         src = _hook_src_no_comments(hook)
-        # The plugin dispatches ``mempalace hook run "$@"`` itself; the legacy
-        # hook hands the same arguments to the shared resolver.
-        if hook == SESSION_END_HOOK:
-            assert "mempal_hook_run.sh" in src
-        else:
-            assert "hook run" in src
-            assert "MEMPAL_PYTHON" in src
+        # Both hand the same arguments to the shared resolver next to them.
+        assert "mempal_hook_run.sh" in src
         assert "--hook session-end --harness" in src
         assert "MEMPALACE_HOOK_HARNESS" in src
 
