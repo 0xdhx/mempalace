@@ -80,6 +80,7 @@ from .palace import (
     mine_lock,
     mine_palace_lock,
     mine_yield_point,
+    open_aaak_collection,
     palace_write_serial,
     raise_if_files_failed,
     write_file_drawers,
@@ -520,6 +521,8 @@ def _register_skip_sentinel_if_appropriate(
     agent: str,
     status: ExtractionStatus,
     source_mtime: Optional[float] = None,
+    *,
+    aaak_col=None,
 ) -> None:
     """Write the ``file_already_mined`` sentinel ONLY when the skip is durable.
 
@@ -535,7 +538,9 @@ def _register_skip_sentinel_if_appropriate(
     if status in _TRANSIENT_MISSING_DEP_STATUSES:
         return
     empty = status in (ExtractionStatus.OK, ExtractionStatus.SKIP_EMPTY)
-    _register_file(collection, source_file, wing, agent, source_mtime, empty=empty)
+    _register_file(
+        collection, source_file, wing, agent, source_mtime, empty=empty, aaak_col=aaak_col
+    )
 
 
 def _register_file(
@@ -546,6 +551,7 @@ def _register_file(
     source_mtime: Optional[float] = None,
     *,
     empty: bool = False,
+    aaak_col=None,
 ) -> None:
     """Write a sentinel so file_already_mined() returns True for 0-chunk files.
 
@@ -585,6 +591,7 @@ def _register_file(
             [(sentinel_id, "[empty]", meta)],
             extract_mode="format",
             prune=empty,
+            aaak_col=aaak_col,
         )
 
 
@@ -598,6 +605,7 @@ def _file_chunks_locked(
     source_mtime: Optional[float] = None,
     content: Optional[str] = None,
     source_dir_ino: Optional[str] = None,
+    aaak_col=None,
 ):
     """Lock the source file and replace its format drawers with fresh chunks.
 
@@ -681,7 +689,9 @@ def _file_chunks_locked(
                 meta["entities"] = entities
             drawer_id = make_drawer_id_from_chunk(wing, room, source_file, chunk["chunk_index"])
             drawers.append((drawer_id, text, meta))
-        drawers_added = write_file_drawers(collection, source_file, drawers, extract_mode="format")
+        drawers_added = write_file_drawers(
+            collection, source_file, drawers, extract_mode="format", aaak_col=aaak_col
+        )
     return drawers_added, False
 
 
@@ -812,6 +822,7 @@ def _mine_formats_impl(
     # (Gemini #5).
     files: list = []
     collection = None
+    aaak_col = None
     total_drawers = 0
     files_mined = 0
     files_skipped = 0
@@ -840,6 +851,7 @@ def _mine_formats_impl(
         print(f"{'-' * 55}\n")
 
         collection = get_collection(palace_path) if not dry_run else None
+        aaak_col = open_aaak_collection(palace_path) if not dry_run else None
 
         for i, filepath in enumerate(files, 1):
             collection = _yield_and_reopen(palace_path, collection)
@@ -873,7 +885,13 @@ def _mine_formats_impl(
                 if status != ExtractionStatus.OK or not text:
                     if not dry_run:
                         _register_skip_sentinel_if_appropriate(
-                            collection, source_file, wing, agent, status, source_mtime
+                            collection,
+                            source_file,
+                            wing,
+                            agent,
+                            status,
+                            source_mtime,
+                            aaak_col=aaak_col,
                         )
                     print(f"  - [{i:4}/{len(files)}] {filepath.name[:50]:50} {status.name}")
                     continue
@@ -891,7 +909,13 @@ def _mine_formats_impl(
                 if not chunks:
                     if not dry_run:
                         _register_file(
-                            collection, source_file, wing, agent, source_mtime, empty=True
+                            collection,
+                            source_file,
+                            wing,
+                            agent,
+                            source_mtime,
+                            empty=True,
+                            aaak_col=aaak_col,
                         )
                     print(f"  - [{i:4}/{len(files)}] {filepath.name[:50]:50} EMPTY_AFTER_CHUNK")
                     continue
@@ -920,6 +944,7 @@ def _mine_formats_impl(
                     source_mtime=source_mtime,
                     content=text,
                     source_dir_ino=source_directory_identity(filepath),
+                    aaak_col=aaak_col,
                 )
                 if skipped:
                     files_skipped += 1
