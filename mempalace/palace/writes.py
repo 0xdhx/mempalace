@@ -44,21 +44,62 @@ def _source_file_delete_ids(collection, source_file: str, extract_mode: Optional
     return ids
 
 
-def _clear_dropped_keys(collection, batch: list) -> list:
-    """Send a key a re-filed drawer no longer has as ``None``, which removes it.
+def _split_unchanged(collection, batch: list) -> tuple:
+    """Split ``batch`` into rows to embed and rows whose stored vector still fits.
 
-    Chroma keeps the metadata keys an upsert omits, so without this a drawer
-    re-mined over its old id would keep, say, entities its new text dropped.
-    Backends that replace the metadata need nothing.
+    A drawer stored under the same id with the same text and the same
+    embedding title keeps its vector, so re-filing text that did not change
+    embeds nothing. Returns ``(to_embed, reuse, reuse_vectors)``.
+
+    Chroma keeps the metadata keys an upsert omits, so there a key the
+    re-filed drawer no longer has is sent as ``None``, which removes it;
+    without that a drawer re-mined over its old id would keep, say, entities
+    its new text dropped. Backends that replace the metadata need nothing.
     """
-    if getattr(collection, "upsert_merges_metadata", False) is not True:
-        return batch
-    existing = collection.get(ids=[drawer_id for drawer_id, _, _ in batch], include=["metadatas"])
-    old = dict(zip(existing.get("ids") or [], existing.get("metadatas") or []))
-    return [
-        (drawer_id, doc, {**dict.fromkeys(set(old.get(drawer_id) or {}) - set(meta)), **meta})
-        for drawer_id, doc, meta in batch
-    ]
+    from ..backends.embedding_wrapper import _metadata_title
+
+    existing = collection.get(
+        ids=[drawer_id for drawer_id, _, _ in batch],
+        include=["documents", "metadatas", "embeddings"],
+    )
+    ids = existing.get("ids") or []
+    documents = existing.get("documents") or [None] * len(ids)
+    metadatas = existing.get("metadatas") or [None] * len(ids)
+    vectors = existing.get("embeddings")
+    if vectors is None:
+        vectors = [None] * len(ids)
+    stored = {
+        drawer_id: (doc, meta or {}, vector)
+        for drawer_id, doc, meta, vector in zip(ids, documents, metadatas, vectors)
+    }
+    merges = getattr(collection, "upsert_merges_metadata", False) is True
+    to_embed, reuse, reuse_vectors = [], [], []
+    for drawer_id, doc, meta in batch:
+        old_doc, old_meta, vector = stored.get(drawer_id, (None, {}, None))
+        if merges:
+            meta = {**dict.fromkeys(set(old_meta) - set(meta)), **meta}
+        if (
+            vector is not None
+            and old_doc == doc
+            and _metadata_title(old_meta) == _metadata_title(meta)
+        ):
+            reuse.append((drawer_id, doc, meta))
+            reuse_vectors.append(vector)
+        else:
+            to_embed.append((drawer_id, doc, meta))
+    return to_embed, reuse, reuse_vectors
+
+
+def _upsert(collection, rows: list, embeddings=None) -> None:
+    if not rows:
+        return
+    kwargs = {} if embeddings is None else {"embeddings": embeddings}
+    collection.upsert(
+        ids=[drawer_id for drawer_id, _, _ in rows],
+        documents=[doc for _, doc, _ in rows],
+        metadatas=[meta for _, _, meta in rows],
+        **kwargs,
+    )
 
 
 def write_file_drawers(
@@ -102,13 +143,10 @@ def write_file_drawers(
     for start in range(0, len(drawers), DRAWER_UPSERT_BATCH_SIZE):
         batch = drawers[start : start + DRAWER_UPSERT_BATCH_SIZE]
         assert_no_collisions([(drawer_id, meta) for drawer_id, _, meta in batch], collection)
-        batch = _clear_dropped_keys(collection, batch)
-        collection.upsert(
-            ids=[drawer_id for drawer_id, _, _ in batch],
-            documents=[doc for _, doc, _ in batch],
-            metadatas=[meta for _, _, meta in batch],
-        )
-        written += batch
+        to_embed, reuse, reuse_vectors = _split_unchanged(collection, batch)
+        _upsert(collection, reuse, embeddings=reuse_vectors)
+        _upsert(collection, to_embed)
+        written += reuse + to_embed
     if not prune:
         return len(written)
 
