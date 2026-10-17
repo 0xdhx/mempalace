@@ -84,10 +84,6 @@ def test_a_long_entry_is_chunked_and_an_earlier_growth_shifts_chunk_index(diary)
     assert _diary_drawer_id_entry("diary", _DATE, 1, 0) in ids
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="diary ingest deletes before it writes; fixed by moving it onto write_file_drawers",
-)
 def test_a_failed_prune_keeps_text_readable_and_the_next_ingest_converges(diary, monkeypatch):
     diary_dir, palace = diary
     path = _write(diary_dir, _entry(1), _entry(2), _entry(3))
@@ -111,10 +107,6 @@ def test_a_failed_prune_keeps_text_readable_and_the_next_ingest_converges(diary,
     assert "after the meeting" in rows[0][3]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="diary ingest deletes before it writes; fixed by moving it onto write_file_drawers",
-)
 def test_a_failed_write_keeps_the_previous_entries(diary, monkeypatch):
     diary_dir, palace = diary
     path = _write(diary_dir, _entry(1), _entry(2))
