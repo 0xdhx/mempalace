@@ -26,6 +26,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from .config import MempalaceConfig
+from .metadata_types import is_bookkeeping
 from .search_util import (
     _distance_to_similarity,
     _first_or_empty,
@@ -195,7 +196,7 @@ def fetch_recent_window(
                     deadline,
                     no_retry,
                 )
-                return list(result.documents or []), list(result.metadatas or [])
+                return _without_bookkeeping(result.documents or [], result.metadatas or [])
             except missing:
                 pass  # capability missing — page it manually
 
@@ -217,9 +218,61 @@ def fetch_recent_window(
             offset += len(batch_docs)
             if len(batch_docs) < batch_size or len(docs) >= max_scan:
                 break
-        return docs, metas
+        return _without_bookkeeping(docs, metas)
     except palace_missing:
         return [], []
+
+
+def _without_bookkeeping(docs, metas) -> tuple[list, list]:
+    """Drop registry rows and sentinels: they track sources, they hold no memory."""
+    kept = [(d, m) for d, m in zip(docs, metas) if not is_bookkeeping(m)]
+    return [d for d, _ in kept], [m for _, m in kept]
+
+
+# Ceiling on how far a query widens past bookkeeping rows to fill a page.
+_MAX_QUERY_POOL = 1000
+
+
+def _get_drawer_rows(col, kwargs: dict, n: int, max_scan: int = 2000) -> tuple[list, list, bool]:
+    """Page ``col.get`` until ``n`` drawers that are not bookkeeping rows.
+
+    Returns ``(docs, metas, capped)``. The scan stops at the end of the scope or
+    after ``max_scan`` rows; ``capped`` says it stopped there short of ``n``.
+    """
+    docs, metas = [], []
+    offset = 0
+    page = max(n, 500)
+    while len(docs) < n:
+        if offset >= max_scan:
+            return docs, metas, True
+        batch = col.get(**kwargs, limit=page, offset=offset)
+        batch_docs = batch.get("documents") or []
+        kept_docs, kept_metas = _without_bookkeeping(batch_docs, batch.get("metadatas") or [])
+        docs.extend(kept_docs)
+        metas.extend(kept_metas)
+        if len(batch_docs) < page:
+            break
+        offset += len(batch_docs)
+    return docs[:n], metas[:n], False
+
+
+def _query_drawer_rows(col, kwargs: dict, n: int) -> list:
+    """``(doc, meta, distance)`` for the ``n`` nearest drawers, widening the
+    pool while bookkeeping rows leave it short."""
+    pool = max(n, 1)
+    while True:
+        results = col.query(**kwargs, n_results=pool)
+        rows = list(
+            zip(
+                _first_or_empty(results, "documents"),
+                _first_or_empty(results, "metadatas"),
+                _first_or_empty(results, "distances"),
+            )
+        )
+        kept = [row for row in rows if not is_bookkeeping(row[1])]
+        if len(kept) >= n or len(rows) < pool or pool >= _MAX_QUERY_POOL:
+            return kept[:n]
+        pool = min(pool * 4, _MAX_QUERY_POOL)
 
 
 def recent_read_failure(exc: Exception) -> str:
@@ -420,25 +473,25 @@ class Layer2:
 
         where = build_where_filter(wing, room)
 
-        kwargs = {"include": ["documents", "metadatas"], "limit": n_results}
+        kwargs = {"include": ["documents", "metadatas"]}
         if where:
             kwargs["where"] = where
 
         try:
-            results = col.get(**kwargs)
+            docs, metas, capped = _get_drawer_rows(col, kwargs, n_results)
         except Exception as e:
             return f"Retrieval error: {e}"
 
-        docs = results.get("documents", [])
-        metas = results.get("metadatas", [])
-
+        label = f"wing={wing}" if wing else ""
+        if room:
+            label += f" room={room}" if label else f"room={room}"
+        capped_note = "  (stopped after scanning 2000 rows; narrow the scope for more)"
         if not docs:
-            label = f"wing={wing}" if wing else ""
-            if room:
-                label += f" room={room}" if label else f"room={room}"
-            return f"No drawers found for {label}."
+            return f"No drawers found for {label}." + (capped_note if capped else "")
 
         lines = [f"## L2 — ON-DEMAND ({len(docs)} drawers)"]
+        if capped:
+            lines.append(capped_note)
         for doc, meta in zip(docs[:n_results], metas[:n_results]):
             meta = meta or {}
             doc = doc or ""
@@ -479,29 +532,21 @@ class Layer3:
 
         where = build_where_filter(wing, room)
 
-        kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
+        kwargs = {"query_texts": [query], "include": ["documents", "metadatas", "distances"]}
         if where:
             kwargs["where"] = where
 
         try:
-            results = col.query(**kwargs)
+            rows = _query_drawer_rows(col, kwargs, n_results)
         except Exception as e:
             return f"Search error: {e}"
 
-        docs = _first_or_empty(results, "documents")
-        metas = _first_or_empty(results, "metadatas")
-        dists = _first_or_empty(results, "distances")
-
-        if not docs:
+        if not rows:
             return "No results found."
 
         metric = _metric_for_collection(col)
         lines = [f'## L3 — SEARCH RESULTS for "{query}"']
-        for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists), 1):
+        for i, (doc, meta, dist) in enumerate(rows, 1):
             meta = meta or {}
             doc = doc or ""
             similarity = round(_distance_to_similarity(dist, metric), 3)
@@ -537,26 +582,18 @@ class Layer3:
 
         where = build_where_filter(wing, room)
 
-        kwargs = {
-            "query_texts": [query],
-            "n_results": n_results,
-            "include": ["documents", "metadatas", "distances"],
-        }
+        kwargs = {"query_texts": [query], "include": ["documents", "metadatas", "distances"]}
         if where:
             kwargs["where"] = where
 
         try:
-            results = col.query(**kwargs)
+            rows = _query_drawer_rows(col, kwargs, n_results)
         except Exception:
             return []
 
         metric = _metric_for_collection(col)
         hits = []
-        for doc, meta, dist in zip(
-            _first_or_empty(results, "documents"),
-            _first_or_empty(results, "metadatas"),
-            _first_or_empty(results, "distances"),
-        ):
+        for doc, meta, dist in rows:
             # ChromaDB may return None for doc/meta when a drawer's HNSW entry
             # exists but its metadata/document rows haven't been materialized
             # (partial-flush states, mid-delete, schema upgrade boundaries).
