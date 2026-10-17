@@ -16,7 +16,6 @@ with back-compat for existing installs:
 import hashlib
 import json
 import logging
-import math
 import os
 import re
 import sys
@@ -25,6 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from . import fsio
+from ._env import env_flag, env_float, env_int, env_str, parse_bool, parse_number
 from .write_routing import (
     ResolvedWriteRoutingPolicy,
     RoutingPolicyCandidate,
@@ -854,13 +854,10 @@ class MempalaceConfig:
     @property
     def qdrant_timeout(self):
         """Qdrant HTTP timeout in seconds."""
-        env_val = os.environ.get("MEMPALACE_QDRANT_TIMEOUT")
-        raw = env_val if env_val is not None else self._file_config.get("qdrant_timeout", 10.0)
-        try:
-            timeout = float(raw)
-        except (TypeError, ValueError):
-            timeout = 10.0
-        return timeout if timeout > 0 else 10.0
+        timeout = env_float("MEMPALACE_QDRANT_TIMEOUT")
+        if timeout is None:
+            timeout = parse_number(self._file_config.get("qdrant_timeout", 10.0))
+        return timeout if timeout is not None and timeout > 0 else 10.0
 
     @property
     def milvus_uri(self):
@@ -974,9 +971,9 @@ class MempalaceConfig:
         When False, hooks pass through without blocking — equivalent to
         disabling auto-save while keeping hook scripts installed.
         """
-        env_val = os.environ.get("MEMPALACE_HOOKS_AUTO_SAVE")
-        if env_val is not None:
-            return env_val.lower() not in ("false", "0", "no")
+        flag = env_flag("MEMPALACE_HOOKS_AUTO_SAVE")
+        if flag is not None:
+            return flag
         hooks = self._file_config.get("hooks", {})
         return hooks.get("auto_save", True)
 
@@ -988,14 +985,12 @@ class MempalaceConfig:
         Every drawer from a file whose text the speller changed carries
         ``transforms: "spellcheck_user"``.
         """
-        env_val = os.environ.get("MEMPALACE_CONVO_SPELLCHECK")
-        if env_val is not None:
-            return env_val.lower() in ("true", "1", "yes", "on")
+        flag = env_flag("MEMPALACE_CONVO_SPELLCHECK")
+        if flag is not None:
+            return flag
         convo = self._file_config.get("convo")
         value = convo.get("spellcheck", False) if isinstance(convo, dict) else False
-        if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes", "on")
-        return value is True
+        return parse_bool(value) is True
 
     @property
     def hall_keywords(self):
@@ -1436,9 +1431,9 @@ class MempalaceConfig:
         ``embedding_model`` the result is not lower-cased — URLs, model ids,
         and API keys are case-sensitive.
         """
-        env_val = os.environ.get(env_var)
-        if env_val and env_val.strip():
-            return env_val.strip()
+        env_val = env_str(env_var)
+        if env_val:
+            return env_val
         cfg_val = self._file_config.get(config_key)
         if isinstance(cfg_val, str) and cfg_val.strip():
             return cfg_val.strip()
@@ -1454,18 +1449,10 @@ class MempalaceConfig:
         in ``config.json`` shouldn't take retrieval down (mirrors
         ``embedding_threads`` / ``embeddinggemma_batch_size``).
         """
-        raw = os.environ.get(env_var)
-        if raw is None or not str(raw).strip():
-            raw = self._file_config.get(config_key)
-        if raw is None:
-            return default
-        try:
-            val = float(str(raw).strip())
-        except (TypeError, ValueError):
-            return default
-        if not math.isfinite(val) or val < 0:
-            return default
-        return val
+        val = env_float(env_var)
+        if val is None:
+            val = parse_number(self._file_config.get(config_key))
+        return default if val is None or val < 0 else val
 
     @property
     def embedding_api_url(self):
@@ -1508,14 +1495,9 @@ class MempalaceConfig:
         link. Reads ``MEMPALACE_TOPIC_TUNNEL_MIN_COUNT`` env first, then the
         config-file value, then ``1``.
         """
-        env_val = os.environ.get("MEMPALACE_TOPIC_TUNNEL_MIN_COUNT")
-        if env_val:
-            try:
-                parsed = int(env_val)
-                if parsed >= 1:
-                    return parsed
-            except ValueError:
-                pass
+        parsed = env_int("MEMPALACE_TOPIC_TUNNEL_MIN_COUNT")
+        if parsed is not None and parsed >= 1:
+            return parsed
         cfg_val = self._file_config.get("topic_tunnel_min_count")
         try:
             parsed = int(cfg_val) if cfg_val is not None else 1
@@ -1538,14 +1520,9 @@ class MempalaceConfig:
         Reads ``MEMPALACE_KG_HALLWAY_MIN_COUNT`` env first, then the
         ``hallway_min_count`` config-file value, then ``2``. Clamped to ``>=1``.
         """
-        env_val = os.environ.get("MEMPALACE_KG_HALLWAY_MIN_COUNT")
-        if env_val:
-            try:
-                parsed = int(env_val)
-                if parsed >= 1:
-                    return parsed
-            except ValueError:
-                pass
+        parsed = env_int("MEMPALACE_KG_HALLWAY_MIN_COUNT")
+        if parsed is not None and parsed >= 1:
+            return parsed
         cfg_val = self._file_config.get("hallway_min_count")
         try:
             parsed = int(cfg_val) if cfg_val is not None else 2
@@ -1573,11 +1550,9 @@ class MempalaceConfig:
         manages cleanup). Negative or non-numeric values fall back to the
         default rather than crashing migrate/repair.
         """
-        env_val = os.environ.get("MEMPALACE_MAX_BACKUPS")
-        if env_val is not None:
-            coerced = self._try_coerce_int(env_val, minimum=0)
-            if coerced is not None:
-                return coerced
+        coerced = env_int("MEMPALACE_MAX_BACKUPS")
+        if coerced is not None and coerced >= 0:
+            return coerced
         coerced = self._try_coerce_int(
             self._file_config.get("max_backups", DEFAULT_MAX_BACKUPS), minimum=0
         )
@@ -1723,14 +1698,12 @@ class MempalaceConfig:
     @property
     def hook_use_daemon(self):
         """Whether hooks should submit save/mine work to the opt-in daemon."""
-        env_val = os.environ.get("MEMPALACE_HOOKS_DAEMON")
-        if env_val is not None:
-            return env_val.lower() in ("true", "1", "yes", "on")
+        flag = env_flag("MEMPALACE_HOOKS_DAEMON")
+        if flag is not None:
+            return flag
         value = self._file_config.get("hooks", {}).get("daemon", False)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes", "on")
+        if isinstance(value, (bool, str)):
+            return parse_bool(value) is True
         return value == 1
 
     def set_hook_setting(self, key: str, value: bool):

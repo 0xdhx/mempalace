@@ -84,7 +84,7 @@ def _init_logging() -> None:
     # MEMPALACE_LOG_FILE is operator-supplied and opt-in; this is a
     # local-first server (CLAUDE.md design principle), so no path
     # sanitization — the operator's process UID is the trust boundary.
-    log_file = os.environ.get("MEMPALACE_LOG_FILE", "").strip()
+    log_file = env_str("MEMPALACE_LOG_FILE", "")
     file_handler: logging.Handler | None = None
     file_handler_error: Exception | None = None
     if log_file:

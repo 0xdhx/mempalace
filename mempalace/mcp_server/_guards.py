@@ -116,11 +116,8 @@ _config = MempalaceConfig()
 # below) are hidden from tools/list and refused at dispatch (-32003). That is a
 # wider set than the _MUTATING_TOOLS the peer-writer guard uses. Resolved at
 # startup: from MEMPALACE_MCP_READ_ONLY here, and from --read-only by
-# _apply_server_flags(). Computed inline (not via _truthy_env, defined below) so it
-# is available to the request path regardless of import order.
-_READ_ONLY = globals().get("_READ_ONLY", False) or os.environ.get(
-    "MEMPALACE_MCP_READ_ONLY", ""
-).strip().lower() in {"1", "true", "yes", "on"}
+# _apply_server_flags().
+_READ_ONLY = globals().get("_READ_ONLY", False) or env_bool("MEMPALACE_MCP_READ_ONLY", False)
 
 _kg_by_path: dict[str, KnowledgeGraph] = {}
 _kg_cache_lock = threading.Lock()
@@ -310,10 +307,6 @@ _stale_library_reported_errors: dict = {}
 _stale_library_reported_drift: list = []
 
 
-def _truthy_env(name: str) -> bool:
-    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
-
-
 def _discard_mcp_storage_handles() -> None:
     """Close cached storage handles before changing writer-lease state.
 
@@ -442,7 +435,7 @@ def _acquire_mcp_writer_lock() -> tuple[bool, str]:
         )
 
         backend_name = resolve_backend_name(_config.palace_path)
-        if _truthy_env(_MCP_ALLOW_PEER_WRITER_ENV):
+        if env_bool(_MCP_ALLOW_PEER_WRITER_ENV, False):
             if not backend_requires_single_writer(backend_name):
                 return True, ""
             logger.warning(
@@ -546,24 +539,10 @@ def _startup_integrity_size_limit_bytes() -> int:
     """Byte size above which the startup SQLite quick_check is skipped.
 
     Returns 0 when the gate is disabled (``MEMPALACE_STARTUP_INTEGRITY_MAX_MB``
-    set to 0, a non-positive number, or an unparseable value), meaning the
-    startup probe always runs.
+    set to 0 or a negative number), meaning the startup probe always runs. An
+    unparseable value means the default.
     """
-
-    raw = os.environ.get(_STARTUP_INTEGRITY_MAX_MB_ENV, "").strip()
-    if not raw:
-        mb = _STARTUP_INTEGRITY_MAX_MB_DEFAULT
-    else:
-        try:
-            mb = float(raw)
-        except ValueError:
-            logger.warning(
-                "Invalid %s=%r; using default %.0f MB",
-                _STARTUP_INTEGRITY_MAX_MB_ENV,
-                raw,
-                _STARTUP_INTEGRITY_MAX_MB_DEFAULT,
-            )
-            mb = _STARTUP_INTEGRITY_MAX_MB_DEFAULT
+    mb = env_float(_STARTUP_INTEGRITY_MAX_MB_ENV, _STARTUP_INTEGRITY_MAX_MB_DEFAULT)
     if mb <= 0:
         return 0
     return int(mb * 1024 * 1024)
@@ -885,15 +864,13 @@ def _mcp_sqlite_integrity_refusal(req_id, tool_name: str):
 
 
 def _mcp_idle_timeout_secs() -> float:
-    """Return the configured MCP idle timeout in seconds (0 = disabled)."""
-    raw = os.environ.get(_MCP_IDLE_HOURS_ENV, "")
-    if raw:
-        try:
-            hours = float(raw)
-            return max(0.0, hours) * 3600
-        except ValueError:
-            return 0.0
-    return _MCP_IDLE_HOURS_DEFAULT * 3600
+    """Return the configured MCP idle timeout in seconds (0 = disabled).
+
+    An unparseable value disables the timeout rather than meaning the default.
+    """
+    if env_str(_MCP_IDLE_HOURS_ENV) is None:
+        return _MCP_IDLE_HOURS_DEFAULT * 3600
+    return max(0.0, env_float(_MCP_IDLE_HOURS_ENV, 0.0)) * 3600
 
 
 def _resolve_kg_path() -> str:

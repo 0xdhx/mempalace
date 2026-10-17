@@ -31,6 +31,7 @@ import os
 import time
 from pathlib import Path
 
+from mempalace._env import env_str
 from mempalace._proc import pid_alive as _pid_alive
 from mempalace.fsio import atomic_write_text, read_published_bytes
 
@@ -265,7 +266,7 @@ def load_server_tokens(palace_path: str) -> tuple[str, ...]:
     while an older generated palace credential remains on disk.
     """
     palace_token = _read_server_token_file(palace_path)
-    process_token = os.environ.get(_TOKEN_ENV, "").strip()
+    process_token = env_str(_TOKEN_ENV, "")
     candidates = []
     for token in (palace_token, process_token):
         if token and token not in candidates:

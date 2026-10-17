@@ -35,6 +35,8 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
+from ._env import env_bool
+
 logger = logging.getLogger("mempalace_llm")
 
 
@@ -243,8 +245,7 @@ class LLMProvider:
 
 
 def external_use_accepted_by_env() -> bool:
-    flag = os.environ.get("MEMPALACE_ACCEPT_EXTERNAL_LLM", "")
-    return flag.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return env_bool("MEMPALACE_ACCEPT_EXTERNAL_LLM", False)
 
 
 def require_external_consent(

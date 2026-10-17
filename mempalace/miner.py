@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from ._env import env_str, parse_number
 from .entity_detector import _apply_known_systems_prepass, _get_coca_filter
 from .fsio import atomic_write_json, encoding_metadata, move_aside, read_source_text
 
@@ -227,22 +228,14 @@ def _resolve_max_chunks_per_file(override: Optional[int] = None) -> int:
             )
             return MAX_CHUNKS_PER_FILE
         return int(override)
-    raw = os.environ.get("MEMPALACE_MAX_CHUNKS_PER_FILE")
+    raw = env_str("MEMPALACE_MAX_CHUNKS_PER_FILE")
     if raw is None:
         return MAX_CHUNKS_PER_FILE
-    try:
-        val = int(raw)
-    except ValueError:
+    val = parse_number(raw, int)
+    if val is None or val < 0:
         print(
-            f"  ! WARNING: MEMPALACE_MAX_CHUNKS_PER_FILE={raw!r} is not an integer; "
-            f"using default {MAX_CHUNKS_PER_FILE}",
-            file=sys.stderr,
-        )
-        return MAX_CHUNKS_PER_FILE
-    if val < 0:
-        print(
-            f"  ! WARNING: MEMPALACE_MAX_CHUNKS_PER_FILE={val} is negative; "
-            f"using default {MAX_CHUNKS_PER_FILE}",
+            f"  ! WARNING: MEMPALACE_MAX_CHUNKS_PER_FILE={raw!r} is not a non-negative "
+            f"integer; using default {MAX_CHUNKS_PER_FILE}",
             file=sys.stderr,
         )
         return MAX_CHUNKS_PER_FILE
