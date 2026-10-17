@@ -14,6 +14,7 @@ import stat
 import pytest
 
 from mempalace import cli
+from mempalace.server_registry import load_or_create_server_token, server_token_path
 
 
 class _ExecCalled(Exception):
@@ -25,8 +26,9 @@ def isolated_home(tmp_path, monkeypatch):
     """Point ~ at a temp dir so server token state never touches the real home."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows
-    # Don't inherit a token from the ambient environment.
+    # Don't inherit a token or an opt-out from the ambient environment.
     monkeypatch.delenv("MEMPALACE_MCP_HTTP_TOKEN", raising=False)
+    monkeypatch.delenv("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN", raising=False)
     return tmp_path
 
 
@@ -64,6 +66,7 @@ def _serve_args(tmp_path, **over):
         tls_key=None,
         read_only=False,
         allow_insecure=False,
+        no_token=False,
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -71,11 +74,11 @@ def _serve_args(tmp_path, **over):
 
 def test_token_helper_creates_0600_and_reuses(isolated_home):
     palace = str(isolated_home / "palace")
-    token1, created1 = cli._load_or_create_server_token(palace)
+    token1, created1 = load_or_create_server_token(palace)
     assert created1 is True
     assert token1
 
-    path = cli._server_token_path(palace)
+    path = server_token_path(palace)
     assert path.exists()
     if os.name == "posix":
         # POSIX permission bits aren't meaningful on Windows (files report 0o666).
@@ -84,19 +87,54 @@ def test_token_helper_creates_0600_and_reuses(isolated_home):
         dir_mode = stat.S_IMODE(path.parent.stat().st_mode)
         assert dir_mode == 0o700, oct(dir_mode)
 
-    token2, created2 = cli._load_or_create_server_token(palace)
+    token2, created2 = load_or_create_server_token(palace)
     assert created2 is False
     assert token2 == token1  # stable across restarts
 
 
-def test_loopback_serve_needs_no_token(isolated_home, capture_exec):
+def test_token_helper_takes_over_an_empty_file_left_by_a_crash(isolated_home, monkeypatch):
+    palace = str(isolated_home / "palace")
+    path = server_token_path(palace)
+    path.parent.mkdir(parents=True)
+    path.write_text("")
+    monkeypatch.setattr("mempalace.server_registry.time.sleep", lambda s: None)
+
+    token, created = load_or_create_server_token(palace)
+
+    assert token and created is True
+    assert path.read_text().strip() == token
+
+
+def test_loopback_serve_requires_the_stored_token_by_default(isolated_home, capture_exec, capsys):
     with pytest.raises(_ExecCalled):
         cli.cmd_serve(_serve_args(isolated_home, host="127.0.0.1"))
     env = capture_exec["env"]
-    assert "MEMPALACE_MCP_HTTP_TOKEN" not in env
+    token = env.get("MEMPALACE_MCP_HTTP_TOKEN")
+    assert token, "D-25: a loopback bind gets a token too"
     assert "MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN" not in env
-    # No token persisted for a loopback bind.
-    assert not cli._server_token_path(str(isolated_home / "palace")).exists()
+    assert all(token not in part for part in capture_exec["argv"])
+    path = server_token_path(str(isolated_home / "palace"))
+    assert path.read_text().strip() == token
+    # The token itself is never printed: a terminal or service log would keep it.
+    out = capsys.readouterr().out
+    assert token not in out
+    assert str(path) in out
+
+
+def test_no_token_serves_loopback_open(isolated_home, capture_exec):
+    with pytest.raises(_ExecCalled):
+        cli.cmd_serve(_serve_args(isolated_home, host="127.0.0.1", no_token=True))
+    env = capture_exec["env"]
+    assert env.get("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN") == "1"
+    assert "MEMPALACE_MCP_HTTP_TOKEN" not in env
+    assert not server_token_path(str(isolated_home / "palace")).exists()
+
+
+def test_no_token_is_refused_on_a_network_bind(isolated_home, capture_exec):
+    with pytest.raises(SystemExit) as exc:
+        cli.cmd_serve(_serve_args(isolated_home, host="0.0.0.0", no_token=True))
+    assert exc.value.code == 2
+    assert "argv" not in capture_exec
 
 
 def test_non_loopback_autogenerates_token_in_env_not_argv(isolated_home, capture_exec):
@@ -110,7 +148,7 @@ def test_non_loopback_autogenerates_token_in_env_not_argv(isolated_home, capture
     assert all(token not in part for part in argv)
     assert "--token" not in argv
     # And it was persisted for reuse on the next start (0600 on POSIX).
-    path = cli._server_token_path(str(isolated_home / "palace"))
+    path = server_token_path(str(isolated_home / "palace"))
     assert path.exists()
     if os.name == "posix":
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -122,7 +160,7 @@ def test_allow_insecure_skips_token_and_sets_escape_hatch(isolated_home, capture
     env = capture_exec["env"]
     assert env.get("MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN") == "1"
     assert "MEMPALACE_MCP_HTTP_TOKEN" not in env
-    assert not cli._server_token_path(str(isolated_home / "palace")).exists()
+    assert not server_token_path(str(isolated_home / "palace")).exists()
 
 
 def test_read_only_flag_forwarded_to_child(isolated_home, capture_exec):
@@ -139,7 +177,7 @@ def test_explicit_token_is_used_and_not_in_argv(isolated_home, capture_exec):
     assert env["MEMPALACE_MCP_HTTP_TOKEN"] == "my-secret-token"
     assert all("my-secret-token" not in part for part in argv)
     # An explicitly-provided token is not persisted to the server token file.
-    assert not cli._server_token_path(str(isolated_home / "palace")).exists()
+    assert not server_token_path(str(isolated_home / "palace")).exists()
 
 
 def test_tls_paths_forwarded_and_validated(isolated_home, capture_exec, tmp_path):

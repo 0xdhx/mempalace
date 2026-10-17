@@ -10,6 +10,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **The HTTP MCP server requires a bearer token on every bind, loopback
+  included.** With no `--token` or `MEMPALACE_MCP_HTTP_TOKEN`, `mempalace serve`
+  and `mempalace-mcp --transport http` reuse or create the palace's token at
+  `~/.mempalace/server/<key>/token` (`0600`), where local `mempalace` clients
+  already look, so the CLI, hooks and stdio proxy keep working unchanged. Anything
+  else that calls a loopback `/mcp` directly now needs `Authorization: Bearer
+  <token>`, or start the server with `--no-token` (loopback only). The token is
+  no longer printed at startup; the path is.
+- **MCP tool arguments are checked against the tool's schema before the tool
+  runs.** Wrong types, out-of-range limits, unknown enum values and over-long
+  strings return `-32602` with the parameter named, instead of reaching the tool
+  (`"false"` used to arrive as a truthy string). Numeric and boolean strings
+  (`"5"`, `"false"`) are still accepted and converted. An internal tool error
+  reports its error class without the exception text.
 - **`closet_llm` reads `MEMPALACE_LLM_ENDPOINT`, `MEMPALACE_LLM_MODEL` and
   `MEMPALACE_LLM_KEY` instead of the generic `LLM_ENDPOINT`, `LLM_MODEL` and
   `LLM_KEY`.** Generic names are often set for other tools, and reading them

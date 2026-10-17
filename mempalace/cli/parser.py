@@ -588,8 +588,13 @@ def main():
     p_serve.add_argument(
         "--token",
         default=None,
-        help="Bearer token clients must present. Default: reuse/auto-generate one for "
-        "non-loopback binds (stored 0600 under ~/.mempalace/server/).",
+        help="Bearer token clients must present. Default: reuse/auto-generate one "
+        "(stored 0600 under ~/.mempalace/server/; local clients read it from there).",
+    )
+    p_serve.add_argument(
+        "--no-token",
+        action="store_true",
+        help="Serve a loopback bind without a bearer token",
     )
     p_serve.add_argument("--tls-cert", default=None, help="PEM certificate to enable TLS")
     p_serve.add_argument("--tls-key", default=None, help="PEM private key matching --tls-cert")

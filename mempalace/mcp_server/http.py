@@ -1191,6 +1191,28 @@ def _http_serve_logstream_stream(handler) -> None:
         handler.close_connection = True
 
 
+def _http_resolve_token() -> str:
+    """The bearer token /mcp requires, or "" when serving deliberately without one.
+
+    On by default for every bind (D-25): an unset ``MEMPALACE_MCP_HTTP_TOKEN``
+    reuses or mints the palace's stored token, which local clients read from
+    the same place. Only ``MEMPALACE_MCP_HTTP_ALLOW_INSECURE_NO_TOKEN`` (set by
+    ``mempalace serve --no-token`` / ``--allow-insecure``) serves without one.
+    """
+    token = os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "").strip()
+    if token or _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV):
+        return token
+    if not _config.palace_path:
+        raise ValueError(
+            "MCP HTTP needs a bearer token: set MEMPALACE_MCP_HTTP_TOKEN or a palace "
+            f"path, or set {_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV}=1 to serve without one."
+        )
+    from .. import server_registry
+
+    token, _created = server_registry.load_or_create_server_token(_config.palace_path)
+    return token
+
+
 def _build_http_server(host: str, port: int):
     """Construct (but do not start) the MCP HTTP server.
 
@@ -1202,17 +1224,7 @@ def _build_http_server(host: str, port: int):
     """
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-    auth_token = os.environ.get("MEMPALACE_MCP_HTTP_TOKEN", "").strip()
-    if (
-        not _http_is_loopback(host)
-        and not auth_token
-        and not _truthy_env(_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV)
-    ):
-        raise ValueError(
-            "MEMPALACE_MCP_HTTP_TOKEN is required when binding MCP HTTP to a "
-            f"non-loopback host. Set {_HTTP_ALLOW_INSECURE_NO_TOKEN_ENV}=1 only "
-            "when a trusted fronting layer provides access control."
-        )
+    auth_token = _http_resolve_token()
 
     # Resolve TLS before bind so a bad cert/key fails loudly rather than at the
     # first request. TLS is transport encryption only — the bearer-token guard
