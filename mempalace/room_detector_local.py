@@ -334,7 +334,7 @@ def save_config(project_dir: str, project_name: str, rooms: list):
     # Update the config the miner will actually read. A project that already
     # has ``mempalace.yml`` (or a legacy ``mempal.*``) keeps it: writing a new
     # ``mempalace.yaml`` beside it would shadow it, and every setting in it
-    # would stop applying without a word (#2676).
+    # would stop applying without a word.
     existing_path = find_project_config(project_path)
     config_path = existing_path or project_path / "mempalace.yaml"
     if existing_path is not None:
