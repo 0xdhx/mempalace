@@ -4,9 +4,12 @@ if __name__ != "mempalace.cli":
 
 
 from ..hub_client import HUB_FORWARD_ENV as _HUB_FORWARD_ENV
-from ..hub_client import SEARCH_OVERRIDE_ENV_VARS as _SEARCH_OVERRIDE_ENV_VARS
 from ..hub_client import _forwarding_disabled as _hub_forward_disabled
-from ..hub_client import hub_request_headers
+from ..hub_client import (
+    hub_request_headers,
+    search_fingerprint_matches,
+    search_settings_overridden,
+)
 from ..stored_text import dumps_internal
 
 _HUB_HEALTH_TIMEOUT_S = 0.75
@@ -22,9 +25,9 @@ def _search_args_forwardable(args) -> bool:
     """Return whether ``mempalace_search`` preserves this CLI search exactly."""
     if getattr(args, "include_media", False) or getattr(args, "query_task", "search") != "search":
         return False
-    if _backend_arg(args) or not 1 <= args.results <= _HUB_SEARCH_MAX_RESULTS:
+    if not 1 <= args.results <= _HUB_SEARCH_MAX_RESULTS:
         return False
-    if any(os.environ.get(name, "").strip() for name in _SEARCH_OVERRIDE_ENV_VARS):
+    if search_settings_overridden(_backend_arg(args)):
         return False
 
     # The MCP tool sanitizes queries longer than its safe passthrough window.
@@ -139,8 +142,7 @@ def _forward_search_to_hub(args, palace_path: str) -> bool:
         return False
     if "search_cli_compatible" not in info.get("capabilities", []):
         return False
-    current_config = MempalaceConfig(palace_path=palace_path)
-    if info.get("search_config_fingerprint") != current_config.search_config_fingerprint:
+    if not search_fingerprint_matches(info, palace_path):
         return False
 
     base_url = server_registry.client_base_url(info)

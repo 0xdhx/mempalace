@@ -597,3 +597,88 @@ def test_a_failed_local_load_is_not_retried(monkeypatch):
         server.load()
 
     assert calls == ["import"]
+
+
+class TestSearchSettings:
+    """A search this session configured itself is not answered by a hub that may not share it."""
+
+    @staticmethod
+    def _call(name, req_id=11):
+        return {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {"query": "q"}},
+        }
+
+    @pytest.fixture(autouse=True)
+    def _no_overrides(self, monkeypatch):
+        from mempalace.hub_client import SEARCH_OVERRIDE_ENV_VARS
+
+        for name in SEARCH_OVERRIDE_ENV_VARS:
+            monkeypatch.delenv(name, raising=False)
+
+    @pytest.fixture
+    def hub(self, monkeypatch):
+        forwarded = []
+
+        def forward(base_url, headers, request, palace_path):
+            forwarded.append(request["params"]["name"])
+            return {"jsonrpc": "2.0", "id": request["id"], "result": {"content": []}}
+
+        monkeypatch.setattr(mcp_proxy, "_hub_target", lambda p: ("http://hub", {}))
+        monkeypatch.setattr(mcp_proxy, "_forward", forward)
+        return forwarded
+
+    def test_a_search_with_matching_settings_goes_to_the_hub(self, hub):
+        local = _LoadedLocal(_FakeServer())
+
+        mcp_proxy._handle(self._call("mempalace_search"), "/p", local)
+
+        assert hub == ["mempalace_search"]
+        assert local.load_count == 0
+
+    @pytest.mark.parametrize("tool", ["mempalace_search", "mempalace_check_duplicate"])
+    def test_an_env_override_keeps_the_search_local(self, hub, monkeypatch, tool):
+        monkeypatch.setenv("MEMPALACE_HYBRID_BM25_WEIGHT", "0.9")
+        server = _FakeServer()
+        local = _LoadedLocal(server)
+
+        out = mcp_proxy._handle(self._call(tool), "/p", local)
+
+        assert hub == []
+        assert [c["params"]["name"] for c in server.calls] == [tool]
+        # The hub is alive, so the answer carries no hub-is-gone notice.
+        assert out["result"]["content"] == [{"type": "text", "text": "{}"}]
+
+    def test_an_explicit_backend_keeps_the_search_local(self, hub):
+        server = _FakeServer()
+        local = _LoadedLocal(server)
+
+        mcp_proxy._handle(self._call("mempalace_search"), "/p", local, backend="sqlite_exact")
+
+        assert hub == []
+        assert len(server.calls) == 1
+
+    def test_other_tools_still_go_to_the_hub_with_an_override(self, hub, monkeypatch):
+        monkeypatch.setenv("MEMPALACE_PGVECTOR_SHARED_NAMESPACE", "team")
+        local = _LoadedLocal(_FakeServer())
+
+        mcp_proxy._handle(self._call("mempalace_list_wings"), "/p", local, backend="chroma")
+
+        assert hub == ["mempalace_list_wings"]
+        assert local.load_count == 0
+
+    def test_main_hands_the_backend_flag_to_the_loop(self, monkeypatch):
+        seen = {}
+        monkeypatch.setattr(sys, "argv", ["mempalace-mcp", "--palace", "/p", "--backend=chroma"])
+        monkeypatch.setattr(mcp_proxy, "_hub_target", lambda p: ("http://hub", {}))
+        monkeypatch.setattr(
+            mcp_proxy,
+            "_run_proxy_loop",
+            lambda palace_path, backend=None: seen.update(palace=palace_path, backend=backend),
+        )
+
+        mcp_proxy.main()
+
+        assert seen == {"palace": "/p", "backend": "chroma"}
