@@ -49,6 +49,7 @@ from .base import (
     QueryResult,
     UnsupportedCapabilityError,
     _IncludeSpec,
+    validate_write_batch,
 )
 
 logger = logging.getLogger(__name__)
@@ -382,22 +383,6 @@ def sqlite_room_wing_hall_counts(palace_path: str, collection_name: str) -> Opti
     ]
 
 
-def _validate_write_batch(
-    *,
-    documents: list[str],
-    ids: list[str],
-    metadatas: Optional[list[dict]],
-    embeddings: Optional[list[list[float]]],
-) -> None:
-    n = len(ids)
-    if len(documents) != n:
-        raise ValueError(f"documents length {len(documents)} does not match ids length {n}")
-    if metadatas is not None and len(metadatas) != n:
-        raise ValueError(f"metadatas length {len(metadatas)} does not match ids length {n}")
-    if embeddings is not None and len(embeddings) != n:
-        raise ValueError(f"embeddings length {len(embeddings)} does not match ids length {n}")
-
-
 class _SnapshotChanged(Exception):
     """Retry the complete exact query after a concurrent database change."""
 
@@ -625,12 +610,7 @@ class SQLiteExactCollection(BaseCollection):
             )
 
     def add(self, *, documents, ids, metadatas=None, embeddings=None):
-        _validate_write_batch(
-            documents=documents,
-            ids=ids,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        )
+        validate_write_batch(ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
         if embeddings is None:
             raise ValueError("sqlite_exact requires explicit embeddings")
         documents, ids, metadatas = prepare_stored_write(
@@ -674,12 +654,7 @@ class SQLiteExactCollection(BaseCollection):
                 )
 
     def upsert(self, *, documents, ids, metadatas=None, embeddings=None):
-        _validate_write_batch(
-            documents=documents,
-            ids=ids,
-            metadatas=metadatas,
-            embeddings=embeddings,
-        )
+        validate_write_batch(ids, documents=documents, metadatas=metadatas, embeddings=embeddings)
         if embeddings is None:
             raise ValueError("sqlite_exact requires explicit embeddings")
         documents, ids, metadatas = prepare_stored_write(
