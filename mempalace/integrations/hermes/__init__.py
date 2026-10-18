@@ -78,7 +78,7 @@ from mempalace.config import (
     sanitize_name,
 )
 from mempalace.convo_miner import file_conversation_exchange
-from mempalace.knowledge_graph import KnowledgeGraph
+from mempalace.knowledge_graph import KnowledgeGraph, open_graph
 from mempalace.layers import Layer0, fetch_recent_window, recent_read_failure
 from mempalace.palace import MineAlreadyRunning, get_collection
 from mempalace.query_sanitizer import sanitize_query, sanitizer_report
@@ -1485,8 +1485,9 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         """The provider's knowledge-graph DB.
 
         Single source of truth for every KG access in this plugin. The
-        palace's own graph wins; a graph earlier releases kept next to the
-        palace dir is still read when the palace has none.
+        palace's own graph wins once it holds facts; until then a graph
+        earlier releases kept next to the palace dir, if it holds facts,
+        keeps taking reads and writes.
         """
         sibling = Path(self._palace_path).parent / paths.KNOWLEDGE_GRAPH_FILENAME
         return paths.knowledge_graph_path(self._palace_path, legacy=str(sibling))
@@ -1494,7 +1495,7 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
     def _tool_kg_query(self, entity: str, since: Optional[str] = None) -> Dict[str, Any]:
         if not entity:
             return {"error": "Missing required parameter: entity"}
-        kg = KnowledgeGraph(db_path=self._kg_db_path())
+        kg = open_graph(self._kg_db_path(), read=True)
         try:
             relations = kg.query_entity(entity, as_of=since or "")
         finally:
@@ -1554,7 +1555,7 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
                 entity = sanitize_kg_value(entity, "entity")
             except ValueError as exc:
                 return {"error": str(exc)}
-        kg = KnowledgeGraph(db_path=self._kg_db_path())
+        kg = open_graph(self._kg_db_path(), read=True)
         try:
             results = kg.timeline(entity) if entity else kg.timeline()
         finally:
@@ -1565,7 +1566,7 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         return {"entity": entity or "all", "timeline": results, "count": len(results)}
 
     def _tool_kg_stats(self) -> Dict[str, Any]:
-        kg = KnowledgeGraph(db_path=self._kg_db_path())
+        kg = open_graph(self._kg_db_path(), read=True)
         try:
             return kg.stats()
         finally:

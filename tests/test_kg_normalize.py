@@ -179,7 +179,7 @@ def test_cmd_kg_normalize_plan_then_apply(tmp_path, kg, monkeypatch, capsys):
     _seed(kg)
     palace = tmp_path / "palace"
     palace.mkdir()
-    monkeypatch.setattr("mempalace.paths.knowledge_graph_path", lambda p, legacy=None: kg.db_path)
+    monkeypatch.setattr("mempalace.paths.knowledge_graph_path", lambda p, **kw: kg.db_path)
     monkeypatch.setattr("mempalace.knowledge_graph.KnowledgeGraph", lambda db_path=None: kg)
     provider = FakeProvider(
         '{"facts": [{"index": 1, "predicate": "status", "object": "deployed commit fc81c6f6"}, '

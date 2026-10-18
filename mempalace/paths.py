@@ -69,22 +69,74 @@ def legacy_knowledge_graph_path() -> str:
     return state_str(KNOWLEDGE_GRAPH_FILENAME)
 
 
-def knowledge_graph_path(palace_path: str, legacy: Optional[str] = None) -> str:
-    """The knowledge graph that belongs to ``palace_path``.
+def historical_knowledge_graph_path(
+    palace_path: str, legacy: Optional[str] = None, explicit: bool = False
+) -> Optional[str]:
+    """The graph earlier releases used for ``palace_path``, when not its own file.
 
-    The palace-local ``knowledge_graph.sqlite3`` wins. Until one exists, a
-    legacy graph is used only for the palace it belongs to: the legacy
-    default palace's ``~/.mempalace/knowledge_graph.sqlite3``, or the
-    ``legacy`` path a caller names for its own older layout. Graphs are never
-    merged, and neither file is created here.
+    A caller's own older layout (``legacy``) first. Otherwise
+    ``~/.mempalace/knowledge_graph.sqlite3``, which served the legacy default
+    palace and every palace selected through ``MEMPALACE_PALACE_PATH`` or
+    ``config.json``; a palace named with ``--palace`` (``explicit``) always
+    kept its graph inside itself.
+    """
+    if legacy is not None:
+        return legacy
+    if not explicit or same_path(palace_path, default_palace_path()):
+        return legacy_knowledge_graph_path()
+    return None
+
+
+def knowledge_graph_has_rows(path: str) -> bool:
+    """True when the graph at ``path`` holds an entity or a triple.
+
+    A file that exists but cannot be read counts as holding rows, so it is
+    never passed over for another graph.
+    """
+    if not os.path.isfile(path):
+        return False
+    import sqlite3
+
+    try:
+        conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    except sqlite3.Error:
+        return True
+    try:
+        for table in ("triples", "entities"):
+            try:
+                if conn.execute(f"SELECT EXISTS (SELECT 1 FROM {table})").fetchone()[0]:
+                    return True
+            except sqlite3.OperationalError as exc:
+                if "no such table" not in str(exc):
+                    return True
+        return False
+    except sqlite3.Error:
+        return True
+    finally:
+        conn.close()
+
+
+def knowledge_graph_path(
+    palace_path: str, legacy: Optional[str] = None, explicit: bool = False
+) -> str:
+    """The knowledge graph that belongs to ``palace_path``, for reads and writes.
+
+    The palace-local ``knowledge_graph.sqlite3`` when it holds facts. Otherwise
+    the graph this palace used before (see
+    :func:`historical_knowledge_graph_path`) when that one holds facts, so its
+    facts never split across two files. Otherwise the palace-local path.
+    Graphs are never merged, and no file is created here.
     """
     local = os.path.join(palace_path, KNOWLEDGE_GRAPH_FILENAME)
-    if os.path.isfile(local):
-        return local
-    if legacy is None and same_path(palace_path, default_palace_path()):
-        legacy = legacy_knowledge_graph_path()
-    if legacy is not None and os.path.isfile(legacy):
-        return legacy
+    other = historical_knowledge_graph_path(palace_path, legacy=legacy, explicit=explicit)
+    if (
+        other is not None
+        and os.path.isfile(other)
+        and not same_path(other, local)
+        and not knowledge_graph_has_rows(local)
+        and knowledge_graph_has_rows(other)
+    ):
+        return other
     return local
 
 

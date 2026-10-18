@@ -667,11 +667,13 @@ def audit_palace(
     palace_path: Optional[str] = None,
     config: Optional[MempalaceConfig] = None,
     progress=None,
+    explicit_palace: Optional[bool] = None,
 ) -> dict:
     """Run every read-only check and return the report as a dict.
 
-    :func:`mempalace.paths.knowledge_graph_path` picks the knowledge graph that belongs to
-    the palace.
+    ``explicit_palace`` says the caller passed ``--palace``; see
+    :func:`mempalace.paths.knowledge_graph_path` for which knowledge graph
+    belongs to a palace.
 
     ``progress(step, detail)`` is called before and after each reader — the
     hallway sidecar alone can be tens of megabytes, and a caller on a terminal
@@ -717,7 +719,7 @@ def audit_palace(
     hallway_records = step("hallways", lambda: list_hallways(config=config), lambda h: str(len(h)))
     kg = step(
         "knowledge graph",
-        lambda: _read_kg(paths.knowledge_graph_path(palace_path)),
+        lambda: _read_kg(paths.knowledge_graph_path(palace_path, explicit=bool(explicit_palace))),
         lambda k: f"{k['triples']} facts" if k else "no file",
     )
 

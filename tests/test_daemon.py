@@ -1347,6 +1347,7 @@ def test_mcp_tool_knowledge_graph_writes_land_beside_the_daemons_palace(monkeypa
     ``--palace`` does, and not into the per-user default graph."""
     from _mcp_server_helpers import _keep_server_command_line_state
 
+    import mempalace.mcp_server as mcp
     from mempalace import service
 
     _keep_server_command_line_state(monkeypatch)
@@ -1354,6 +1355,7 @@ def test_mcp_tool_knowledge_graph_writes_land_beside_the_daemons_palace(monkeypa
     palace.mkdir()
     # run_server points the whole daemon process at its palace.
     monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(palace))
+    monkeypatch.setattr(mcp, "_palace_flag_given", False)
 
     out = service.execute_job(
         "mcp_tool",

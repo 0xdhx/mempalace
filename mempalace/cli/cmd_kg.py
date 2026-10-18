@@ -28,7 +28,7 @@ def cmd_kg(args):
     vocabulary = (
         tuple(v.strip().lower() for v in raw.split(",") if v.strip()) if raw else DEFAULT_VOCABULARY
     )
-    kg_path = paths.knowledge_graph_path(palace_path)
+    kg_path = paths.knowledge_graph_path(palace_path, explicit=bool(palace))
     if not os.path.isfile(kg_path):
         print(f"  No knowledge graph at {kg_path}.")
         sys.exit(1)
@@ -90,15 +90,30 @@ def _kg_import_legacy(args, config):
         print(f"  {source} is already this palace's knowledge graph.")
         sys.exit(1)
     apply = bool(getattr(args, "yes", False))
-    # The same cross-process writer lock as normalize: a hub or another CLI
-    # must not write facts while rows are copied in.
-    with _repair_lock(config.palace_path):
-        counts = import_graph_rows(source, target, apply=apply)
+    if apply:
+        # The same cross-process writer lock as normalize: a hub or another
+        # CLI must not write facts while rows are copied in.
+        with _repair_lock(config.palace_path):
+            counts = import_graph_rows(source, target, apply=True)
+    else:
+        counts = import_graph_rows(source, target)
     verb = "Copied" if apply else "Would copy"
     for table, numbers in counts.items():
         print(
             f"  {verb} {numbers['added']} {table} from {source}; "
             f"{numbers['present']} already in {target} were kept as they are."
         )
+    conflicts = counts["triples"]["conflicts"]
+    if conflicts:
+        print(
+            f"\n  {len(conflicts)} current fact(s) not copied: this palace already holds a "
+            "different current value for the same subject and predicate. Add the ones "
+            "you want by hand (kg_supersede or kg_add):"
+        )
+        for c in conflicts:
+            print(
+                f"    {c['subject']} | {c['predicate']} | {c['object']} "
+                f"(here: {c['current_object']})"
+            )
     if not apply:
         print("\n  Nothing written. Re-run with --yes to copy them.")

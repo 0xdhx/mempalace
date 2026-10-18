@@ -1615,6 +1615,7 @@ class TestStructuredErrors:
         from mempalace import mcp_server
 
         monkeypatch.setattr(mcp_server, "_kg_by_path", {})
+        monkeypatch.setattr(mcp_server, "_palace_flag_given", True)
         monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(tmp_path))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:

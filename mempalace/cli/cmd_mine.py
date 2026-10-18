@@ -87,6 +87,7 @@ def cmd_mine(args):
                 source_path=args.dir,
                 palace_path=palace_path,
                 dry_run=args.dry_run,
+                explicit_palace=bool(args.palace),
                 **(
                     {
                         "project": getattr(args, "wing", None),
@@ -297,6 +298,7 @@ def mine_source_adapter(
     dry_run: bool = False,
     project: Optional[str] = None,
     related_drawer_id: Optional[str] = None,
+    explicit_palace: bool = False,
 ) -> int:
     """Run an explicitly selected RFC 002 source adapter through ``PalaceContext``.
 
@@ -348,7 +350,9 @@ def mine_source_adapter(
                 knowledge_graph = _DryRunKnowledgeGraphProxy()
             else:
                 drawer_collection = get_collection(palace_path)
-                knowledge_graph = KnowledgeGraph(db_path=paths.knowledge_graph_path(palace_path))
+                knowledge_graph = KnowledgeGraph(
+                    db_path=paths.knowledge_graph_path(palace_path, explicit=explicit_palace)
+                )
             context = PalaceContext(
                 drawer_collection=drawer_collection,
                 knowledge_graph=knowledge_graph,

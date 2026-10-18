@@ -188,6 +188,6 @@ def cmd_status(args):
 
     palace_path = os.path.expanduser(args.palace) if args.palace else MempalaceConfig().palace_path
     status(palace_path=palace_path)
-    notice = knowledge_graph_notice(palace_path)
+    notice = knowledge_graph_notice(palace_path, explicit=bool(args.palace))
     if notice:
         print(f"\n  Note: {notice}")

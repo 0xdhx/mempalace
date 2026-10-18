@@ -28,6 +28,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 
@@ -58,6 +59,7 @@ def check_text(text: str, palace_path: str = None, config=None) -> list:
     evidence of absence. The detector is deliberately conservative:
     every issue is anchored to a specific KG fact or registry entry.
     """
+    explicit = palace_path is not None
     if config is None:
         from .config import MempalaceConfig
 
@@ -72,7 +74,7 @@ def check_text(text: str, palace_path: str = None, config=None) -> list:
     entity_names_raw = _load_known_entities_raw()
 
     issues.extend(_check_entity_confusion(text, entity_names_raw))
-    issues.extend(_check_kg_contradictions(text, palace_path))
+    issues.extend(_check_kg_contradictions(text, palace_path, explicit=explicit))
 
     return issues
 
@@ -178,7 +180,7 @@ def _extract_claims(text: str) -> list:
     return claims
 
 
-def _check_kg_contradictions(text: str, palace_path: str) -> list:
+def _check_kg_contradictions(text: str, palace_path: str, explicit: bool = False) -> list:
     """Compare each claim in ``text`` against the KG.
 
     For every claim ``(subject, predicate, object)`` parsed from the
@@ -195,15 +197,26 @@ def _check_kg_contradictions(text: str, palace_path: str) -> list:
     if not claims:
         return []
 
+    from . import paths
+
+    kg_path = paths.knowledge_graph_path(palace_path, explicit=explicit)
+    if not os.path.isfile(kg_path):
+        # No graph yet; a check only reads, so it never creates one.
+        return []
     try:
-        from . import paths
         from .knowledge_graph import KnowledgeGraph
 
-        kg = KnowledgeGraph(db_path=paths.knowledge_graph_path(palace_path))
+        kg = KnowledgeGraph(db_path=kg_path)
     except Exception:
-        # KG unavailable (brand-new palace, corrupted DB, etc.) — skip.
+        # KG unavailable (corrupted DB, etc.) — skip.
         return []
+    try:
+        return _kg_issues(kg, claims)
+    finally:
+        kg.close()
 
+
+def _kg_issues(kg, claims: list) -> list:
     issues: list = []
     for claim in claims:
         subject = claim["subject"]

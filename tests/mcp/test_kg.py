@@ -524,6 +524,7 @@ class TestKGLazyCache:
         from mempalace import mcp_server
 
         monkeypatch.setattr(mcp_server, "_kg_by_path", {})
+        monkeypatch.setattr(mcp_server, "_palace_flag_given", True)
         monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(tmp_path))
 
         kg1 = mcp_server._get_kg()
@@ -541,6 +542,7 @@ class TestKGLazyCache:
         tmp_b.mkdir()
 
         monkeypatch.setattr(mcp_server, "_kg_by_path", {})
+        monkeypatch.setattr(mcp_server, "_palace_flag_given", True)
 
         monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(tmp_a))
         kg_a = mcp_server._get_kg()
@@ -564,6 +566,7 @@ class TestKGLazyCache:
         tmp_b.mkdir()
 
         monkeypatch.setattr(mcp_server, "_kg_by_path", {})
+        monkeypatch.setattr(mcp_server, "_palace_flag_given", True)
 
         monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(tmp_a))
         add_result = mcp_server.tool_kg_add(
