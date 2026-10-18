@@ -619,6 +619,9 @@ requires Python 3.10.
   free and otherwise report the last count, so they never queue behind a
   long write, and peer-sync integrity fields are published
   together, so one answer never mixes two refreshes.
+- `mempalace mine --source media` keeps `--wing` and `--related-drawer-id`
+  when the mine runs through the daemon. The daemon job dropped both, so the
+  assets were filed with no project and no related drawer.
 
 ### Pull requests merged since 3.11.0
 
@@ -714,6 +717,7 @@ requires Python 3.10.
 - [#2857](https://github.com/MemPalace/mempalace/pull/2857) docs(changelog): cover every user-visible change since 3.11.0
 - [#2858](https://github.com/MemPalace/mempalace/pull/2858) fix(security): mask endpoint credentials in embedding and LLM errors
 - [#2859](https://github.com/MemPalace/mempalace/pull/2859) chore(release): 3.12.0
+- [#2861](https://github.com/MemPalace/mempalace/pull/2861) fix(mine): keep --palace and media options on daemon-routed adapter mines
 
 ---
 
