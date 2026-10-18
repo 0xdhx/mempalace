@@ -619,6 +619,9 @@ requires Python 3.10.
   free and otherwise report the last count, so they never queue behind a
   long write, and peer-sync integrity fields are published
   together, so one answer never mixes two refreshes.
+- `mempalace mine --source media` keeps `--wing` and `--related-drawer-id`
+  when the mine runs through the daemon. The daemon job dropped both, so the
+  assets were filed with no project and no related drawer.
 
 ### Pull requests merged since 3.11.0
 
