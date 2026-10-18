@@ -206,6 +206,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Bug Fixes
 
+- **Wing-scoped wake-up on `sqlite_exact` reads the wing's newest drawers,
+  quickly.** Wake-up filters a wing by every spelling it was filed under
+  (`{"wing": {"$in": [...]}}`), which `sqlite_exact` could not evaluate in
+  SQL, so its recency read fell back to sorting whatever rows came back first
+  and could miss the newest ones. `$in` and `$eq` filters on plain values now
+  run in SQL, and two indexes on `filed_at` (palace-wide and per wing) serve
+  the newest-first reads. Existing palaces build them on their next writable
+  open; a read-only open uses them when present and reads correctly without.
+  On a 150k-drawer palace a 2,000-drawer recency read drops from 1.5 s to
+  80 ms, and the wing-scoped one from 5 s to 60 ms.
 - **Bookkeeping rows stay out of what you see.** The convo miner files a
   registry row (`ingest_mode="registry"`) for a transcript with no chunks, and
   the format miner a sentinel for a document that extracted to nothing. Search
