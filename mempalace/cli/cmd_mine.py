@@ -348,9 +348,7 @@ def mine_source_adapter(
                 knowledge_graph = _DryRunKnowledgeGraphProxy()
             else:
                 drawer_collection = get_collection(palace_path)
-                knowledge_graph = KnowledgeGraph(
-                    db_path=os.path.join(palace_path, "knowledge_graph.sqlite3")
-                )
+                knowledge_graph = KnowledgeGraph(db_path=paths.knowledge_graph_path(palace_path))
             context = PalaceContext(
                 drawer_collection=drawer_collection,
                 knowledge_graph=knowledge_graph,

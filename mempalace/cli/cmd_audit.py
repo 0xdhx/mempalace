@@ -24,7 +24,6 @@ def cmd_audit(args):
         report = audit_palace(
             palace_path=palace_path,
             progress=progress,
-            explicit_palace=bool(getattr(args, "palace", None)) or None,
         )
     except (FileNotFoundError, RuntimeError) as exc:
         print(f"\n  {exc}")

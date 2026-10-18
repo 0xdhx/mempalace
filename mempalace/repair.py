@@ -2254,7 +2254,7 @@ def _preserve_knowledge_graph_sqlite(source_palace: str, dest_palace: str) -> li
     so it must be copied explicitly or the repair succeeds while silently
     dropping KG state.
     """
-    filename = "knowledge_graph.sqlite3"
+    filename = paths.KNOWLEDGE_GRAPH_FILENAME
     src = os.path.join(source_palace, filename)
     dst = os.path.join(dest_palace, filename)
     if os.path.islink(src) or not os.path.isfile(src):

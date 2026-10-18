@@ -1028,9 +1028,9 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
             # ``initialize`` bridges this provider's resolved palace into
             # that variable (see ``_bridge_palace_env``) — so passthrough
             # reads and writes land in the same palace as live filing and
-            # search. KG tools are NOT passed through: mcp_server resolves
-            # its KG from ``DEFAULT_KG_PATH`` unless its own ``--palace``
-            # CLI flag was given, which no env bridge can influence.
+            # search. KG tools are NOT passed through: this provider also
+            # honours a graph kept next to the palace dir (see _kg_db_path),
+            # which mcp_server does not know about.
             # New tools (everything that has a matching ``tool_*`` in
             # mempalace.mcp_server) dispatch by name derivation. One
             # mempalace asymmetry to remap: ``mempalace_traverse`` maps to
@@ -1482,13 +1482,14 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
         return out
 
     def _kg_db_path(self) -> str:
-        """The provider's knowledge-graph DB — sibling of the palace dir.
+        """The provider's knowledge-graph DB.
 
-        Single source of truth for every KG access in this plugin; the KG
-        tools must never fall back to mempalace's global ``DEFAULT_KG_PATH``
-        or they would read a different graph than the one live turns feed.
+        Single source of truth for every KG access in this plugin. The
+        palace's own graph wins; a graph earlier releases kept next to the
+        palace dir is still read when the palace has none.
         """
-        return str(Path(self._palace_path).parent / "knowledge_graph.sqlite3")
+        sibling = Path(self._palace_path).parent / paths.KNOWLEDGE_GRAPH_FILENAME
+        return paths.knowledge_graph_path(self._palace_path, legacy=str(sibling))
 
     def _tool_kg_query(self, entity: str, since: Optional[str] = None) -> Dict[str, Any]:
         if not entity:

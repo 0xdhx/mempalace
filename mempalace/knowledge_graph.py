@@ -48,8 +48,83 @@ from . import paths
 from .config import sanitize_iso_temporal
 from .ids import make_triple_id
 
-DEFAULT_KG_PATH = paths.state_str("knowledge_graph.sqlite3")
+DEFAULT_KG_PATH = paths.legacy_knowledge_graph_path()
 _MIN_ENTITY_CANDIDATE_LEN = 3
+
+
+def knowledge_graph_notice(palace_path: str, legacy: Optional[str] = None) -> Optional[str]:
+    """Say so when a legacy graph exists that ``palace_path`` does not use.
+
+    The palace keeps reading only its own graph; this names the other file
+    and the explicit command that copies its facts in.
+    """
+    used = paths.knowledge_graph_path(palace_path, legacy=legacy)
+    for candidate in dict.fromkeys(c for c in (legacy, paths.legacy_knowledge_graph_path()) if c):
+        if Path(candidate).is_file() and not paths.same_path(candidate, used):
+            return (
+                f"A knowledge graph at {candidate} is not used for this palace, which reads "
+                f"{used}. Graphs are never merged automatically; copy its facts in with "
+                f"`mempalace kg import-legacy --from {candidate}`."
+            )
+    return None
+
+
+def _read_only(path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def import_graph_rows(source_path: str, target_path: str, apply: bool = False) -> dict:
+    """Copy one graph file's entities and triples into another, keeping rows already there.
+
+    The source is only read, and a row whose id the target already holds is left
+    as it is. With ``apply`` false nothing is written and the target is not even
+    created; the counts say what would be copied.
+    """
+    if paths.same_path(source_path, target_path):
+        raise ValueError("the source and the target are the same knowledge graph")
+    source = _read_only(source_path)
+    target = None
+    kg = None
+    if apply:
+        kg = KnowledgeGraph(db_path=target_path)
+        target = kg._conn()
+    elif Path(target_path).is_file():
+        target = _read_only(target_path)
+    counts = {}
+    try:
+        for table, columns in KnowledgeGraph._REPLICATION_TABLES.items():
+            available = {r["name"] for r in source.execute(f"PRAGMA table_info({table})")}
+            cols = [c for c in columns if c in available]
+            added = present = 0
+            if "id" in cols:
+                insert = (
+                    f"INSERT INTO {table} ({', '.join(cols)}) "
+                    f"VALUES ({', '.join('?' for _ in cols)})"
+                )
+                for row in source.execute(f"SELECT {', '.join(cols)} FROM {table}"):
+                    if (
+                        target is not None
+                        and target.execute(
+                            f"SELECT 1 FROM {table} WHERE id = ?", (row["id"],)
+                        ).fetchone()
+                    ):
+                        present += 1
+                        continue
+                    added += 1
+                    if apply:
+                        target.execute(insert, tuple(row))
+            counts[table] = {"added": added, "present": present}
+        if apply:
+            target.commit()
+    finally:
+        source.close()
+        if kg is not None:
+            kg.close()
+        elif target is not None:
+            target.close()
+    return counts
 
 
 def _escape_like(value: str) -> str:

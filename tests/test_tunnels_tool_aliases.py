@@ -260,6 +260,6 @@ def test_full_audit_entrypoint_agrees_with_persisted_prune(tmp_path, monkeypatch
     )
     monkeypatch.setattr(audit, "_read_wing_project_mix", lambda *a: None)
     monkeypatch.setattr(audit, "_read_kg", lambda *a: None)
-    result = audit.audit_palace(config=cfg, explicit_palace=True)
+    result = audit.audit_palace(config=cfg)
     assert len(pg._load_tunnels(cfg)) == 3
     assert result["tunnels"]["duplicates"] == result["tunnels"]["artifacts"] == 0, result["tunnels"]

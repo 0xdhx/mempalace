@@ -74,7 +74,7 @@ def _parse_args(argv=None):
 # light server, the daemon, the hook runner, integrations), so parsing a command
 # line is left to the entry points, which apply their flags with
 # _apply_server_flags() before serving. A reload keeps what they applied,
-# here and in _READ_ONLY and _palace_flag_given below.
+# here and in _READ_ONLY below.
 _args = globals().get("_args") or _parse_args([])
 
 
@@ -84,7 +84,7 @@ def _apply_server_flags(palace=None, backend=None, read_only=False) -> None:
     Call it before the server handles a request: everything the import derived
     from these flags' defaults is derived again here.
     """
-    global _READ_ONLY, _palace_flag_given
+    global _READ_ONLY
     global _STALE_LIBRARY_WATCHED_DISTS, _STARTUP_DIST_STATE
     global _STARTUP_DIST_VERSIONS, _STARTUP_DIST_ERRORS
 
@@ -105,7 +105,6 @@ def _apply_server_flags(palace=None, backend=None, read_only=False) -> None:
             _STARTUP_DIST_VERSIONS, _STARTUP_DIST_ERRORS = _STARTUP_DIST_STATE
     if palace:
         os.environ["MEMPALACE_PALACE_PATH"] = os.path.abspath(palace)
-        _palace_flag_given = True
     if read_only:
         _READ_ONLY = True
 
@@ -128,8 +127,6 @@ _logstream_cache_lock = threading.Lock()
 # Keep that entire scope single-threaded even when tool_search is invoked
 # outside the HTTP dispatch lock (tests, embedded hosts, future transports).
 _cli_search_capture_lock = threading.Lock()
-# Raised by _apply_server_flags() for --palace; _resolve_kg_path() reads it.
-_palace_flag_given: bool = globals().get("_palace_flag_given", False)
 
 # MCP server idle auto-exit.  Stale MCP servers from ended Claude
 # Code sessions do not self-terminate, accumulating ChromaDB/HNSW file
@@ -874,9 +871,7 @@ def _mcp_idle_timeout_secs() -> float:
 
 
 def _resolve_kg_path() -> str:
-    if _palace_flag_given:
-        return os.path.join(_config.palace_path, "knowledge_graph.sqlite3")
-    return DEFAULT_KG_PATH
+    return paths.knowledge_graph_path(_config.palace_path)
 
 
 def _canonicalize_kg_path(path: str) -> str:
@@ -916,6 +911,9 @@ def _get_kg(canonical_path=None) -> KnowledgeGraph:
         if kg is None:
             kg = KnowledgeGraph(db_path=path)
             _kg_by_path[path] = kg
+            notice = knowledge_graph_notice(_config.palace_path)
+            if notice:
+                logger.warning(notice)
     return kg
 
 

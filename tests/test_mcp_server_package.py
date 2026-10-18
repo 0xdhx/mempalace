@@ -123,7 +123,7 @@ def test_importing_the_server_leaves_the_importers_command_line_alone(argv):
         "import os, sys\n"
         "import mempalace.mcp_server as mcp\n"
         "state = (os.environ.get('MEMPALACE_PALACE_PATH'), os.environ.get('MEMPALACE_BACKEND'),"
-        " mcp._READ_ONLY, mcp._palace_flag_given)\n"
+        " mcp._READ_ONLY)\n"
         "print('state after import:', state, file=sys.stderr)\n"
     )
     env = {k: v for k, v in os.environ.items() if k not in _SERVER_SETTINGS_ENV}
@@ -136,7 +136,7 @@ def test_importing_the_server_leaves_the_importers_command_line_alone(argv):
         env=env,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "state after import: (None, None, False, False)" in proc.stderr
+    assert "state after import: (None, None, False)" in proc.stderr
     assert "usage:" not in proc.stdout + proc.stderr
 
 
@@ -264,7 +264,7 @@ def test_flags_main_applied_survive_a_reload():
         "mcp._run_stdio_loop = lambda: None\n"
         "mcp.main()\n"
         "importlib.reload(mcp)\n"
-        "print('after reload:', (mcp._READ_ONLY, mcp._palace_flag_given, mcp._args.port),"
+        "print('after reload:', (mcp._READ_ONLY, mcp._args.port),"
         " file=sys.stderr)\n"
     )
     env = {k: v for k, v in os.environ.items() if k not in _SERVER_SETTINGS_ENV}
@@ -277,7 +277,7 @@ def test_flags_main_applied_survive_a_reload():
         env=env,
     )
     assert proc.returncode == 0, proc.stderr
-    assert "after reload: (True, True, 8799)" in proc.stderr
+    assert "after reload: (True, 8799)" in proc.stderr
 
 
 def test_flags_without_a_backend_leave_the_stale_library_baseline_alone(monkeypatch, tmp_path):

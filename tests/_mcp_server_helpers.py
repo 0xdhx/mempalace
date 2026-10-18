@@ -57,7 +57,6 @@ def _keep_server_command_line_state(monkeypatch):
     for name in (
         "_args",
         "_READ_ONLY",
-        "_palace_flag_given",
         "_STALE_LIBRARY_WATCHED_DISTS",
         "_STARTUP_DIST_STATE",
         "_STARTUP_DIST_VERSIONS",

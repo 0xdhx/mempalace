@@ -102,7 +102,10 @@ The knowledge graph uses SQLite with two tables:
 - `confidence` — 0.0 to 1.0
 - `source_closet` — link back to the verbatim memory
 
-Database location: `~/.mempalace/knowledge_graph.sqlite3`
+Database location: `knowledge_graph.sqlite3` inside the palace directory. The legacy
+`~/.mempalace/knowledge_graph.sqlite3` is still read for the default palace
+(`~/.mempalace/palace`) while that palace has no graph of its own. Graphs are never
+merged; `mempalace kg import-legacy` copies a legacy graph's facts in on request.
 
 ## Related Work
 

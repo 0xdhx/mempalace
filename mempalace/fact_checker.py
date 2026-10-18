@@ -28,7 +28,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-import os
 import re
 from datetime import datetime, timezone
 
@@ -197,14 +196,10 @@ def _check_kg_contradictions(text: str, palace_path: str) -> list:
         return []
 
     try:
+        from . import paths
         from .knowledge_graph import KnowledgeGraph
 
-        # KG lives alongside the palace collection; mcp_server uses the
-        # same convention (see _kg init). Pass ``db_path`` — the previous
-        # code passed a nonexistent ``palace_path`` kwarg which raised
-        # TypeError, silently swallowed by the outer except and rendered
-        # the entire KG-check path dead.
-        kg = KnowledgeGraph(db_path=os.path.join(palace_path, "knowledge_graph.sqlite3"))
+        kg = KnowledgeGraph(db_path=paths.knowledge_graph_path(palace_path))
     except Exception:
         # KG unavailable (brand-new palace, corrupted DB, etc.) — skip.
         return []

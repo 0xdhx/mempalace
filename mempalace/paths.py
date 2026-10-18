@@ -61,6 +61,38 @@ def default_palace_path() -> str:
     return state_str("palace")
 
 
+KNOWLEDGE_GRAPH_FILENAME = "knowledge_graph.sqlite3"
+
+
+def legacy_knowledge_graph_path() -> str:
+    """``~/.mempalace/knowledge_graph.sqlite3``, the legacy default palace's graph."""
+    return state_str(KNOWLEDGE_GRAPH_FILENAME)
+
+
+def knowledge_graph_path(palace_path: str, legacy: Optional[str] = None) -> str:
+    """The knowledge graph that belongs to ``palace_path``.
+
+    The palace-local ``knowledge_graph.sqlite3`` wins. Until one exists, a
+    legacy graph is used only for the palace it belongs to: the legacy
+    default palace's ``~/.mempalace/knowledge_graph.sqlite3``, or the
+    ``legacy`` path a caller names for its own older layout. Graphs are never
+    merged, and neither file is created here.
+    """
+    local = os.path.join(palace_path, KNOWLEDGE_GRAPH_FILENAME)
+    if os.path.isfile(local):
+        return local
+    if legacy is None and same_path(palace_path, default_palace_path()):
+        legacy = legacy_knowledge_graph_path()
+    if legacy is not None and os.path.isfile(legacy):
+        return legacy
+    return local
+
+
+def same_path(a: str, b: str) -> bool:
+    """True when ``a`` and ``b`` name the same location."""
+    return os.path.normcase(canonical_palace_path(a)) == os.path.normcase(canonical_palace_path(b))
+
+
 def lock_dir() -> str:
     """Directory holding the per-file and per-palace mine locks."""
     return str(state_path("locks"))
