@@ -128,7 +128,8 @@ _logstream_cache_lock = threading.Lock()
 # Keep that entire scope single-threaded even when tool_search is invoked
 # outside the HTTP dispatch lock (tests, embedded hosts, future transports).
 _cli_search_capture_lock = threading.Lock()
-# Raised by _apply_server_flags() for --palace; _resolve_kg_path() reads it.
+# Raised by _apply_server_flags() for --palace: a palace named that way keeps
+# its knowledge graph inside itself (see paths.historical_knowledge_graph_path).
 _palace_flag_given: bool = globals().get("_palace_flag_given", False)
 
 # MCP server idle auto-exit.  Stale MCP servers from ended Claude
@@ -874,9 +875,25 @@ def _mcp_idle_timeout_secs() -> float:
 
 
 def _resolve_kg_path() -> str:
-    if _palace_flag_given:
-        return os.path.join(_config.palace_path, "knowledge_graph.sqlite3")
-    return DEFAULT_KG_PATH
+    return paths.knowledge_graph_path(_config.palace_path, explicit=_palace_flag_given)
+
+
+_kg_notices_logged: set = set()
+
+
+def _with_kg_notice(payload):
+    """Add the palace's knowledge-graph notice, if any, to a KG tool response.
+
+    The notice is also logged, once per process.
+    """
+    notice = knowledge_graph_notice(_config.palace_path, explicit=_palace_flag_given)
+    if notice:
+        if notice not in _kg_notices_logged:
+            _kg_notices_logged.add(notice)
+            logger.warning(notice)
+        if isinstance(payload, dict):
+            payload["notice"] = notice
+    return payload
 
 
 def _canonicalize_kg_path(path: str) -> str:
@@ -892,7 +909,7 @@ def _canonicalize_kg_path(path: str) -> str:
     return os.path.normcase(os.path.realpath(path))
 
 
-def _get_kg(canonical_path=None) -> KnowledgeGraph:
+def _get_kg(canonical_path=None, read=False) -> KnowledgeGraph:
     """Return the cached ``KnowledgeGraph`` for the resolved palace.
 
     When ``canonical_path`` is ``None`` (default), the path is resolved
@@ -904,6 +921,9 @@ def _get_kg(canonical_path=None) -> KnowledgeGraph:
     a symlink remap, or a mount remap between the captured value and
     this call drift the insert and evict keys apart, stranding a closed
     handle under one key while the lookup probes another.
+
+    With ``read``, a palace with no graph file gets an empty, uncached
+    in-memory graph: a read never creates the file.
     """
     path = (
         canonical_path if canonical_path is not None else _canonicalize_kg_path(_resolve_kg_path())
@@ -911,6 +931,8 @@ def _get_kg(canonical_path=None) -> KnowledgeGraph:
     kg = _kg_by_path.get(path)
     if kg is not None:
         return kg
+    if read and not os.path.isfile(path):
+        return KnowledgeGraph.empty()
     with _kg_cache_lock:
         kg = _kg_by_path.get(path)
         if kg is None:
@@ -919,7 +941,7 @@ def _get_kg(canonical_path=None) -> KnowledgeGraph:
     return kg
 
 
-def _call_kg(op):
+def _call_kg(op, read=False):
     """Run ``op(kg)`` against the cached KG with one-shot retry on close.
 
     Race we're guarding against: a handler grabs ``kg = _get_kg()`` and is
@@ -946,10 +968,13 @@ def _call_kg(op):
     insert key to the evict key even if FS or env state mutates between
     attempts, preventing a closed handle from leaking under a stale
     key the lookup no longer matches.
+
+    ``read`` ops on a palace with no graph file run against an empty graph
+    (see :func:`_get_kg`).
     """
     path = _canonicalize_kg_path(_resolve_kg_path())
     for attempt in range(2):
-        kg = _get_kg(path)
+        kg = _get_kg(path, read=True) if read else _get_kg(path)
         try:
             return op(kg)
         except sqlite3.ProgrammingError:

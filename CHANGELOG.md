@@ -10,6 +10,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **Every tool now picks a palace's knowledge graph the same way, and none
+  switches graphs under you.** The MCP server, the CLI, the audit, the fact
+  checker, mining and the Hermes provider share one rule. A palace uses its
+  own `knowledge_graph.sqlite3` once that file holds facts. Until then it
+  keeps reading and writing the graph it used before, if that one holds
+  facts, so its facts never split across two files: for the default palace
+  `~/.mempalace/palace`, and for any palace selected through
+  `MEMPALACE_PALACE_PATH` or `config.json` rather than `--palace`, that is
+  `~/.mempalace/knowledge_graph.sqlite3`; for the Hermes provider it is the
+  graph beside its palace directory. Otherwise a new graph is created inside
+  the palace. An empty graph file counts as no graph, so an empty palace-local
+  file created by an older release no longer hides the facts. A palace named
+  with `--palace` keeps its graph inside itself, as before. Reading the graph
+  (MCP `kg_query`, `kg_timeline`, `kg_stats`, the fact checker) no longer
+  creates the file. Graphs are never merged: when the palace's own graph and
+  the one it used before both hold facts, the palace reads its own, and the
+  MCP KG tools add a `notice` to their response (logged once) and
+  `mempalace status` prints a note naming the other file. To bring those
+  facts in, run `mempalace kg import-legacy` (it shows what it would copy;
+  add `--yes` to copy, `--from <file>` for another graph). It skips facts the
+  palace already records, matching on subject, predicate, object and
+  validity window, and lists, rather than copies, a current fact whose
+  subject and predicate already hold a different current value in the
+  palace.
+
 - **A project now has one wing, whichever tool files into it.** Wing names
   come from one slug rule (lower case, spaces and hyphens become `_`), used by
   `mempalace init`, the miners, the diary, and the Claude Code, Codex, Cursor
