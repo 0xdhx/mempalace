@@ -414,15 +414,13 @@ def recency_sort_key(meta: Optional[dict], order_field: str = "filed_at") -> tup
     :meth:`BaseCollection.get_recent` with a local sort MUST use this key so
     every backend orders identically.
 
-    This compares the timestamps as *text*, which is chronological only while
-    every value shares one offset representation. It is not a new assumption:
-    Layer 1 has sorted ``filed_at`` as text and this key just
-    names the behaviour. It is also not currently true of ``filed_at`` --
-    ``diary_ingest`` writes ``datetime.now(timezone.utc).isoformat()``
-    (``...+00:00``) while every other writer uses ``datetime.now().isoformat()``
-    (naive local), so on a host that is not on UTC the two sort against each
-    other skewed by the local offset. Standardising the writers is a separate
-    change; it needs a migration for palaces that already hold both forms.
+    This compares the timestamps as *text*, the same order the SQL fast paths
+    use (``ORDER BY filed_at``), so it must stay text. Every writer now stores
+    UTC with an offset (``timeutil.utc_now_iso``); older palaces also hold
+    naive local values, which are never rewritten. Text order is exact within
+    each form and, across the switch, off by at most the local UTC offset for
+    drawers filed within that many hours of the upgrade (none for zones
+    behind UTC). Date-window filters compare parsed instants and are exact.
     """
     value = (meta or {}).get(order_field)
     if not isinstance(value, str) or not value:

@@ -20,7 +20,7 @@ import math
 import os
 import re
 import sqlite3
-from datetime import timedelta
+from datetime import timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -64,6 +64,7 @@ from ..search_util import (
     palace_wing_aliases,
 )
 from ..stored_text import decode_record, encode_filter
+from ..timeutil import localize
 
 logger = logging.getLogger("mempalace_mcp")
 
