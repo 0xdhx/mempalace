@@ -159,7 +159,7 @@ from ..stored_text import (  # noqa: E402
     dumps_client,
     dumps_internal,
 )
-from ..timeutil import utc_now_iso, utc_now_z  # noqa: E402
+from ..timeutil import recency_key, utc_now_iso, utc_now_z  # noqa: E402
 from ..version import __version__  # noqa: E402
 
 # ==================== WRITE-AHEAD LOG ====================

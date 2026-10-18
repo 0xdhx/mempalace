@@ -6,16 +6,19 @@ written before that also hold naive values, which were local wall-clock
 time when written; ``parse_timestamp`` reads those as local time so both
 forms compare as the same instants. Stored values are never rewritten.
 
-Text order of ``filed_at`` stays chronological within each form. Across
-the switch from naive local to UTC it can be off by at most the local UTC
-offset, and only for drawers filed within that many hours of the upgrade.
+Text order is chronological within each form but not across them, and
+older writers (a hub, hook or peer not yet upgraded) keep adding naive
+values. Newest-first readers therefore order by ``recency_key``; SQL
+top-N reads fetch each form in text order and merge by it.
 """
 
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Iterable, Optional
 
 # Tests pin the zone naive values are read in; None means the system zone.
 _LOCAL_TZ = None
+
+_MIN = datetime.min.replace(tzinfo=timezone.utc)
 
 
 def utc_now() -> datetime:
@@ -80,3 +83,35 @@ def parse_timestamp(value) -> Optional[datetime]:
         return parse_iso(value)
     except ValueError:
         return None
+
+
+def recency_key(value) -> tuple:
+    """Sort key for newest-first order (``reverse=True``) on a stored timestamp.
+
+    Parsed values order by instant, so naive local and UTC values interleave
+    correctly. Unparseable strings follow them in text order; missing or
+    non-string values come last.
+    """
+    if not isinstance(value, str) or not value:
+        return (0, _MIN, "")
+    parsed = parse_timestamp(value)
+    if parsed is None:
+        return (1, _MIN, value)
+    return (2, parsed, value)
+
+
+def recency_floor(values: Iterable) -> str:
+    """Text lower bound that every value newer than the oldest of ``values`` meets.
+
+    A stored value's text is its instant in UTC or in a local zone, never more
+    than a day from its UTC date, so one day below the oldest instant's UTC
+    date bounds the text of anything newer. ``""`` when there is no usable
+    bound (an unparseable value, or the calendar floor).
+    """
+    instants = [parse_timestamp(value) for value in values]
+    if not instants or any(i is None for i in instants):
+        return ""
+    try:
+        return (min(instants).astimezone(timezone.utc) - timedelta(days=1)).date().isoformat()
+    except OverflowError:
+        return ""

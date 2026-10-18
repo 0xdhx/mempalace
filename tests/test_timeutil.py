@@ -177,6 +177,94 @@ def test_recency_order_over_mixed_forms(palace_path, mixed_palace):
     assert recent.ids == ["utc_2", "utc_1", "legacy_2", "legacy_1"]
 
 
+# An older writer (hub, hook, peer) keeps filing naive local values after the
+# upgrade. In UTC+9, five legacy drawers at 10:00-10:40 local and one UTC
+# drawer 8h10m later: the UTC text ("...T09:50:00...+00:00") sorts below the
+# legacy text, yet it is the newest drawer.
+_DEMO_ZONE = timezone(timedelta(hours=9))
+_DEMO_LEGACY = [f"2026-10-02T10:{m}0:00" for m in range(5)]
+_DEMO_UTC = "2026-10-02T09:50:00.000000+00:00"
+_DEMO_NEWEST_FIRST = ["utc_new", "legacy_4", "legacy_3", "legacy_2", "legacy_1"]
+
+
+def _demo_rows(**meta):
+    stamps = {f"legacy_{i}": value for i, value in enumerate(_DEMO_LEGACY)}
+    stamps["utc_new"] = _DEMO_UTC
+    ids = list(stamps)
+    metas = [{"wing": "timeline", "room": "notes", "filed_at": stamps[i], **meta} for i in ids]
+    return ids, [f"Drawer {i}." for i in ids], metas
+
+
+@pytest.fixture
+def demo_chroma(monkeypatch, collection, palace_path):
+    monkeypatch.setattr(timeutil, "_LOCAL_TZ", _DEMO_ZONE)
+    ids, docs, metas = _demo_rows()
+    collection.add(ids=ids, documents=docs, metadatas=metas)
+    return palace_path
+
+
+@pytest.mark.parametrize("equalities", [[], [("wing", ("timeline",))]], ids=["index", "filter"])
+def test_chroma_recent_records_keep_newest_utc_entry(demo_chroma, equalities):
+    from mempalace.backends.chroma_sqlite import _sqlite_recent_records
+
+    records = _sqlite_recent_records(
+        demo_chroma, "mempalace_drawers", limit=5, equalities=equalities, order_field="filed_at"
+    )
+    assert [record_id for record_id, _, _ in records] == _DEMO_NEWEST_FIRST
+
+
+def test_chroma_get_recent_and_wake_up_window_keep_newest_utc_entry(demo_chroma):
+    from mempalace.layers import fetch_recent_window
+    from mempalace.palace import get_collection
+
+    col = get_collection(demo_chroma)
+    assert col.get_recent(limit=5).ids == _DEMO_NEWEST_FIRST
+    _docs, metas = fetch_recent_window(col, max_scan=5, budget=None)
+    assert metas[0]["filed_at"] == _DEMO_UTC
+
+
+def test_sqlite_exact_get_recent_keeps_newest_utc_entry(monkeypatch, tmp_path):
+    from mempalace.backends import PalaceRef
+    from mempalace.backends.sqlite_exact import SQLiteExactBackend
+
+    monkeypatch.setattr(timeutil, "_LOCAL_TZ", _DEMO_ZONE)
+    backend = SQLiteExactBackend()
+    palace = PalaceRef(id=str(tmp_path), local_path=str(tmp_path))
+    try:
+        col = backend.get_collection(
+            palace=palace, collection_name="mempalace_drawers", create=True
+        )
+        ids, docs, metas = _demo_rows()
+        col.add(ids=ids, documents=docs, metadatas=metas, embeddings=[[1.0, 0.0]] * len(ids))
+        assert col.get_recent(limit=5).ids == _DEMO_NEWEST_FIRST
+    finally:
+        backend.close_palace(str(tmp_path))
+
+
+def test_diary_read_keeps_newest_utc_entry(demo_chroma, monkeypatch, config, kg):
+    from mempalace.backends.chroma_sqlite import sqlite_diary_rows
+
+    ids, docs, metas = _demo_rows(agent="testagent", topic="general")
+    for meta in metas:
+        meta.update(room="diary", wing="wing_alpha")
+    from mempalace.palace import get_collection
+
+    get_collection(demo_chroma).upsert(ids=ids, documents=docs, metadatas=metas)
+    total, rows = sqlite_diary_rows(
+        demo_chroma, "mempalace_drawers", agent_name="testagent", limit=5
+    )
+    assert total == 6
+    assert [row_id for row_id, _, _ in rows] == _DEMO_NEWEST_FIRST
+
+    _patch_mcp_server(monkeypatch, config, kg)
+    from mempalace import mcp_server
+
+    monkeypatch.setattr(mcp_server, "_sqlite_diary_read", lambda *a, **k: None)
+    entries = mcp_server.tool_diary_read(agent_name="testagent", last_n=5)["entries"]
+    assert entries[0]["timestamp"] == _DEMO_UTC
+    assert len(entries) == 5
+
+
 @pytest.mark.parametrize("zone", ZONES, ids=["utc-3", "utc+9"])
 def test_bm25_prefilter_keeps_legacy_value_across_the_utc_day(
     monkeypatch, collection, palace_path, zone

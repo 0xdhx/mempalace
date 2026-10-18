@@ -276,7 +276,7 @@ def tool_diary_read(agent_name: str, last_n: int = 10, wing: str = ""):
 
             # Keep memory bounded while scanning: only candidates for the
             # final newest-N result need to survive into the next page.
-            entries.sort(key=lambda x: x["timestamp"], reverse=True)
+            entries.sort(key=lambda x: recency_key(x["timestamp"]), reverse=True)
             del entries[last_n:]
 
             offset += len(batch_ids)
