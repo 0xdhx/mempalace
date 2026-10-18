@@ -221,6 +221,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   setup that names an old logger should name `mempalace` instead.
   Messages and levels are unchanged.
 
+### Security
+
+- **A credential in an LLM or embedding endpoint URL no longer shows up in
+  errors and logs.** An endpoint configured as
+  `https://user:pass@host/v1?key=...` had its password and key repeated
+  in the error a failed embedding request raised, in the `check_available`
+  messages of the LLM providers, in the external-endpoint refusal and in
+  the warnings that name the endpoint. Those messages now mask URL
+  user info and `key`, `api_key`, `token`, `access_token`, `secret`,
+  `password` and `auth` query values. An embedding server's reply quoted
+  in an error is masked the same way and cut to 500 characters.
+
 ### Bug Fixes
 
 - **Wing-scoped wake-up on `sqlite_exact` reads the wing's newest drawers,
