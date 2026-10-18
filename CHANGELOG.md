@@ -269,6 +269,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Security
 
+- **A credential in an LLM or embedding endpoint URL no longer shows up in
+  errors and logs.** An endpoint configured as
+  `https://user:pass@host/v1?key=...` had its password and key repeated
+  in the error a failed embedding request raised, in the `check_available`
+  messages of the LLM providers, in the external-endpoint refusal and in
+  the warnings that name the endpoint. Those messages now mask URL
+  user info and `key`, `api_key`, `token`, `access_token`, `secret`,
+  `password` and `auth` query values. An embedding server's reply quoted
+  in an error is masked the same way and cut to 500 characters.
 - **The light MCP server only calls the tools it lists.** `palace_query`,
   `palace_exec` and `palace_coordinate` used to turn an unknown target into
   `mempalace_<target>`, so a read-only query could reach `delete_drawer`,
