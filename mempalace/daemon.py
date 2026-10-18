@@ -19,7 +19,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -38,6 +38,7 @@ from .palace import (
     resolve_backend_name,
 )
 from .stored_text import dumps_internal
+from .timeutil import utc_now, utc_now_iso
 
 HOST = "127.0.0.1"
 STATE_ROOT_ENV = "MEMPALACE_DAEMON_STATE_ROOT"
@@ -104,7 +105,7 @@ class DaemonError(RuntimeError):
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return utc_now_iso()
 
 
 def canonical_palace_path(path: str | None = None) -> str:
@@ -266,7 +267,7 @@ class QueueStore:
         """
         if older_than_days <= 0:
             return 0
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        cutoff = (utc_now() - timedelta(days=older_than_days)).isoformat(timespec="microseconds")
         with self._lock, self._connect() as conn:
             cur = conn.execute(
                 """

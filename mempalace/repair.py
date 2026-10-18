@@ -40,7 +40,6 @@ import time
 from collections import defaultdict
 from contextlib import closing, suppress
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Callable, Iterator, Optional
 
 from chromadb.errors import NotFoundError as ChromaNotFoundError
@@ -60,6 +59,7 @@ from .backends.chroma import ChromaBackend, _clear_chroma_system_cache, hnsw_cap
 from .config import connect_sqlite_read, sqlite_read_uri  # noqa: F401
 from .fsio import atomic_write_text
 from .stored_text import decode_record
+from .timeutil import filename_stamp
 
 COLLECTION_NAME = "mempalace_drawers"
 
@@ -134,7 +134,7 @@ def _copy_file_no_follow(src: str, dst: str, *, replace: bool = False) -> None:
 
 
 def _unique_backup_path(path: str, label: str) -> str:
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    stamp = filename_stamp("_")
     return f"{path}.{label}.{stamp}.{os.getpid()}"
 
 
@@ -2636,7 +2636,7 @@ def _rebuild_from_sqlite_locked(
         return {}
 
     if in_place:
-        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        ts = filename_stamp()
         archive_path = f"{dest_palace}.pre-rebuild-{ts}"
         print(f"  Archiving {dest_palace} -> {archive_path}")
         # os.rename, NOT shutil.move. When any file inside the palace is
@@ -3142,7 +3142,7 @@ def _apply_max_seq_id_plan(
         from .backups import prune_backups
         from .config import MempalaceConfig
 
-        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        timestamp = filename_stamp()
         backup_path = os.path.join(palace_path, f"chroma.sqlite3.max-seq-id-backup-{timestamp}")
         # Through the backup API, so a writer's uncheckpointed WAL is in it.
         _copy_sqlite_db(db_path, backup_path)

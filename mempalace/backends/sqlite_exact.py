@@ -17,7 +17,6 @@ import os
 import re
 import sqlite3
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -31,6 +30,7 @@ from ..stored_text import (
     index_text,
     prepare_stored_write,
 )
+from ..timeutil import recency_key, utc_now_iso as _utcnow
 from ._filters import matches_where, matches_where_document, validate_where
 from ._magic import has_sqlite_magic, read_header_fields
 from .base import (
@@ -60,10 +60,6 @@ _DB_FILENAME = "sqlite_exact.sqlite3"
 # stamp the checkpoint with the same mtime as the previous one.
 _WRITE_GENERATION_KEY = "write_generation"
 _WRITE_GENERATION_SQL = "SELECT value FROM meta WHERE key = ?"
-
-
-def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _bump_write_generation(executor) -> None:
@@ -1246,6 +1242,52 @@ class SQLiteExactCollection(BaseCollection):
             if limit is not None:
                 rows = rows[:limit]
         return self._get_result(rows, spec)
+
+    def get_recent(self, *, limit, where=None, order_field="filed_at", include=None):
+        """Newest ``limit`` records by the instant in ``order_field``, read in SQL.
+
+        Text order is instant order only within one timestamp form, so the
+        newest UTC-suffixed values and the newest of the rest are read
+        separately and merged; records without the field follow in storage
+        order. A filter SQL cannot evaluate keeps the base implementation.
+        """
+        if limit is None or limit <= 0:
+            return super().get_recent(
+                limit=limit, where=where, order_field=order_field, include=include
+            )
+        validate_where(where)
+        push = _equality_where_sql(where, locus_columns=self._handle.has_locus_columns)
+        if push is None or not _FACET_FIELD_RE.match(order_field):
+            return super().get_recent(
+                limit=limit, where=where, order_field=order_field, include=include
+            )
+        spec = _IncludeSpec.resolve(include, default_distances=False)
+        filter_sql, filter_params = push
+        scope = (
+            f"SELECT id, rowid AS seq, {_json_field_sql(order_field, locus_columns=False)} AS ts"
+            f" FROM documents WHERE collection_id = ? AND {filter_sql}"
+        )
+        dated = "typeof(ts) = 'text' AND ts > ''"
+        utc = "(substr(ts, -6) = '+00:00' OR substr(ts, -1) IN ('Z', 'z'))"
+        with self._cursor() as cur:
+            collection_id = self._collection_id(cur)
+
+            def read(condition, order):
+                return cur.execute(
+                    f"SELECT id, ts FROM ({scope}) WHERE {condition} ORDER BY {order} LIMIT ?",
+                    (collection_id, *filter_params, limit),
+                ).fetchall()
+
+            rows = read(f"{dated} AND {utc}", "ts DESC, id") + read(
+                f"{dated} AND NOT {utc}", "ts DESC, id"
+            )
+            rows.sort(key=lambda r: r[0])
+            rows.sort(key=lambda r: recency_key(r[1]), reverse=True)
+            ids = [r[0] for r in rows[:limit]]
+            if len(ids) < limit:
+                ids += [r[0] for r in read(f"NOT ({dated})", "seq")][: limit - len(ids)]
+            by_id = self._rows_by_ids(cur, collection_id, ids, spec)
+        return self._get_result([by_id[i] for i in ids if i in by_id], spec)
 
     @staticmethod
     def _get_result(rows: list[dict], spec: _IncludeSpec) -> GetResult:

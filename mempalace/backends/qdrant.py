@@ -15,7 +15,6 @@ import re
 import threading
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Optional
 from urllib import error as urlerror, parse as urlparse, request as urlrequest
@@ -24,6 +23,7 @@ import numpy as np
 
 from ..lexical import bm25_scores, tokenize
 from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
+from ..timeutil import utc_now_iso as _utcnow
 from ..version import __version__
 from ._filters import matches_where, matches_where_document, validate_where
 from ._remote_common import (
@@ -73,10 +73,6 @@ _POINT_NAMESPACE = uuid.UUID("c06c3fc7-5c14-4dc4-84c2-24a5f72d8dc1")
 # Qdrant handles it and round-trips still drop overall, but this is a real
 # trade-off, not a metadata-only optimization.
 _SCROLL_PAGE_SIZE = 4096
-
-
-def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _point_id(doc_id: str) -> str:

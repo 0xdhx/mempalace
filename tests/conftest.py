@@ -210,6 +210,19 @@ def _realign_default_backend(palace_module):
 
 
 @pytest.fixture(autouse=True)
+def _utc_local_zone(monkeypatch):
+    """Read naive legacy timestamps as UTC so results don't depend on the host zone.
+
+    Tests that need another zone set ``timeutil._LOCAL_TZ`` themselves.
+    """
+    from datetime import timezone
+
+    from mempalace import timeutil
+
+    monkeypatch.setattr(timeutil, "_LOCAL_TZ", timezone.utc)
+
+
+@pytest.fixture(autouse=True)
 def _reset_mcp_cache(monkeypatch):
     """Reset cached MCP state between tests without importing mcp_server.
 

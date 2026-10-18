@@ -17,6 +17,7 @@ from typing import Iterable, Iterator, Optional
 
 from ..lexical import tokenize
 from ..stored_text import FLAG, decode_record, decode_value, encode_filter, encode_where
+from ..timeutil import recency_floor, recency_key
 from ._filters import matches_where
 from ._inproc_sqlite import open_reader as open_palace_reader
 
@@ -540,6 +541,17 @@ def _sqlite_collection_has_rows(palace_path: str, collection_name: str) -> Optio
 # (see _sqlite_recent_records); larger ones walk the order_field index.
 _RECENT_FILTER_DRIVEN_MAX = 200_000
 
+# Timestamps carrying a UTC suffix; the rest are naive local or other forms.
+_UTC_FORM_SQL = (
+    "(substr(o.string_value, -6) = '+00:00' OR substr(o.string_value, -1) IN ('Z', 'z'))"
+)
+
+
+def _newest_first(rows: list) -> list:
+    """``(id, timestamp, ...)`` rows by instant, newest first; ties and undated by id."""
+    rows = sorted(rows, key=lambda r: r[0])
+    return sorted(rows, key=lambda r: recency_key(r[1]), reverse=True)
+
 
 def _sqlite_recent_records(
     palace_path: str,
@@ -551,8 +563,8 @@ def _sqlite_recent_records(
 ) -> Optional[list[tuple[str, str, Optional[dict]]]]:
     """Decoded ``(id, document, metadata)`` for the newest ``limit`` records.
 
-    Newest first by ``order_field`` as text, records without a non-empty string
-    value last in storage order: the order :func:`recency_sort_key` defines.
+    Newest first by the instant in ``order_field``, records without a non-empty
+    string value last in storage order: the order :func:`recency_sort_key` defines.
     ``equalities`` filter on stored string metadata, each key matching any of
     its values. A missing document reads as ``""``. ``None`` when the database
     is missing or the read fails, so the caller can fall back to Chroma.
@@ -586,26 +598,30 @@ def _sqlite_recent_records(
                 """,
                 (order_field, drive_key, *drive_values, collection_name, *rest_params),
             ).fetchall()
-            rows.sort(key=lambda r: r[0])
-            dated = [r for r in rows if isinstance(r[1], str) and r[1]]
-            dated.sort(key=lambda r: r[1], reverse=True)
-            undated = [r for r in rows if not (isinstance(r[1], str) and r[1])]
-            row_ids = [r[0] for r in (dated + undated)[:limit]]
+            row_ids = [r[0] for r in _newest_first(rows)[:limit]]
         else:
-            row_ids = [
-                r[0]
-                for r in conn.execute(
-                    f"""
-                    SELECT e.id {_DRAWERS_SQL}
-                    JOIN embedding_metadata o ON o.id = e.id
-                    WHERE c.name = ? AND o.key = ? AND o.string_value > ''
-                    {filter_sql}
-                    ORDER BY o.string_value DESC, e.id
-                    LIMIT ?
-                    """,
-                    (collection_name, order_field, *filter_params, limit),
-                )
-            ]
+            dated_sql = f"""
+                SELECT e.id, o.string_value {_DRAWERS_SQL}
+                JOIN embedding_metadata o ON o.id = e.id
+                WHERE c.name = ? AND o.key = ? AND o.string_value > ''
+                {filter_sql}
+            """
+
+            def newest(extra_sql="", extra_params=()):
+                return conn.execute(
+                    dated_sql + extra_sql + " ORDER BY o.string_value DESC, e.id LIMIT ?",
+                    (collection_name, order_field, *filter_params, *extra_params, limit),
+                ).fetchall()
+
+            # Text order is instant order only within one form: take the
+            # newest of each, from the text floor of the overall newest, and
+            # merge them by instant.
+            rows = newest()
+            if len(rows) == limit:
+                floor = recency_floor(r[1] for r in rows)
+                for form in (_UTC_FORM_SQL, f"NOT ({_UTC_FORM_SQL})"):
+                    rows += newest(f" AND o.string_value >= ? AND {form}", (floor,))
+            row_ids = list(dict.fromkeys(r[0] for r in _newest_first(rows)))[:limit]
         # The filter-driven branch already ordered the undated rows.
         if len(row_ids) < limit and not filter_driven:
             row_ids += [
@@ -1188,8 +1204,9 @@ def sqlite_diary_rows(
 ) -> Optional[tuple[int, list[tuple[str, Optional[str], dict]]]]:
     """Count physical diary rows and hydrate only the newest ``limit`` rows.
 
-    All reads share one SQLite snapshot. Missing timestamps sort as empty
-    strings, with storage order breaking ties, matching the diary's paged
+    All reads share one SQLite snapshot. Rows order by the instant in
+    ``filed_at``, newest first; missing timestamps sort last, with storage
+    order breaking ties, matching the diary's paged
     ``Collection.get`` path. Non-string timestamps, an ambiguous collection,
     or an unavailable schema return ``None`` for that path to handle instead.
     Queued writes ahead of the metadata watermark also require Chroma's
@@ -1250,13 +1267,11 @@ def sqlite_diary_rows(
             ).fetchone()
             if unsupported:
                 return None
-            selected = conn.execute(
-                "SELECT e.id, e.embedding_id "
-                + scope
-                + " ORDER BY COALESCE(stamp.string_value, '') DESC, e.id LIMIT ?",
-                [*params, limit],
-            ).fetchall()
-            rows = _decoded_rows(conn, [row_id for row_id, _ in selected])
+            # Ordered here, not in SQL: text order is not instant order across
+            # naive local and UTC timestamps. One agent's diary is small.
+            stamped = conn.execute("SELECT e.id, stamp.string_value " + scope, params).fetchall()
+            selected = [row_id for row_id, _ in _newest_first(stamped)[:limit]]
+            rows = _decoded_rows(conn, selected)
             return total, _scalar_rows(rows)
     except (sqlite3.Error, ValueError):
         return None

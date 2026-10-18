@@ -40,7 +40,7 @@ def tool_kg_query(entity: str, as_of: str = None, direction: str = "both"):
         lambda kg: kg.query_entity(entity, as_of=as_of, direction=direction), read=True
     )
     if as_of is None:
-        now_key = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        now_key = utc_now_z()
         active = []
         historical = []
         future = []

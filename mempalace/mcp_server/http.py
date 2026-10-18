@@ -316,7 +316,7 @@ def _http_client_identity(handler) -> tuple[str, dict]:
 
 def _http_record_request(httpd, handler, status: int) -> None:
     now = time.time()
-    now_iso = datetime.now().isoformat()
+    now_iso = utc_now_iso()
     client_id, identity = _http_client_identity(handler)
     with httpd.stats_lock:
         httpd.request_count += 1
@@ -828,7 +828,7 @@ def _node_profile() -> dict:
         "accelerator": accelerator,
         "drawers": drawers,
         "hardware": platform.platform(),
-        "advertised_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "advertised_at": utc_now_z(),
     }
     _node_profile_cache["profile"] = profile
     _node_profile_cache["at"] = time.monotonic()
@@ -911,7 +911,7 @@ def _published_mesh_state() -> dict:
 def _record_peer_sync(stats: dict) -> None:
     """Fold one peer's round outcome into the estate state."""
     name = stats.get("peer_name") or stats.get("peer_url") or "?"
-    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    now = utc_now_z()
     with _MESH_STATE_LOCK:
         _record_peer_sync_locked(stats, name, now)
 
@@ -1437,7 +1437,7 @@ def _build_http_server(host: str, port: int):
     httpd.auth_token = auth_token
     httpd.scheme = "http"
     httpd.bind_host = host
-    httpd.started_at = datetime.now().isoformat()
+    httpd.started_at = utc_now_iso()
     httpd.started_monotonic = time.monotonic()
     httpd.stats_lock = threading.Lock()
     httpd.request_count = 0

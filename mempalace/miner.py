@@ -64,6 +64,7 @@ from .project_config import (  # noqa: F401
     find_project_config,
 )
 from .source_identity import source_directory_identity
+from .timeutil import utc_now_iso
 
 logger = logging.getLogger("mempalace_mcp")
 
@@ -1486,7 +1487,7 @@ def _build_drawer_metadata(
         "source_file": source_file,
         "chunk_index": chunk_index,
         "added_by": agent,
-        "filed_at": datetime.now().isoformat(),
+        "filed_at": utc_now_iso(),
         "normalize_version": NORMALIZE_VERSION,
         "id_recipe": ID_RECIPE,
     }
@@ -1741,7 +1742,7 @@ def process_file(
                 "room": room,
                 "source_file": source_file,
                 "drawer_count": int(drawers_added),
-                "filed_at": datetime.now().isoformat(),
+                "filed_at": utc_now_iso(),
                 "normalize_version": NORMALIZE_VERSION,
             }
             if entities:
