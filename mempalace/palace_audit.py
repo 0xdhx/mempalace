@@ -161,7 +161,7 @@ def _wing_source_counts_reader(config: MempalaceConfig):
     except Exception:
         return None
     if backend == "chroma":
-        from .backends.chroma import sqlite_wing_source_counts
+        from .backends.chroma_sqlite import sqlite_wing_source_counts
 
         return sqlite_wing_source_counts
     if backend in {"sqlite_exact", "rust_exact"}:

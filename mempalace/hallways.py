@@ -576,7 +576,7 @@ def _wing_metadata_from_sqlite(col, wing: str) -> Optional[list]:
     scoped read, stopped at its first row, tells it apart from a wing with no
     drawers at all.
     """
-    from .backends.chroma import MetadataRecoveryPending
+    from .backends.chroma_sqlite import MetadataRecoveryPending
     from .palace import _fast_collection_metadata
 
     scope = {"wing": wing}

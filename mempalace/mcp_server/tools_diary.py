@@ -172,7 +172,7 @@ def _sqlite_diary_read(agent_name: str, last_n: int, wing: str):
     if not _is_chroma_backend():
         return None
     try:
-        from ..backends.chroma import sqlite_diary_rows
+        from ..backends.chroma_sqlite import sqlite_diary_rows
 
         result = sqlite_diary_rows(
             _config.palace_path,

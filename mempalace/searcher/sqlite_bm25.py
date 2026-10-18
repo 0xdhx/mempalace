@@ -73,21 +73,16 @@ def _flag_truncations(result: dict, window_pool_truncated: bool, candidates_trun
 
 
 def _pick_fts_candidates(
-    conn, collection_name, query, *, max_candidates, scope, fts_filter, row_filter, stop_words
+    conn, collection_name, query, *, max_candidates, equalities, fts_filter, row_filter, stop_words
 ) -> list[int]:
     """Row ids for the BM25 re-rank, whole-word matches first.
 
     The trigram index matches inside words, and the first matches in storage
     order were the oldest substring hits. A scope filter matching few drawers
     is read directly (``row_filter`` refers to ``e.id``) instead of ranking
-    the palace-wide match set (``fts_filter``). ``scope`` maps a key to the
-    values it may hold.
+    the palace-wide match set (``fts_filter``). ``equalities`` are the
+    stored ``(key, values)`` the scope allows.
     """
-    equalities = [
-        (key, tuple(encode_filter(value) for value in values))
-        for key, values in scope.items()
-        if values
-    ]
     candidate_ids = _filtered_candidate_rows(
         conn,
         collection_name,
@@ -158,43 +153,22 @@ def _bm25_only_via_sqlite(
         "source_file": [source_file] if source_file else [],
     }
 
+    equalities = [
+        (key, tuple(encode_filter(value) for value in values))
+        for key, values in scope.items()
+        if values
+    ]
+
     def _metadata_filter_sql(row_id_expr: str) -> tuple[str, list[str]]:
-        clauses = []
-        params = []
-        for key, values in scope.items():
-            if not values:
-                continue
-            clauses.append(
-                f"""
-                AND EXISTS (
-                    SELECT 1
-                    FROM embedding_metadata mf
-                    WHERE mf.id = {row_id_expr}
-                      AND mf.key = ?
-                      AND COALESCE(
-                        mf.string_value,
-                        CAST(mf.int_value AS TEXT),
-                        CAST(mf.float_value AS TEXT),
-                        CAST(mf.bool_value AS TEXT)
-                      ) IN ({",".join("?" * len(values))})
-                )
-                """
-            )
-            params.extend([key, *(encode_filter(value) for value in values)])
+        sql, params = _match_sql(equalities, row_id_expr, "mf")
         for op, sql_bound in _window_sql_prefilters(since_dt, before_dt):
-            clauses.append(
-                f"""
-                AND EXISTS (
-                    SELECT 1
-                    FROM embedding_metadata mf
-                    WHERE mf.id = {row_id_expr}
-                      AND mf.key = 'filed_at'
-                      AND mf.string_value {op} ?
-                )
-                """
+            sql += (
+                " AND EXISTS (SELECT 1 FROM embedding_metadata mf"
+                f" WHERE mf.id = {row_id_expr} AND mf.key = 'filed_at'"
+                f" AND mf.string_value {op} ?)"
             )
             params.append(sql_bound)
-        return "".join(clauses), params
+        return sql, params
 
     try:
         conn = open_palace_reader(db_path)
@@ -217,7 +191,7 @@ def _bm25_only_via_sqlite(
                     collection_name,
                     query,
                     max_candidates=max_candidates,
-                    scope=scope,
+                    equalities=equalities,
                     fts_filter=(filter_sql, filter_params),
                     row_filter=_metadata_filter_sql("e.id"),
                     stop_words=stop_words,
@@ -235,51 +209,16 @@ def _bm25_only_via_sqlite(
             # something rather than return empty-handed. A clean FTS miss
             # must stay empty, especially after wing/room filtering, because
             # recency fallback would return unrelated scoped drawers.
-            # Wrapped in try/except because the schema may differ on legacy
-            # palaces (older chromadb without ``created_at``, missing
-            # ``segments`` rows after partial restore, etc.); on schema
-            # mismatch we fall back to ordering by primary-key id and finally
-            # to an empty result rather than letting search raise.
+            # On a legacy schema (older chromadb without ``created_at``,
+            # missing ``segments`` rows after partial restore) the window is
+            # ordered by id, and failing that is empty rather than raising.
             try:
-                filter_sql, filter_params = _metadata_filter_sql("e.id")
-                rows = conn.execute(
-                    f"""
-                    SELECT e.id
-                    FROM embeddings e
-                    JOIN segments s ON e.segment_id = s.id
-                    JOIN collections c ON s.collection = c.id
-                    WHERE c.name = ?
-                    {filter_sql}
-                    ORDER BY e.created_at DESC
-                    LIMIT ?
-                    """,
-                    (collection_name, *filter_params, max_candidates),
-                ).fetchall()
-                candidate_ids = [r[0] for r in rows]
-            except sqlite3.Error:
-                logger.debug(
-                    "recency-window query failed; trying id-ordered fallback",
-                    exc_info=True,
+                candidate_ids = _newest_row_ids(
+                    conn, collection_name, max_candidates, *_metadata_filter_sql("e.id")
                 )
-                try:
-                    filter_sql, filter_params = _metadata_filter_sql("e.id")
-                    rows = conn.execute(
-                        f"""
-                        SELECT e.id
-                        FROM embeddings e
-                        JOIN segments s ON e.segment_id = s.id
-                        JOIN collections c ON s.collection = c.id
-                        WHERE c.name = ?
-                        {filter_sql}
-                        ORDER BY e.id DESC
-                        LIMIT ?
-                        """,
-                        (collection_name, *filter_params, max_candidates),
-                    ).fetchall()
-                    candidate_ids = [r[0] for r in rows]
-                except sqlite3.Error:
-                    logger.debug("id-ordered fallback also failed", exc_info=True)
-                    candidate_ids = []
+            except sqlite3.Error:
+                logger.debug("recency-window queries failed", exc_info=True)
+                candidate_ids = []
 
         # A full candidate page means rows beyond it never got a chance to
         # match the window — mirror the vector path's truncation honesty
@@ -295,43 +234,18 @@ def _bm25_only_via_sqlite(
                 "fallback": "bm25_only_via_sqlite",
             }
 
-        placeholders = ",".join(["?"] * len(candidate_ids))
-        meta_rows = conn.execute(
-            f"""
-            SELECT m.id, e.embedding_id, m.key, m.string_value, m.int_value
-            FROM embedding_metadata AS m
-            JOIN embeddings AS e ON e.id = m.id
-            WHERE m.id IN ({placeholders})
-            """,
-            candidate_ids,
-        ).fetchall()
+        # In row order: the BM25 sort below keeps it for ties.
+        rows = _decoded_rows(conn, sorted(candidate_ids))
     finally:
         conn.close()
-
-    # Group metadata rows into per-drawer dicts.
-    drawers: dict[int, dict] = {}
-    for emb_id, stored_drawer_id, key, sval, ival in meta_rows:
-        d = drawers.setdefault(
-            emb_id,
-            {
-                "_id": emb_id,
-                "_stored_drawer_id": stored_drawer_id,
-                "metadata": {},
-                "text": "",
-            },
-        )
-        if key == "chroma:document":
-            d["text"] = sval or ""
-        else:
-            d["metadata"][key] = sval if sval is not None else ival
 
     # Apply wing/room filters in Python (FTS5 candidates may include
     # entries from other wings).
     candidates = []
     wings = set(wing_names)
-    for d in drawers.values():
-        text, meta = decode_record(d["text"], d["metadata"])
-        if is_bookkeeping(meta, d["_stored_drawer_id"]):
+    for stored_drawer_id, text, meta in rows:
+        text, meta = text or "", meta or {}
+        if is_bookkeeping(meta, stored_drawer_id):
             continue
         if wings and meta.get("wing") not in wings:
             continue
@@ -344,7 +258,7 @@ def _bm25_only_via_sqlite(
         full_source = meta.get("source_file", "") or ""
         candidates.append(
             {
-                "drawer_id": _result_drawer_id(meta, d["_stored_drawer_id"]),
+                "drawer_id": _result_drawer_id(meta, stored_drawer_id),
                 "text": text,
                 "wing": meta.get("wing", "unknown"),
                 "room": meta.get("room", "unknown"),

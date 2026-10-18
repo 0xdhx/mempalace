@@ -101,7 +101,7 @@ def test_diary_read_finds_entries_under_the_old_project_and_agent_wings(
 def test_bm25_fallback_rooms_and_wake_up_match_every_old_spelling(
     monkeypatch, config, palace_path, collection, kg
 ):
-    from mempalace.backends import chroma as chroma_module
+    from mempalace.backends import chroma_sqlite
     from mempalace.backends.base import BaseCollection
     from mempalace.layers import Layer1
     from mempalace.searcher import search_memories
@@ -113,7 +113,7 @@ def test_bm25_fallback_rooms_and_wake_up_match_every_old_spelling(
     expected = set(OLD_SPELLINGS.values())
     for driven in (10**9, 0):
         # Both candidate pickers: read the wing's drawers, or rank the palace.
-        monkeypatch.setattr(chroma_module, "_FTS_FILTER_DRIVEN_MAX", driven)
+        monkeypatch.setattr(chroma_sqlite, "_FTS_FILTER_DRIVEN_MAX", driven)
         found = search_memories(
             "release notes", palace_path, wing="my_app", vector_disabled=True, n_results=10
         )

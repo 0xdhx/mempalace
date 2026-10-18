@@ -2324,7 +2324,8 @@ def status(palace_path: str):
     un-bootstrapped collection, or an unexpected schema); the fallback also
     emits the state-specific guidance for absent/empty palaces.
     """
-    from .backends.chroma import _sqlite_wing_room_counts, hnsw_capacity_status
+    from .backends.chroma import hnsw_capacity_status
+    from .backends.chroma_sqlite import _sqlite_wing_room_counts
 
     counts = _sqlite_wing_room_counts(palace_path, "mempalace_drawers")
     if counts is not None:

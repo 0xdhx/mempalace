@@ -313,7 +313,7 @@ def test_drawer_sqlite_array_metadata_falls_back_without_losing_values(
 
 @pytest.mark.parametrize("backend", ["sqlite_exact", "custom_backend"])
 def test_drawer_sqlite_non_chroma_backend_uses_original_lookup(drawer_palace, monkeypatch, backend):
-    from mempalace.backends import chroma as chroma_backend
+    from mempalace.backends import chroma_sqlite as chroma_backend
 
     server, collection = drawer_palace
     _seed(collection, [("drawer", "Backend-independent content", {"room": "notes"})])
@@ -335,7 +335,7 @@ def test_drawer_sqlite_non_chroma_backend_uses_original_lookup(drawer_palace, mo
 def test_drawer_sqlite_unavailable_or_error_reads_fall_back_once(
     drawer_palace, monkeypatch, config, failure
 ):
-    from mempalace.backends import chroma as chroma_backend
+    from mempalace.backends import chroma_sqlite as chroma_backend
 
     server, collection = drawer_palace
     _seed(collection, [("drawer", "Original fallback content", {"room": "notes"})])

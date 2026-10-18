@@ -166,7 +166,7 @@ def _sqlite_logical_drawer_record(drawer_id: str):
     if not isinstance(drawer_id, str) or not drawer_id or not _is_chroma_backend():
         return None
     try:
-        from ..backends.chroma import sqlite_drawer_rows
+        from ..backends.chroma_sqlite import sqlite_drawer_rows
 
         result = sqlite_drawer_rows(
             _config.palace_path, _config.collection_name, drawer_id=drawer_id
@@ -383,7 +383,7 @@ def _fill_drawer_previews_from_sqlite(page: list, *, connection=None) -> bool:
     physical_ids = _page_physical_ids(page)
     if not physical_ids:
         return True
-    from ..backends.chroma import sqlite_documents_for_ids
+    from ..backends.chroma_sqlite import sqlite_documents_for_ids
 
     docs_by_id = sqlite_documents_for_ids(
         _config.palace_path, _config.collection_name, physical_ids, _connection=connection
@@ -1376,7 +1376,7 @@ def tool_list_drawers(
             }
 
         if _is_chroma_backend() and _config.palace_path:
-            from ..backends.chroma import sqlite_list_id_metadata, sqlite_metadata_snapshot
+            from ..backends.chroma_sqlite import sqlite_list_id_metadata, sqlite_metadata_snapshot
 
             # Metadata selection, logical grouping and page-only text hydration
             # share a recovered SQLite snapshot. Close it before any SDK fallback.
