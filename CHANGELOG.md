@@ -210,11 +210,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   setup that names an old logger should name `mempalace` instead.
   Messages and levels are unchanged.
 
-- **Every `MEMPALACE_*` switch reads true and false the same way.** All
-  boolean variables accept `1/true/yes/y/on` and `0/false/no/n/off`, case and
-  surrounding spaces ignored, and a blank variable counts as unset. A value
-  that does not parse logs one warning and falls through to `config.json`,
-  then the default. Before, some switches took a smaller set of words, and an
+- **Every `MEMPALACE_*` switch reads true and false the same way.** Every
+  boolean `MEMPALACE_*` variable accepts `1/true/yes/y/on` and
+  `0/false/no/n/off`, case and surrounding spaces ignored, and a blank
+  variable counts as unset. A value that does not parse logs one warning and
+  falls through to `config.json` where the setting has one, then the
+  default. Before, some switches took a smaller set of words, and an
   unrecognised value was read differently per variable:
   `MEMPALACE_HOOKS_AUTO_SAVE=garbage` counted as true, while
   `MEMPALACE_CONVO_SPELLCHECK` and `MEMPALACE_HOOKS_DAEMON` counted it as
@@ -234,7 +235,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   entity, and re-adding an entity replaced all of its stored properties. New
   ids keep punctuation (`o'brien`, `obrien`), with `_` and `%` escaped as
   `%5F` and `%25` so no two names share an id. Existing entities keep their
-  stored ids and stay reachable by every spelling that reached them before.
+  stored ids and are still found by the spellings that reached them before,
+  unless the stored name keeps that same id under the new rule: an entity
+  stored as `OBrien` is no longer found by `O'Brien`, which now gets its own
+  entity.
   A re-add now merges properties key by key; a type other than `unknown`
   replaces the stored one. `KnowledgeGraph.report_entity_id_collisions()`
   lists existing entities whose old id may hold facts for more than one
@@ -251,8 +255,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   if that append fails. Closets are purged only after the new text is
   written, so a failed update leaves the drawer and its closets as they were.
   Deleting a drawer (`mempalace_delete_drawer`, `mempalace_delete_drawers`,
-  `mempalace_delete_by_source`) removes its revisions and its AAAK summaries
-  too, after the delete commits; each delete result reports
+  `mempalace_delete_by_source`) removes its revisions too, after the delete
+  commits; each delete result reports
   `revisions_deleted`. A re-mine and `sync` leave revisions alone.
 
 ### Security
@@ -272,12 +276,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **LLM and embedding errors no longer carry keys.** Every model and
   embedding request goes through one client. The body of a 401 or 403 reply
   is dropped, and `sk-…` tokens, `Bearer` values, `api_key` fields and `key=`
-  query parameters are masked in every error message.
+  query parameters are masked in the error a failed model or embedding
+  request raises.
 - **State files are written through a fresh temporary file.** The writers of
   the room, tunnel, wing-split and `kg normalize` plans, the logstream watch
-  cursor, `replica.json` and `mesh_state.json` used a predictable `.tmp` name
-  opened without `O_EXCL`, so a file or link planted at that name was reused,
-  and on Windows a planted link was written through. `serverinfo.json` and
+  cursor, `replica.json` and `mesh_state.json` used a fixed `.tmp` name (a
+  pid-numbered one for `mesh_state.json`) opened without `O_EXCL`, so a file
+  or link planted at that name was reused and a planted link was written
+  through. `serverinfo.json` and
   the daemon's token, endpoint and pid files were written in place, where a
   reader could see half a record. All of them now create a new randomly named
   file and rename it into place.
@@ -292,25 +298,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   rows, adding 50 drawers took 10 s and now takes 10 ms. The first writable
   open of an existing palace re-keys the rows that drifted, once (about 3 s
   for 3,000 rows).
-- **Wing-scoped wake-up on `sqlite_exact` reads the wing's newest drawers,
-  quickly.** Wake-up filters a wing by every spelling it was filed under
-  (`{"wing": {"$in": [...]}}`), which `sqlite_exact` could not evaluate in
-  SQL, so its recency read fell back to sorting whatever rows came back first
-  and could miss the newest ones. `$in` and `$eq` filters on plain values now
-  run in SQL, and two indexes on `filed_at` (palace-wide and per wing) serve
+- **Newest-first reads on `sqlite_exact` are fast on large palaces.**
+  `$in` and `$eq` filters on plain values, such as the wing filter wake-up
+  builds from every spelling a wing was filed under
+  (`{"wing": {"$in": [...]}}`), now run in SQL, and two indexes on `filed_at` (palace-wide and per wing) serve
   the newest-first reads. Existing palaces build them on their next writable
   open; a read-only open uses them when present and reads correctly without.
   On a 150k-drawer palace a 2,000-drawer recency read drops from 1.5 s to
   80 ms, and the wing-scoped one from 5 s to 60 ms.
 - **The Stop hook's diary save runs in the background.** The hook imported
   the MCP server in the foreground, which alone took about half a second, the
-  whole hook budget. It now hands the checkpoint to a detached process and
-  returns without loading the server, printing "checkpoint queued". That
-  process files the checkpoint first and then runs the transcript and project
-  mines, so
-  the mine no longer takes the palace lock ahead of the checkpoint. When
-  another writer holds the palace for more than about 30 s, the next Stop
-  retries.
+  whole hook budget. Unless hooks route through the daemon, it now hands the
+  checkpoint to a detached process and returns without loading the server,
+  printing "checkpoint queued". That process files the checkpoint, then
+  starts the transcript and project mines. When another writer holds the
+  palace for more than about 30 s, the checkpoint is skipped and the next
+  Stop retries.
 - pgvector looks up drawers by id with its primary key instead of reading
   the table, so `get(ids=...)`, `add` and `update` no longer scan every row.
 - Importing `mempalace.layers` no longer loads the search stack and
@@ -482,18 +485,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   The built-in backends already skipped missing ids; the default that
   third-party backends inherit wrote them as empty records.
 - **Qdrant and pgvector keep a drawer's metadata when one value is not
-  JSON.** One unserializable value (a date, NaN) replaced the drawer's whole
-  metadata with `{}`, losing its wing, room and source. That value is now
-  stored as text, as Milvus already did, and the rest is kept. The remote
+  JSON.** One value that is not JSON, such as a date, replaced the drawer's
+  whole metadata with `{}`, losing its wing, room and source, and a NaN was
+  sent as a token the database rejects. Such values are now stored as text,
+  as Milvus already did, and the rest is kept. The remote
   backends' target markers are published atomically and rewritten only when
   the target changes, so `created_at` is kept.
-- **Chroma refuses a write batch whose columns disagree in length.**
-  `add(ids=["a"], documents=["one", "two"])` stored one record and silently
-  dropped the second document, and `upsert` and `update` did the same. Chroma
-  now raises `ValueError` like every other backend, and nothing is stored.
 - **NUL characters and lone surrogates in drawer text and metadata values are
-  stored exactly.** They used to be stripped or replaced before storage on
-  every backend. A string holding one is now stored escaped, the record is
+  stored exactly.** Chroma, pgvector and Milvus used to strip or replace them
+  before storage. A string holding one is now stored escaped, the record is
   flagged, and reads return the original text; filters by a value read back
   still match. Ids and metadata keys holding either character are refused.
 - **`mempalace migrate` keeps the rest of the palace.** It rebuilt drawers
@@ -550,23 +550,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   cursor) retry the brief access-denied window instead of reading the file as
   empty or corrupt. The cross-process mine lock rides out a lock file whose
   delete is still pending and waits past the ten tries Windows' own lock call
-  gives up after, which used to crash a waiting `serve` start or mine; an
-  open that can never succeed (a directory or read-only file at the lock
-  path) fails at once instead of after 5 s.
-- **A first mine on Chroma no longer fails with "Nothing found on disk".**
-  Before each batch the mine read the stored vectors of the batch's drawers
-  to reuse them, even when none existed yet, and that read could land on an
-  HNSW segment Chroma was still writing. Vectors are now read only for
-  drawers whose text is unchanged, and a failed read re-embeds them instead
-  of failing the mine.
+  gives up after, which used to crash a waiting `serve` start or mine.
 - **The Hermes provider writes through the palace's configured backend.** It
   opened a Chroma backend whatever the palace used, and logged failed writes
   at debug level. It now opens the palace's own collection, counts and logs
   failures as warnings (without the text), and waits for a mine holding the
-  lock instead of dropping the turn. `mempalace_diary_write` files diary
-  drawers, `mempalace_diary_read` lists entries still in an old
-  `diary.jsonl` before them, and `import_legacy: true` files those entries as
-  drawers once and renames the file to `diary.jsonl.imported`.
+  lock instead of dropping the turn. The provider's own
+  `mempalace_diary_write` tool now files diary drawers, its
+  `mempalace_diary_read` tool lists entries still in an old `diary.jsonl`
+  before them, and `import_legacy: true` files those entries as drawers once
+  and renames the file to `diary.jsonl.imported`.
 - `mempalace --palace PATH serve` serves that palace; the `serve`
   subcommand's own default used to replace the global flag with the default
   palace.
@@ -579,8 +572,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `mempalace_check_duplicate` local when its environment or `--backend` sets
   search settings the hub may not share, the rule `mempalace search` already
   applied. Every other tool still goes to the hub.
-- `follow_tunnels` records the crossing in sessions that only read; it no
-  longer waits for the writer lease, which a read-only session never takes.
+- `follow_tunnels` keeps recording crossings in a session that found another
+  writer holding the palace; such a session used to stop recording them.
+  Recording takes the tunnel file's own lock and never needed the writer
+  lease.
 - The daemon, hooks and server registry share one check of whether a process
   is alive. On Windows a process that exists but denies access now counts as
   alive, where some copies treated it as gone.
@@ -589,8 +584,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   `follow_tunnels`, `mesh_peers`, `event_list`, `event_wait` and
   `artifact_get`.
 - The hub's replication and mesh routes (`/sync/version_vector`,
-  `mempalace_mesh_peers`) count drawers under the request lock without
-  queueing behind a long write, and peer-sync integrity fields are published
+  `mempalace_mesh_peers`) count drawers under the request lock when it is
+  free and otherwise report the last count, so they never queue behind a
+  long write, and peer-sync integrity fields are published
   together, so one answer never mixes two refreshes.
 
 ---
