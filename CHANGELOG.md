@@ -10,6 +10,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **MemPalace now requires Python 3.10 or newer.** Python 3.9 reached end
+  of life in October 2025, and the optional extras (MarkItDown, the
+  multimodal and EmbeddingGemma models, Milvus Lite, Pillow 12) already
+  needed 3.10, so on 3.9 they installed as silent no-ops. Their
+  `python_version` markers are gone. pip on Python 3.9 keeps resolving
+  `mempalace` to the last release that supports it. The `mempalace-py`
+  native wheel is built for the 3.10 stable ABI. CI tests 3.10, 3.11
+  and 3.13.
 - **Drawer `filed_at` and the other stored timestamps are now always UTC
   with an explicit offset** (`2026-10-17T13:00:00.123456+00:00`). Most
   writers used to store naive local time while the diary importer stored
