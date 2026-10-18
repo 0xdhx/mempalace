@@ -49,7 +49,7 @@ from .config import sanitize_iso_temporal, strip_lone_surrogates
 from .fsio import atomic_publish, read_published_bytes
 from .timeutil import filename_stamp, utc_now_z
 
-logger = logging.getLogger("mempalace_logstream")
+logger = logging.getLogger(__name__)
 
 LOGSTREAM_DB_FILENAME = "logstream.sqlite3"
 

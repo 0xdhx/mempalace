@@ -434,7 +434,7 @@ def test_openai_compat_check_warns_but_passes_on_model_mismatch(caplog):
     # decides, so a mismatch is a warning that names the served models.
     with patch("mempalace.llm_client.urlopen", return_value=_models_response(["other"])):
         p = OpenAICompatProvider(model="gone", endpoint="http://localhost:1")
-        with caplog.at_level("WARNING", logger="mempalace_llm"):
+        with caplog.at_level("WARNING", logger="mempalace"):
             ok, msg = p.check_available()
     assert ok and msg == "ok"
     assert "other" in caplog.text and "auto" in caplog.text

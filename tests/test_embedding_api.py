@@ -11,6 +11,7 @@ import json
 import pytest
 
 import mempalace.embedding as embedding
+from mempalace import _once
 from mempalace.config import MempalaceConfig
 
 
@@ -68,13 +69,12 @@ def _fake_urlopen(*, dim=4, one_hot=False, shuffle=False, captured=None):
 
 
 def test_external_embedding_url_warns_once(caplog):
-    embedding._external_embedding_warned = False
     with caplog.at_level("WARNING"):
         embedding.OpenAICompatEmbeddingFunction("https://api.openai.com/v1", "m")
         embedding.OpenAICompatEmbeddingFunction("https://api.openai.com/v1", "m")
     warnings = [rec.message for rec in caplog.records if "api.openai.com" in rec.message]
     assert len(warnings) == 1
-    embedding._external_embedding_warned = False
+    _once.reset()
     with caplog.at_level("WARNING"):
         embedding.OpenAICompatEmbeddingFunction("http://127.0.0.1:11434/v1", "m")
     assert not any("127.0.0.1" in rec.message for rec in caplog.records)

@@ -210,6 +210,14 @@ def _realign_default_backend(palace_module):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_one_shot_warnings():
+    """Let every test see the warnings that fire once per process."""
+    from mempalace import _once
+
+    _once.reset()
+
+
+@pytest.fixture(autouse=True)
 def _utc_local_zone(monkeypatch):
     """Read naive legacy timestamps as UTC so results don't depend on the host zone.
 

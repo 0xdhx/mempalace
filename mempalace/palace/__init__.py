@@ -45,7 +45,7 @@ from ..entity_detector import (
 )
 from ..metadata_types import coerce_metadata_types
 
-logger = logging.getLogger("mempalace_mcp")
+logger = logging.getLogger(__name__)
 
 SKIP_DIRS = {
     ".git",

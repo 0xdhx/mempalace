@@ -878,9 +878,6 @@ def _resolve_kg_path() -> str:
     return paths.knowledge_graph_path(_config.palace_path, explicit=_palace_flag_given)
 
 
-_kg_notices_logged: set = set()
-
-
 def _with_kg_notice(payload):
     """Add the palace's knowledge-graph notice, if any, to a KG tool response.
 
@@ -888,8 +885,7 @@ def _with_kg_notice(payload):
     """
     notice = knowledge_graph_notice(_config.palace_path, explicit=_palace_flag_given)
     if notice:
-        if notice not in _kg_notices_logged:
-            _kg_notices_logged.add(notice)
+        if first_time("kg-notice", notice):
             logger.warning(notice)
         if isinstance(payload, dict):
             payload["notice"] = notice

@@ -41,7 +41,7 @@ from .search_util import _cosine_scale_distance  # noqa: E402
 from .timeutil import recency_key  # noqa: E402
 from .version import __version__  # noqa: E402
 
-logger = logging.getLogger("mempalace_mcp_light")
+logger = logging.getLogger(__name__)
 
 _PQL_KEYWORDS = {
     "FIND",

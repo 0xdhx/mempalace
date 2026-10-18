@@ -66,7 +66,7 @@ from .project_config import (  # noqa: F401
 from .source_identity import source_directory_identity
 from .timeutil import utc_now_iso
 
-logger = logging.getLogger("mempalace_mcp")
+logger = logging.getLogger(__name__)
 
 
 def _path_within_root(path: Path, root: Path) -> bool:
