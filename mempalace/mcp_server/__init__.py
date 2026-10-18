@@ -79,7 +79,10 @@ from urllib.parse import urlparse  # noqa: E402
 
 from chromadb.errors import NotFoundError as _ChromaNotFoundError  # noqa: E402
 
-from .. import tool_capabilities as _tool_capabilities  # noqa: E402
+from .. import (  # noqa: E402
+    paths,
+    tool_capabilities as _tool_capabilities,
+)
 from .._env import env_bool, env_float, env_int, env_list, env_str  # noqa: E402
 from ..backends import BackendMismatchError, PalaceRef, detect_backend_for_path  # noqa: E402
 from ..backends.base import (  # noqa: E402

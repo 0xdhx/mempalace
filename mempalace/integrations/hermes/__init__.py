@@ -70,6 +70,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from mempalace import paths
 from mempalace.config import (
     MempalaceConfig,
     sanitize_iso_temporal,
@@ -608,8 +609,8 @@ class MempalaceProvider(MemoryProvider):  # type: ignore[misc]
     """Hermes memory provider backed by MemPalace."""
 
     DEFAULT_COLLECTION_NAME = "mempalace_drawers"
-    DEFAULT_PALACE_PATH = "~/.mempalace/palace"
-    DEFAULT_IDENTITY_PATH = "~/.mempalace/identity.txt"
+    DEFAULT_PALACE_PATH = paths.display_state_path("palace")
+    DEFAULT_IDENTITY_PATH = paths.display_state_path("identity.txt")
     WORKER_QUEUE_MAX = 500
     # Waits for a palace lock held by a mine before a turn is dropped: ~30s.
     LOCK_RETRY_DELAYS = (1, 2, 4, 8, 16)

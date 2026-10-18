@@ -45,6 +45,7 @@ from typing import Callable, Iterator, Optional
 
 from chromadb.errors import NotFoundError as ChromaNotFoundError
 
+from . import paths
 from .backends._inproc_sqlite import (
     open_reader as open_palace_reader,
     open_writer as open_palace_writer,
@@ -205,7 +206,7 @@ def _get_palace_path():
 
         return MempalaceConfig().palace_path
     except Exception:
-        return os.path.join(os.path.expanduser("~"), ".mempalace", "palace")
+        return str(paths.state_path("palace"))
 
 
 def _paginate_ids(col, where=None):

@@ -46,6 +46,7 @@ import urllib.parse
 from datetime import datetime
 from typing import Optional
 
+from . import paths
 from .llm_client import (
     endpoint_is_local,
     external_use_accepted_by_env,
@@ -395,7 +396,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--palace",
-        default=os.path.expanduser("~/.mempalace/palace"),
+        default=paths.default_palace_path(),
         help="Path to the palace",
     )
     parser.add_argument("--wing", default=None, help="Limit to one wing")

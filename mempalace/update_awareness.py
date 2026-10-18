@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 import sys
 import threading
@@ -11,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from . import paths
 from .fsio import atomic_publish, read_published_bytes
 from .version import __version__
 
@@ -35,7 +35,7 @@ def _installer_action(installer: str) -> dict:
 
 
 def _config_dir(value=None) -> Path:
-    return Path(value) if value is not None else Path(os.path.expanduser("~/.mempalace"))
+    return Path(value) if value is not None else paths.state_home()
 
 
 def _read_json(name: str, config_dir=None) -> dict:

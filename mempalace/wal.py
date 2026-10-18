@@ -17,11 +17,11 @@ import logging
 import os
 from datetime import datetime
 
-from .config import _default_config_dir
+from .paths import config_dir
 
 logger = logging.getLogger(__name__)
 
-_WAL_FILE = _default_config_dir() / "wal" / "write_log.jsonl"
+_WAL_FILE = config_dir() / "wal" / "write_log.jsonl"
 _WAL_INITIALIZED_DIR = None
 
 # Keys whose values should be redacted in WAL entries to avoid logging sensitive content

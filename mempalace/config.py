@@ -3,14 +3,8 @@ MemPalace configuration system.
 
 Priority: env vars > config file > defaults.
 
-The default config directory follows the XDG Base Directory Specification
-(https://specifications.freedesktop.org/basedir-spec/basedir-spec-latest.html)
-with back-compat for existing installs:
-
-  1. $MEMPALACE_CONFIG_DIR if set (explicit override, used by tests and CI)
-  2. ~/.mempalace if it already exists (existing installs keep working)
-  3. $XDG_CONFIG_HOME/mempalace if XDG_CONFIG_HOME is set
-  4. ~/.config/mempalace (XDG default fallback)
+The default config directory is resolved by ``paths.config_dir`` (XDG with
+back-compat for existing ``~/.mempalace`` installs).
 """
 
 import hashlib
@@ -23,7 +17,7 @@ from datetime import date, datetime
 from functools import lru_cache
 from pathlib import Path
 
-from . import fsio
+from . import fsio, paths
 from ._env import env_flag, env_float, env_int, env_str, parse_bool, parse_number
 from .write_routing import (
     ResolvedWriteRoutingPolicy,
@@ -263,52 +257,13 @@ def sanitize_content(value: str, max_length: int = 100_000) -> str:
     return strip_lone_surrogates(value)
 
 
-# ── XDG Base Directory resolution ─────────────────────────────────────────────
-
-# Files that mark a ~/.mempalace directory as a real legacy install rather
-# than an empty/leftover directory. Any one is enough for back-compat.
-_LEGACY_MARKERS = ("config.json", "people_map.json")
-
-
-def _has_legacy_install(legacy: Path) -> bool:
-    """Return True if ``legacy`` is a real legacy install, not an empty dir.
-
-    A bare ``palace`` directory created by some other tool should not hijack
-    the XDG path, so the palace sub-directory only counts when it contains
-    an actual ChromaDB store (``chroma.sqlite3``).
-    """
-    if any((legacy / marker).is_file() for marker in _LEGACY_MARKERS):
-        return True
-    return (legacy / "palace" / "chroma.sqlite3").is_file()
-
-
-def _default_config_dir() -> Path:
-    """Return the default config directory.
-
-    See the module docstring for the resolution order.
-    """
-    env_dir = os.environ.get("MEMPALACE_CONFIG_DIR")
-    if env_dir and env_dir.strip():
-        return Path(env_dir).expanduser()
-
-    legacy = Path.home() / ".mempalace"
-    if legacy.is_dir() and _has_legacy_install(legacy):
-        return legacy
-
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    if xdg and xdg.strip():
-        xdg_path = Path(xdg).expanduser()
-        # Per XDG spec, relative paths must be ignored as invalid.
-        if xdg_path.is_absolute():
-            return xdg_path / "mempalace"
-
-    return Path.home() / ".config" / "mempalace"
-
+# The config directory lives in paths.py; this name is kept for importers.
+_default_config_dir = paths.config_dir
 
 # DEPRECATED: kept only for backward compatibility with external importers.
 # This constant is frozen at the legacy location and is NOT XDG-aware — prefer
 # MempalaceConfig().palace_path in new code.
-DEFAULT_PALACE_PATH = os.path.expanduser("~/.mempalace/palace")
+DEFAULT_PALACE_PATH = paths.default_palace_path()
 DEFAULT_COLLECTION_NAME = "mempalace_drawers"
 DEFAULT_BACKEND = "chroma"
 DEFAULT_EMBEDDINGGEMMA2_REVISION = "914f7f89142e33e77833254d9c9b90c3cef7303b"

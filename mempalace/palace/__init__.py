@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from .. import paths
 from ..backends import (
     BackendClosedError,
     BackendError,
@@ -57,7 +58,7 @@ SKIP_DIRS = {
     "build",
     ".next",
     "coverage",
-    ".mempalace",
+    paths.DIRNAME,
     ".ruff_cache",
     ".mypy_cache",
     ".pytest_cache",

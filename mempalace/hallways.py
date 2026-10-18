@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
+from . import paths
 from .dynamics import initialize_dynamics_fields
 from .fsio import (
     atomic_write_json as _atomic_write_json,
@@ -99,7 +100,7 @@ def _hallway_file_lock(config=None):
 
 def _legacy_hallway_file() -> str:
     """The pre-palace-scoped hardcoded path. Kept only for one-time orphan detection."""
-    return os.path.join(os.path.expanduser("~"), ".mempalace", "hallways.json")
+    return str(paths.state_path("hallways.json"))
 
 
 def _load_hallways_for_write(config=None) -> list[dict]:

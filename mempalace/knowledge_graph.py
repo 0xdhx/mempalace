@@ -36,7 +36,6 @@ Usage:
 """
 
 import json
-import os
 import re
 import sqlite3
 import threading
@@ -45,10 +44,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from . import paths
 from .config import sanitize_iso_temporal
 from .ids import make_triple_id
 
-DEFAULT_KG_PATH = os.path.expanduser("~/.mempalace/knowledge_graph.sqlite3")
+DEFAULT_KG_PATH = paths.state_str("knowledge_graph.sqlite3")
 _MIN_ENTITY_CANDIDATE_LEN = 3
 
 
