@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from mempalace import paths
 from mempalace._env import env_float, env_str, parse_bool
 from mempalace._proc import pid_alive as _pid_alive
 from mempalace.config import MempalaceConfig, normalize_wing_name
@@ -39,8 +40,8 @@ from mempalace.write_routing import (
 )
 
 SAVE_INTERVAL = 15
-STATE_DIR = Path.home() / ".mempalace" / "hook_state"
-PALACE_ROOT = Path.home() / ".mempalace"
+STATE_DIR = paths.state_path("hook_state")
+PALACE_ROOT = paths.state_home()
 
 
 def _detached_popen_kwargs() -> dict:
@@ -66,9 +67,7 @@ def _detached_popen_kwargs() -> dict:
 
 def _config_root() -> Path:
     """The directory this install keeps its config in (XDG-aware)."""
-    from .config import _default_config_dir
-
-    return _default_config_dir()
+    return paths.config_dir()
 
 
 def _palace_root_exists() -> bool:

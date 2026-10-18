@@ -30,6 +30,7 @@ from collections import Counter, defaultdict
 from contextlib import contextmanager
 from datetime import datetime, timezone
 
+from . import paths
 from .backends.base import BaseCollection, PalaceNotFoundError
 from .config import MempalaceConfig, normalize_wing_name
 from .dynamics import initialize_dynamics_fields, potentiate
@@ -516,7 +517,7 @@ def _get_tunnel_file(config=None) -> str:
 
 def _legacy_tunnel_file() -> str:
     """The pre-3.3.6 hardcoded path. Kept only for one-time orphan detection."""
-    return os.path.join(os.path.expanduser("~"), ".mempalace", "tunnels.json")
+    return str(paths.state_path("tunnels.json"))
 
 
 def _load_tunnels(config=None, *, for_write=False):

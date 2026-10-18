@@ -25,6 +25,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+from . import paths
 from .config import MempalaceConfig
 from .metadata_types import is_bookkeeping
 from .search_util import (
@@ -302,7 +303,7 @@ class Layer0:
 
     def __init__(self, identity_path: str = None):
         if identity_path is None:
-            identity_path = os.path.expanduser("~/.mempalace/identity.txt")
+            identity_path = paths.state_str("identity.txt")
         self.path = identity_path
         self._text = None
 
@@ -632,7 +633,7 @@ class MemoryStack:
     def __init__(self, palace_path: str = None, identity_path: str = None):
         cfg = MempalaceConfig()
         self.palace_path = palace_path or cfg.palace_path
-        self.identity_path = identity_path or os.path.expanduser("~/.mempalace/identity.txt")
+        self.identity_path = identity_path or paths.state_str("identity.txt")
 
         self.l0 = Layer0(self.identity_path)
         self.l1 = Layer1(self.palace_path)

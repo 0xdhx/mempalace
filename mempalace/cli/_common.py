@@ -180,7 +180,7 @@ def _run_pass_zero(project_dir, palace_dir, llm_provider) -> dict:
         "result": result.to_dict(),
     }
 
-    origin_path = Path(palace_dir).expanduser() / ".mempalace" / "origin.json"
+    origin_path = Path(palace_dir).expanduser() / paths.DIRNAME / "origin.json"
     try:
         origin_path.parent.mkdir(parents=True, exist_ok=True)
         with open(origin_path, "w", encoding="utf-8") as f:

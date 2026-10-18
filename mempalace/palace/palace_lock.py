@@ -292,11 +292,10 @@ def mine_palace_lock(palace_path: str):
     lets the threaded MCP HTTP transport write from a worker thread while the
     long-lived writer-lease is held on another thread of the same process.
     """
-    lock_dir = os.path.join(os.path.expanduser("~"), ".mempalace", "locks")
+    lock_dir = paths.lock_dir()
     os.makedirs(lock_dir, exist_ok=True)
     resolved = os.path.realpath(os.path.expanduser(palace_path))
-    lock_key_source = os.path.normcase(resolved)
-    palace_key = hashlib.sha256(lock_key_source.encode()).hexdigest()[:16]
+    palace_key = paths.palace_key(palace_path, length=16)
     lock_path = os.path.join(lock_dir, f"mine_palace_{palace_key}.lock")
 
     if _held_by_this_process(palace_key):

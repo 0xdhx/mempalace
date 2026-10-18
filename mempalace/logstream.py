@@ -44,6 +44,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Optional
 
+from . import paths
 from .config import sanitize_iso_temporal, strip_lone_surrogates
 from .fsio import atomic_publish, read_published_bytes
 
@@ -332,8 +333,7 @@ def sanitize_watch_state_basename(agent: str) -> str:
 
 def default_watch_state_file(agent: str, *, home: Optional[str] = None) -> str:
     """``~/.mempalace/watch/<sanitized-agent>.json`` for ``logstream watch``."""
-    base = Path(home) if home is not None else Path.home()
-    return str(base / ".mempalace" / "watch" / f"{sanitize_watch_state_basename(agent)}.json")
+    return str(paths.state_path("watch", f"{sanitize_watch_state_basename(agent)}.json", home=home))
 
 
 def resolve_watch_state_file(state_file: Optional[str], agent: Optional[str]) -> Optional[str]:

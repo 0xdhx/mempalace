@@ -334,7 +334,7 @@ def tool_hook_settings(silent_save: bool = None, desktop_toast: bool = None):
 
 def tool_memories_filed_away():
     """Acknowledge the latest silent checkpoint. Returns a short summary."""
-    state_dir = Path.home() / ".mempalace" / "hook_state"
+    state_dir = paths.state_path("hook_state")
     ack_file = state_dir / "last_checkpoint"
     if not ack_file.is_file():
         return {

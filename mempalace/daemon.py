@@ -26,6 +26,7 @@ from typing import Any
 from urllib import error as urlerror, request as urlrequest
 from urllib.parse import parse_qs, urlparse
 
+from . import paths
 from ._env import env_float, env_int
 from ._proc import kernel32 as _kernel32, pid_alive as _pid_alive
 from .config import MempalaceConfig
@@ -107,22 +108,18 @@ def _now() -> str:
 
 
 def canonical_palace_path(path: str | None = None) -> str:
-    value = path or MempalaceConfig().palace_path
-    return os.path.abspath(os.path.realpath(os.path.expanduser(value)))
+    return paths.canonical_palace_path(path or MempalaceConfig().palace_path)
 
 
 def palace_key(palace_path: str) -> str:
-    import hashlib
-
-    normalized = os.path.normcase(canonical_palace_path(palace_path))
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    return paths.palace_key(canonical_palace_path(palace_path))
 
 
 def state_root() -> Path:
     raw = os.environ.get(STATE_ROOT_ENV)
     if raw:
         return Path(raw).expanduser()
-    return Path.home() / ".mempalace" / "daemon"
+    return paths.state_path("daemon")
 
 
 def state_dir(palace_path: str) -> Path:
