@@ -353,10 +353,13 @@ if __name__ == "__main__":
         epilog="Exits 0 when no issues found, 1 when one or more issues detected.",
     )
     parser.add_argument("text", nargs="?", help="Text to check (or use --stdin).")
+    # No default: a palace typed here is explicit (it keeps its knowledge
+    # graph inside itself); without it the configured palace is used as
+    # every other tool uses it.
     parser.add_argument(
         "--palace",
-        default=_default_palace_path(),
-        help="Path to the palace directory.",
+        default=None,
+        help=f"Path to the palace directory (default: {_default_palace_path()}).",
     )
     parser.add_argument("--stdin", action="store_true", help="Read text from stdin.")
     args = parser.parse_args()

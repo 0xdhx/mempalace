@@ -259,6 +259,31 @@ def test_fact_checker_never_creates_a_graph(home, tmp_path):
     assert os.listdir(palace) == []
 
 
+@pytest.mark.parametrize("typed_palace, found", [(False, True), (True, False)])
+def test_fact_checker_cli_treats_only_a_typed_palace_as_explicit(
+    typed_palace, found, home, tmp_path
+):
+    """Without --palace the configured palace reads the global graph that holds its facts."""
+    import subprocess
+    import sys
+
+    palace = str(tmp_path / "custom")
+    os.makedirs(palace)
+    kg = knowledge_graph.KnowledgeGraph(db_path=paths.legacy_knowledge_graph_path())
+    kg.add_triple("Bob", "husband", "Alice")
+    kg.close()
+    env = dict(os.environ, HOME=str(home), USERPROFILE=str(home), MEMPALACE_PALACE_PATH=palace)
+    argv = [sys.executable, "-m", "mempalace.fact_checker", "Bob is Alice's brother"]
+    if typed_palace:
+        argv += ["--palace", palace]
+
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=120, env=env)
+
+    assert proc.returncode == (1 if found else 0), proc.stderr
+    assert ("relationship_mismatch" in proc.stdout) is found
+    assert os.listdir(palace) == []
+
+
 def test_hermes_keeps_using_the_graph_beside_its_palace(tmp_path):
     from mempalace.integrations.hermes import MempalaceProvider
 
