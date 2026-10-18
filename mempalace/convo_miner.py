@@ -53,7 +53,7 @@ from .palace import (
 from .source_identity import identity_metadata, source_directory_identity
 from .timeutil import utc_now_iso
 
-logger = logging.getLogger("mempalace_mcp")
+logger = logging.getLogger(__name__)
 
 # Cached hall keywords — avoids re-reading config per drawer
 _HALL_KEYWORDS_CACHE = None

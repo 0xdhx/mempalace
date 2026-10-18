@@ -37,7 +37,7 @@ from urllib.request import Request, urlopen
 
 from ._env import env_bool
 
-logger = logging.getLogger("mempalace_llm")
+logger = logging.getLogger(__name__)
 
 
 # ── External-service heuristic (issue #24 — privacy warning support) ─────

@@ -51,7 +51,7 @@ from .fsio import (
 from .metadata_types import is_bookkeeping
 from .timeutil import utc_now_iso
 
-logger = logging.getLogger("mempalace_hallways")
+logger = logging.getLogger(__name__)
 
 # Persistence target is resolved through ``_get_hallway_file`` below, which
 # mirrors ``palace_graph._get_tunnel_file`` (the 3.3.6 palace-scoped pattern)

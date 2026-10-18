@@ -204,6 +204,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   for processes started without it, pass `--palace` to `init` or set
   `palace_path` in `config.json`.
 
+- **Log records now carry their module's name.** Records that came from the
+  flat `mempalace_mcp`, `mempalace_graph`, `mempalace_hallways`,
+  `mempalace_llm`, `mempalace_logstream`, `mempalace_format_miner` and
+  `mempalace_mcp_light` loggers now come from `mempalace.<module>` (for
+  example `mempalace.miner`, `mempalace.mcp_server`), so one
+  `logging.getLogger("mempalace")` setting covers all of them. Logging
+  setup that names an old logger should name `mempalace` instead.
+  Messages and levels are unchanged.
+
 ### Bug Fixes
 
 - **Bookkeeping rows stay out of what you see.** The convo miner files a

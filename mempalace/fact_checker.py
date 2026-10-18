@@ -36,7 +36,7 @@ import re
 from .miner import _load_known_entities_raw
 from .timeutil import utc_now
 
-logger = logging.getLogger("mempalace_mcp")
+logger = logging.getLogger(__name__)
 
 
 # Narrow detection patterns — parse "X is Y's Z" and "X's Z is Y".

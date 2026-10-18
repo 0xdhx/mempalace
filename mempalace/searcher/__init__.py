@@ -66,7 +66,7 @@ from ..search_util import (
 from ..stored_text import decode_record, encode_filter
 from ..timeutil import localize
 
-logger = logging.getLogger("mempalace_mcp")
+logger = logging.getLogger(__name__)
 
 
 class SearchError(Exception):

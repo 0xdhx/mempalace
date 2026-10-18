@@ -114,7 +114,7 @@ __all__ = [
 MIN_CHUNK_SIZE = 50
 
 
-logger = logging.getLogger("mempalace_format_miner")
+logger = logging.getLogger(__name__)
 
 
 # Extensions MarkItDown can convert. Lowercase, leading dot. Case-insensitive

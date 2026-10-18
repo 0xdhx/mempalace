@@ -110,7 +110,7 @@ def _validate_palace_fts5_after_mine(
         # transport -- a stray print() here would corrupt the protocol stream
         # and crash the connection.
         #
-        # warning, not info: this module logs through the `mempalace_mcp`
+        # warning, not info: this module logs through the `mempalace.palace`
         # logger, which sets no level of its own, and nothing configures logging
         # on the `mempalace mine` path -- so root keeps its default and info
         # records are dropped. Every message this call can emit describes a palace whose

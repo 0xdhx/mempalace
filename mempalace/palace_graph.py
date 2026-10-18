@@ -40,7 +40,7 @@ from .fsio import (
 from .palace import get_collection as _get_palace_collection, mine_lock
 from .timeutil import utc_now_iso
 
-logger = logging.getLogger("mempalace_graph")
+logger = logging.getLogger(__name__)
 
 
 def _normalize_wing(wing: str | None) -> str | None:
