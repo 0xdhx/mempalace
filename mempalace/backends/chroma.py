@@ -1,7 +1,6 @@
 """ChromaDB-backed MemPalace storage backend (RFC 001 reference implementation)."""
 
 import contextlib
-import datetime as _dt
 import json
 import logging
 import os
@@ -23,6 +22,7 @@ from chromadb.errors import NotFoundError as _ChromaNotFoundError
 
 from ..lexical import bm25_scores
 from ..stored_text import encode_filter, encode_where, prepare_stored_write, restore_rows
+from ..timeutil import filename_stamp
 from ._filters import validate_where
 from ._inproc_sqlite import (
     open_reader as open_palace_reader,
@@ -703,7 +703,7 @@ def quarantine_stale_hnsw(palace_path: str, stale_seconds: float = 300.0) -> lis
             )
             continue
 
-        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = filename_stamp()
         target = f"{seg_dir}.drift-{stamp}"
 
         if header_corrupt:
@@ -1572,7 +1572,7 @@ def quarantine_invalid_hnsw_metadata(palace_path: str) -> list[str]:
         if reason is None:
             continue
 
-        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        stamp = filename_stamp()
         target = f"{seg_dir}.corrupt-{stamp}"
         try:
             os.rename(seg_dir, target)

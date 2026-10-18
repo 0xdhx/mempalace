@@ -40,13 +40,14 @@ import re
 import sqlite3
 import threading
 import unicodedata
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Optional
 
 from . import paths
 from .config import sanitize_iso_temporal
 from .ids import make_triple_id
+from .timeutil import utc_now_iso, utc_now_z
 
 DEFAULT_KG_PATH = paths.legacy_knowledge_graph_path()
 _MIN_ENTITY_CANDIDATE_LEN = 3
@@ -513,9 +514,7 @@ class KnowledgeGraph:
                 if existing:
                     return existing["id"]  # Already exists and still valid
 
-                triple_id = make_triple_id(
-                    sub_id, pred, obj_id, valid_from, datetime.now().isoformat()
-                )
+                triple_id = make_triple_id(sub_id, pred, obj_id, valid_from, utc_now_iso())
                 conn.execute(
                     """INSERT INTO triples (
                         id, subject, predicate, object, valid_from, valid_to,
@@ -606,7 +605,7 @@ class KnowledgeGraph:
         successor is still opened, so ``supersede`` degrades to ``add_triple``.
         """
         if at is None:
-            boundary = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            boundary = utc_now_z()
         elif _is_date_only_temporal(at):
             boundary = f"{at}T00:00:00Z"
         else:
@@ -664,9 +663,7 @@ class KnowledgeGraph:
                 if existing:
                     return existing["id"]
 
-                triple_id = make_triple_id(
-                    sub_id, pred, new_id, boundary, datetime.now().isoformat()
-                )
+                triple_id = make_triple_id(sub_id, pred, new_id, boundary, utc_now_iso())
                 conn.execute(
                     """INSERT INTO triples (
                         id, subject, predicate, object, valid_from, valid_to,
@@ -718,7 +715,7 @@ class KnowledgeGraph:
         ``source_file`` here is only a fallback for an original carrying none.
         """
         if at is None:
-            boundary = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            boundary = utc_now_z()
         elif _is_date_only_temporal(at):
             boundary = f"{at}T00:00:00Z"
         else:
@@ -774,7 +771,7 @@ class KnowledgeGraph:
                 ).fetchone()
                 if existing:
                     return existing["id"]
-                new_id = make_triple_id(sub_id, pred, obj_id, boundary, datetime.now().isoformat())
+                new_id = make_triple_id(sub_id, pred, obj_id, boundary, utc_now_iso())
                 conn.execute(
                     """INSERT INTO triples (
                         id, subject, predicate, object, valid_from, valid_to,

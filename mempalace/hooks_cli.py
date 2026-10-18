@@ -31,6 +31,7 @@ from mempalace._env import env_float, env_str, parse_bool
 from mempalace._proc import pid_alive as _pid_alive
 from mempalace.config import MempalaceConfig, normalize_wing_name
 from mempalace.fsio import decode_source
+from mempalace.timeutil import utc_now_iso
 from mempalace.write_routing import (
     ResolvedWriteRoutingPolicy,
     WriteRoutingDecision,
@@ -1179,7 +1180,7 @@ def _save_diary_direct(
                 try:
                     ack_file = STATE_DIR / "last_checkpoint"
                     ack_file.write_text(
-                        json.dumps({"msgs": len(messages), "ts": now.isoformat()}),
+                        json.dumps({"msgs": len(messages), "ts": utc_now_iso()}),
                         encoding="utf-8",
                     )
                 except OSError:
@@ -1207,7 +1208,7 @@ def _save_diary_direct(
                 "themes": themes,
                 "session_id": session_id,
                 "exchange_count": exchange_count,
-                "ack_ts": now.isoformat(),
+                "ack_ts": utc_now_iso(),
                 "ingest_transcript": transcript_path,
             }
         )

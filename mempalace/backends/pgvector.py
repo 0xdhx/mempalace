@@ -41,7 +41,6 @@ import os
 import re
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from hashlib import sha256
 from typing import Any, Optional
 from urllib import parse as urlparse
@@ -50,6 +49,7 @@ import numpy as np
 
 from ..lexical import bm25_scores
 from ..stored_text import decode_record, decode_value, encode_filter, prepare_stored_write
+from ..timeutil import utc_now_iso as _utcnow
 from ._filters import matches_where, matches_where_document, validate_where
 from ._remote_common import (
     RemoteMarkerMixin,
@@ -115,10 +115,6 @@ _PUSHDOWN_OPERATORS = frozenset({"$eq", "$ne", "$in", "$nin", "$and"})
 _RECENT_SCAN_PAGE_MIN = 500
 _RECENT_SCAN_PAGE_MAX = 5000
 _RECENT_SCAN_ROW_CAP = 50_000
-
-
-def _utcnow() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _json_dumps(obj: Any) -> str:

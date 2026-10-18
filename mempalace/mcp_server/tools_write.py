@@ -535,7 +535,7 @@ def tool_add_drawer(
         "room": room,
         "source_file": source_file or "",
         "added_by": added_by,
-        "filed_at": datetime.now().isoformat(),
+        "filed_at": utc_now_iso(),
         "id_recipe": ID_RECIPE,
     }
     if source_file:
@@ -1468,7 +1468,7 @@ def tool_update_drawer(drawer_id: str, content: str = None, wing: str = None, ro
             if room != str(old_meta.get("room") or ""):
                 new_meta["room"] = room
 
-        new_meta["last_modified"] = datetime.now().isoformat()
+        new_meta["last_modified"] = utc_now_iso()
 
         chunk_size = max(1, int(getattr(_config, "chunk_size", 800) or 800))
         should_chunk = bool(record.get("chunked")) or len(new_doc) > chunk_size

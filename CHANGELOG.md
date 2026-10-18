@@ -10,6 +10,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Upgrade notes
 
+- **Drawer `filed_at` and the other stored timestamps are now always UTC
+  with an explicit offset** (`2026-10-17T13:00:00.123456+00:00`). Most
+  writers used to store naive local time while the diary importer stored
+  UTC, so on a machine not on UTC the `since`/`before` filters of
+  `list_drawers`, `search` and `mempalace search` misplaced drawers by the
+  local offset. Stored values are not rewritten: a timestamp without an
+  offset is read as local time, as it was written, and the filters now
+  compare instants. A bound without an offset (`2026-04-01`,
+  `2026-04-01T09:30:00`) still means local time; a bound with `Z` or
+  `+HH:MM` is now an exact instant instead of having its offset dropped.
+  Newest-first listings (wake-up, `diary_read`, recent drawers) still order
+  `filed_at` as text, like the backends' SQL paths, so on a machine ahead of
+  UTC drawers filed in the first hours after upgrading can list before
+  slightly older ones; this settles once the local offset has passed.
+  Backup and set-aside file names keep their local-time stamps.
+
 - **Every tool now picks a palace's knowledge graph the same way, and none
   switches graphs under you.** The MCP server, the CLI, the audit, the fact
   checker, mining and the Hermes provider share one rule. A palace uses its

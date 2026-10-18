@@ -40,6 +40,8 @@ import math
 from datetime import datetime, timezone
 from typing import Optional
 
+from .timeutil import utc_now
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Tunable constants. Hardcoded for v1; future PRs may expose via
 # MempalaceConfig if real-palace empirical tuning calls for it.
@@ -94,7 +96,7 @@ def initialize_dynamics_fields(connection: dict, *, now: Optional[datetime] = No
     current UTC time. Same pattern as the rest of this module.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = utc_now()
     now_iso = now.isoformat() if isinstance(now, datetime) else now
 
     # ``created_at`` exists on every connection per existing schema; use it as
@@ -132,7 +134,7 @@ def potentiate(
     mutation — no I/O.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = utc_now()
 
     # Backfill any missing fields so callers can pass partial records.
     initialize_dynamics_fields(connection, now=now)
@@ -186,7 +188,7 @@ def effective_strength(connection: dict, *, now: Optional[datetime] = None) -> f
     ``datetime.now()`` gets a TypeError from the subtraction below.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = utc_now()
     elif now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
@@ -242,7 +244,7 @@ def apply_decay(connection: dict, *, now: Optional[datetime] = None) -> dict:
     ``now`` is dependency injection for tests.
     """
     if now is None:
-        now = datetime.now(timezone.utc)
+        now = utc_now()
 
     # Backfill missing fields so callers can pass partial records.
     initialize_dynamics_fields(connection, now=now)

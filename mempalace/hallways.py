@@ -38,7 +38,6 @@ import logging
 import os
 import re
 from collections import defaultdict
-from datetime import datetime, timezone
 from itertools import combinations
 from typing import Optional
 
@@ -50,6 +49,7 @@ from .fsio import (
     refuse_unparsed as _refuse_unparsed,
 )
 from .metadata_types import is_bookkeeping
+from .timeutil import utc_now_iso
 
 logger = logging.getLogger("mempalace_hallways")
 
@@ -823,7 +823,7 @@ def compute_hallways_for_wing(
             }
 
         created: list[dict] = []
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = utc_now_iso()
         for key in sorted(pair_counts.keys()):
             count = pair_counts[key]
             if count < min_count:
