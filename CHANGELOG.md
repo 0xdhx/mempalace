@@ -717,6 +717,7 @@ requires Python 3.10.
 - [#2857](https://github.com/MemPalace/mempalace/pull/2857) docs(changelog): cover every user-visible change since 3.11.0
 - [#2858](https://github.com/MemPalace/mempalace/pull/2858) fix(security): mask endpoint credentials in embedding and LLM errors
 - [#2859](https://github.com/MemPalace/mempalace/pull/2859) chore(release): 3.12.0
+- [#2861](https://github.com/MemPalace/mempalace/pull/2861) fix(mine): keep --palace and media options on daemon-routed adapter mines
 
 ---
 
