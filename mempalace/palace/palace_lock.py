@@ -253,7 +253,13 @@ def _write_lock_holder(lock_file) -> None:
         ident_bytes = ident.encode("utf-8")
         lock_file.seek(_LOCK_SENTINEL_BYTES)
         lock_file.truncate(_LOCK_SENTINEL_BYTES + len(ident_bytes))
-        lock_file.write(ident_bytes)
+        # The lock file is unbuffered, so write until every byte is out.
+        view = memoryview(ident_bytes)
+        while view:
+            written = lock_file.write(view)
+            if not written:
+                break
+            view = view[written:]
         lock_file.flush()
     except (OSError, UnicodeError):
         pass
@@ -316,7 +322,7 @@ def _open_lock_file(lock_path: str, mode: int, *, refuse_links: bool = False):
     try:
         if refuse_links:
             st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode) or (os.name != "nt" and st.st_nlink != 1):
+            if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
                 raise OSError(f"lock file {lock_path} is not a regular file with one link")
         # Unbuffered FileIO: it never closes a descriptor it was handed when
         # it fails, so the close below cannot hit a reused descriptor.

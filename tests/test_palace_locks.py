@@ -589,8 +589,16 @@ def test_palace_side_lock_this_process_cannot_write_still_excludes(tmp_path, mon
         _stop_holder(holder, release)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="creating links needs privileges on Windows")
-@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+@pytest.mark.parametrize(
+    "link",
+    [
+        pytest.param(
+            "symlink",
+            marks=pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows"),
+        ),
+        "hardlink",
+    ],
+)
 def test_palace_side_lock_never_writes_through_a_link(tmp_path, monkeypatch, link):
     """A link at the lock's name must not let the holder record overwrite its target.
 
@@ -640,6 +648,13 @@ def test_symlinked_legacy_lock_file_still_works(tmp_path, monkeypatch):
     with mine_palace_lock(palace):
         pass
     assert str(os.getpid()).encode() in target.read_bytes()
+    holder, release = _start_holder(_hold_lock, palace, tmp_path)
+    try:
+        with pytest.raises(MineAlreadyRunning):
+            with mine_palace_lock(palace):
+                pytest.fail("a symlinked ~ lock file must still exclude")
+    finally:
+        _stop_holder(holder, release)
 
 
 # ---------------------------------------------------------------------------
