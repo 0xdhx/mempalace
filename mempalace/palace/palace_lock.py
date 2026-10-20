@@ -291,8 +291,8 @@ def _open_lock_file(lock_path: str, mode: int, *, refuse_links: bool = False):
     contenders end up locking different bytes and silently both acquire —
     observed as Windows-CI lock test failures).
 
-    On POSIX a lock file this process cannot write (one created by another
-    user) is opened read-only instead: ``flock`` locks any open file, so that
+    On POSIX a lock beside the palace that this process cannot write (one
+    created by another user) is opened read-only instead: ``flock`` locks any open file, so that
     process still contends for the lock, it just records no identity.
 
     ``refuse_links`` is for the lock beside the palace, which sits in a
@@ -317,7 +317,8 @@ def _open_lock_file(lock_path: str, mode: int, *, refuse_links: bool = False):
     try:
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | flags, mode)
     except PermissionError:
-        if os.name == "nt":
+        # Only the lock beside the palace can belong to another user.
+        if os.name == "nt" or not refuse_links:
             raise
         file_mode = "r"
         fd = os.open(lock_path, os.O_RDONLY | flags)

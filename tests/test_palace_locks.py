@@ -641,10 +641,39 @@ def test_fifo_beside_the_palace_falls_back_instead_of_hanging(tmp_path, monkeypa
     worker.join(timeout=10)
     if not done.is_set():
         # Unblock the stuck open so the daemon thread can finish.
+        os.chmod(fifo, 0o644)
         with open(fifo, "wb"):
             pass
+        worker.join(timeout=10)
         pytest.fail("a FIFO at the palace-side lock name hung the writer")
     assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores modes")
+def test_unwritable_legacy_lock_raises_instead_of_hanging(tmp_path):
+    """The ``~`` lock keeps its old open: a file it cannot write raises, as before."""
+    fifo = tmp_path / "mine_palace_deadbeefdeadbeef.lock"
+    os.mkfifo(fifo, 0o444)
+    outcome = []
+
+    def _open():
+        try:
+            palace_mod._open_lock_file(str(fifo), 0o600).close()
+            outcome.append("opened")
+        except PermissionError:
+            outcome.append("PermissionError")
+
+    worker = threading.Thread(target=_open, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    if worker.is_alive():
+        os.chmod(fifo, 0o644)
+        with open(fifo, "wb"):
+            pass
+        worker.join(timeout=10)
+        pytest.fail("an unwritable FIFO at the ~ lock name hung the open")
+    assert outcome == ["PermissionError"]
 
 
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="needs O_NOFOLLOW")
