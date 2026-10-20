@@ -309,7 +309,9 @@ def _open_lock_file(lock_path: str, mode: int, *, refuse_links: bool = False):
         if os.path.islink(lock_path):
             # Windows has no O_NOFOLLOW; on POSIX the flag below is the guard.
             raise OSError(f"lock file {lock_path} is a symlink")
-        flags |= getattr(os, "O_NOFOLLOW", 0)
+        # O_NONBLOCK so a FIFO at the name cannot hang the open before the
+        # regular-file check below rejects it.
+        flags |= getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     # Each os.open is the last statement before the try that closes its fd.
     file_mode = "r+"
     try:

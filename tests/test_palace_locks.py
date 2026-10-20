@@ -620,6 +620,33 @@ def test_palace_side_lock_never_writes_through_a_link(tmp_path, monkeypatch, lin
     assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
 
 
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs FIFOs")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores modes")
+def test_fifo_beside_the_palace_falls_back_instead_of_hanging(tmp_path, monkeypatch):
+    """A read-only FIFO at the lock's name must not block the writer."""
+    _isolate_home(monkeypatch, tmp_path / "home")
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    fifo = tmp_path / ".palace.mempalace.lock"
+    os.mkfifo(fifo, 0o444)
+    done = threading.Event()
+
+    def _acquire():
+        with mine_palace_lock(str(palace)):
+            pass
+        done.set()
+
+    worker = threading.Thread(target=_acquire, daemon=True)
+    worker.start()
+    worker.join(timeout=10)
+    if not done.is_set():
+        # Unblock the stuck open so the daemon thread can finish.
+        with open(fifo, "wb"):
+            pass
+        pytest.fail("a FIFO at the palace-side lock name hung the writer")
+    assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
+
+
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="needs O_NOFOLLOW")
 def test_palace_side_open_refuses_a_symlink_without_the_islink_check(tmp_path, monkeypatch):
     """A symlink swapped in after the ``islink`` check is still refused by the open."""
@@ -648,7 +675,8 @@ def test_symlinked_legacy_lock_file_still_works(tmp_path, monkeypatch):
     with mine_palace_lock(palace):
         pass
     assert str(os.getpid()).encode() in target.read_bytes()
-    holder, release = _start_holder(_hold_lock, palace, tmp_path)
+    # The holder takes only the ~ lock, so the refusal below can come from it alone.
+    holder, release = _start_holder(_hold_legacy_lock_only, palace, tmp_path)
     try:
         with pytest.raises(MineAlreadyRunning):
             with mine_palace_lock(palace):
