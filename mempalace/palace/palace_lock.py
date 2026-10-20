@@ -259,11 +259,6 @@ def _write_lock_holder(lock_file) -> None:
         pass
 
 
-# Sibling lock paths that could not be used, so the fallback warning is logged
-# once per process rather than on every write.
-_palace_side_lock_warned = set()
-
-
 def _palace_side_lock_path(palace_path: str) -> Optional[str]:
     """Path of the writer lock kept beside the palace, or None if it has none.
 
@@ -293,18 +288,34 @@ def _open_lock_file(lock_path: str, mode: int):
     On POSIX a lock file this process cannot write (one created by another
     user) is opened read-only instead: ``flock`` locks any open file, so that
     process still contends for the lock, it just records no identity.
+
+    The lock beside the palace sits in a directory MemPalace does not own, so
+    the open never follows a symlink and refuses anything but a regular file
+    with one link. Otherwise the holder record written after locking would
+    overwrite whatever file the name pointed at.
     """
-    if not os.path.exists(lock_path):
-        # A concurrent contender may create it first, which is fine — we
-        # proceed to open.
-        fd = os.open(lock_path, os.O_CREAT | os.O_WRONLY, mode)
-        os.close(fd)
+    import stat
+
+    if os.path.islink(lock_path):
+        # Windows has no O_NOFOLLOW; on POSIX the flag below is the guard.
+        raise OSError(f"lock file {lock_path} is a symlink")
+    flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
     try:
-        return open(lock_path, "r+b")
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | flags, mode)
+        file_mode = "r+b"
     except PermissionError:
         if os.name == "nt":
             raise
-        return open(lock_path, "rb")
+        fd = os.open(lock_path, os.O_RDONLY | flags)
+        file_mode = "rb"
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or (os.name != "nt" and st.st_nlink != 1):
+            raise OSError(f"lock file {lock_path} is not a regular file with one link")
+        return os.fdopen(fd, file_mode)
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _lock_or_raise(lock_file, resolved: str) -> None:
@@ -380,9 +391,10 @@ def _hold_palace_side_lock(stack, palace_path: str, resolved: str) -> None:
     except MineAlreadyRunning:
         raise
     except OSError as exc:
-        warn_key = lock_path or resolved
-        if warn_key not in _palace_side_lock_warned:
-            _palace_side_lock_warned.add(warn_key)
+        from .._once import first_time
+
+        # Once per palace, not on every write.
+        if first_time("palace-lock", "palace-side-unusable", resolved):
             logger.warning(
                 "Cannot use the writer lock beside palace %s (%s); falling back to "
                 "the lock under ~/.mempalace/locks, which only excludes writers "

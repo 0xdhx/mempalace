@@ -557,6 +557,14 @@ def test_unwritable_parent_falls_back_to_the_legacy_lock(tmp_path, monkeypatch, 
         assert len(warnings) == 1, "the fallback should warn once per palace, not per write"
         assert not (parent / ".palace.mempalace.lock").exists()
         assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
+        # The fallback still excludes a second writer that shares this HOME.
+        holder, release = _start_holder(_hold_lock, str(palace), tmp_path)
+        try:
+            with pytest.raises(MineAlreadyRunning):
+                with mine_palace_lock(str(palace)):
+                    pytest.fail("the ~ lock must still exclude when the parent is read-only")
+        finally:
+            _stop_holder(holder, release)
     finally:
         parent.chmod(0o755)
 
@@ -579,6 +587,29 @@ def test_palace_side_lock_this_process_cannot_write_still_excludes(tmp_path, mon
                 pytest.fail("a read-only palace-side lock must still exclude")
     finally:
         _stop_holder(holder, release)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating links needs privileges on Windows")
+@pytest.mark.parametrize("link", ["symlink", "hardlink"])
+def test_palace_side_lock_never_writes_through_a_link(tmp_path, monkeypatch, link):
+    """A link at the lock's name must not let the holder record overwrite its target.
+
+    The lock beside the palace lives in a directory MemPalace does not own.
+    """
+    _isolate_home(monkeypatch, tmp_path / "home")
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"keep me")
+    lock_path = tmp_path / ".palace.mempalace.lock"
+    if link == "symlink":
+        os.symlink(victim, lock_path)
+    else:
+        os.link(victim, lock_path)
+    with mine_palace_lock(str(palace)):
+        pass
+    assert victim.read_bytes() == b"keep me"
+    assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
 
 
 # ---------------------------------------------------------------------------
