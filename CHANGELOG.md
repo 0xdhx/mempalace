@@ -19,9 +19,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
   process that can write the palace contends for, and a different-`HOME`
   writer is refused like any other second writer. The `~` lock is still taken
   too, so an older and a newer version that share a `HOME` keep excluding each
-  other. When the palace's parent directory cannot hold the file, or the name
-  there is a link or anything but a regular file, a warning is logged and only
-  the `~` lock is used, as before. (#2741)
+  other. When the palace's parent directory cannot hold the file, the file
+  there cannot be opened, or the name there is a link or anything but a
+  regular file, a warning is logged and only the `~` lock is used, as before.
+  (#2741)
 
 ---
 

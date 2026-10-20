@@ -612,6 +612,36 @@ def test_palace_side_lock_never_writes_through_a_link(tmp_path, monkeypatch, lin
     assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
 
 
+@pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="needs O_NOFOLLOW")
+def test_palace_side_open_refuses_a_symlink_without_the_islink_check(tmp_path, monkeypatch):
+    """A symlink swapped in after the ``islink`` check is still refused by the open."""
+    victim = tmp_path / "victim.txt"
+    victim.write_bytes(b"keep me")
+    lock_path = tmp_path / ".palace.mempalace.lock"
+    os.symlink(victim, lock_path)
+    monkeypatch.setattr(os.path, "islink", lambda _path: False)
+    with pytest.raises(OSError):
+        palace_mod._open_lock_file(str(lock_path), 0o644, refuse_links=True)
+    assert victim.read_bytes() == b"keep me"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating links needs privileges on Windows")
+def test_symlinked_legacy_lock_file_still_works(tmp_path, monkeypatch):
+    """Only the lock beside the palace refuses links; the ``~`` lock is unchanged."""
+    _isolate_home(monkeypatch, tmp_path / "home")
+    palace = str(tmp_path / "palace")
+    os.makedirs(palace)
+    lock_dir = tmp_path / "home" / ".mempalace" / "locks"
+    lock_dir.mkdir(parents=True)
+    target = tmp_path / "elsewhere.lock"
+    target.write_bytes(b"")
+    key = palace_mod.paths.palace_key(palace, length=16)
+    os.symlink(target, lock_dir / f"mine_palace_{key}.lock")
+    with mine_palace_lock(palace):
+        pass
+    assert str(os.getpid()).encode() in target.read_bytes()
+
+
 # ---------------------------------------------------------------------------
 # reap_stale_mine_locks — orphaned per-source-file lock garbage collection
 # ---------------------------------------------------------------------------

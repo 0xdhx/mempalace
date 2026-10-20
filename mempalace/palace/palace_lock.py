@@ -275,7 +275,7 @@ def _palace_side_lock_path(palace_path: str) -> Optional[str]:
     return os.path.join(parent, f".{name}.mempalace.lock")
 
 
-def _open_lock_file(lock_path: str, mode: int):
+def _open_lock_file(lock_path: str, mode: int, *, refuse_links: bool = False):
     """Open ``lock_path`` for locking, creating it with ``mode`` if missing.
 
     The file is opened r+ so the prior holder's identity can be read for
@@ -289,30 +289,38 @@ def _open_lock_file(lock_path: str, mode: int):
     user) is opened read-only instead: ``flock`` locks any open file, so that
     process still contends for the lock, it just records no identity.
 
-    The lock beside the palace sits in a directory MemPalace does not own, so
-    the open never follows a symlink and refuses anything but a regular file
-    with one link. Otherwise the holder record written after locking would
-    overwrite whatever file the name pointed at.
+    ``refuse_links`` is for the lock beside the palace, which sits in a
+    directory MemPalace does not own: the open never follows a symlink and
+    refuses anything but a regular file with one link. Otherwise the holder
+    record written after locking would overwrite whatever file the name
+    pointed at.
     """
+    import io
     import stat
 
-    if os.path.islink(lock_path):
-        # Windows has no O_NOFOLLOW; on POSIX the flag below is the guard.
-        raise OSError(f"lock file {lock_path} is a symlink")
-    flags = getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    flags = getattr(os, "O_BINARY", 0)
+    if refuse_links:
+        if os.path.islink(lock_path):
+            # Windows has no O_NOFOLLOW; on POSIX the flag below is the guard.
+            raise OSError(f"lock file {lock_path} is a symlink")
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    # Each os.open is the last statement before the try that closes its fd.
+    file_mode = "r+"
     try:
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | flags, mode)
-        file_mode = "r+b"
     except PermissionError:
         if os.name == "nt":
             raise
+        file_mode = "r"
         fd = os.open(lock_path, os.O_RDONLY | flags)
-        file_mode = "rb"
     try:
-        st = os.fstat(fd)
-        if not stat.S_ISREG(st.st_mode) or (os.name != "nt" and st.st_nlink != 1):
-            raise OSError(f"lock file {lock_path} is not a regular file with one link")
-        return os.fdopen(fd, file_mode)
+        if refuse_links:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode) or (os.name != "nt" and st.st_nlink != 1):
+                raise OSError(f"lock file {lock_path} is not a regular file with one link")
+        # Unbuffered FileIO: it never closes a descriptor it was handed when
+        # it fails, so the close below cannot hit a reused descriptor.
+        return io.FileIO(fd, file_mode)
     except BaseException:
         os.close(fd)
         raise
@@ -363,9 +371,11 @@ def _unlock(lock_file) -> None:
         pass
 
 
-def _hold_lock_file(stack, lock_path: str, resolved: str, mode: int) -> None:
+def _hold_lock_file(
+    stack, lock_path: str, resolved: str, mode: int, *, refuse_links: bool = False
+) -> None:
     """Open, lock and record ourselves in ``lock_path``; release via ``stack``."""
-    lock_file = _open_lock_file(lock_path, mode)
+    lock_file = _open_lock_file(lock_path, mode, refuse_links=refuse_links)
     stack.callback(lock_file.close)
     _lock_or_raise(lock_file, resolved)
     stack.callback(_unlock, lock_file)
@@ -387,7 +397,7 @@ def _hold_palace_side_lock(stack, palace_path: str, resolved: str) -> None:
         os.makedirs(os.path.dirname(lock_path), exist_ok=True)
         # 0644, not 0600: another user that can write this palace must be
         # able to open the lock to contend for it.
-        _hold_lock_file(stack, lock_path, resolved, 0o644)
+        _hold_lock_file(stack, lock_path, resolved, 0o644, refuse_links=True)
     except MineAlreadyRunning:
         raise
     except OSError as exc:
