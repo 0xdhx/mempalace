@@ -224,13 +224,16 @@ def _format_lock_holder(content: str) -> str:
 # the identity without colliding with byte 0 (Windows msvcrt.locking
 # blocks both reads and writes on the locked byte).
 _LOCK_SENTINEL_BYTES = 1
+# A holder record is a PID and a short command line. The read is capped
+# because the lock beside the palace can be any file someone left there.
+_LOCK_HOLDER_MAX_BYTES = 4096
 
 
 def _read_lock_holder(lock_file) -> str:
     """Read the prior holder's identity from the lock-file body, best-effort."""
     try:
         lock_file.seek(_LOCK_SENTINEL_BYTES)
-        content = lock_file.read()
+        content = lock_file.read(_LOCK_HOLDER_MAX_BYTES)
         if isinstance(content, bytes):
             content = content.decode("utf-8", errors="replace")
         content = content.strip()

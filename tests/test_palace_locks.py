@@ -453,6 +453,15 @@ def test_holder_set_not_orphaned_by_interrupt_after_mark_held(tmp_path, monkeypa
 # ---------------------------------------------------------------------------
 
 
+def _release_fifo(fifo) -> None:
+    """Release a reader blocked opening ``fifo``, without ever blocking here."""
+    os.chmod(fifo, 0o644)
+    try:
+        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+    except OSError:
+        pass  # ENXIO: no reader is blocked on it
+
+
 def _wait_for(flag: str) -> None:
     for _ in range(500):
         if os.path.exists(flag):
@@ -629,23 +638,24 @@ def test_fifo_beside_the_palace_falls_back_instead_of_hanging(tmp_path, monkeypa
     palace.mkdir()
     fifo = tmp_path / ".palace.mempalace.lock"
     os.mkfifo(fifo, 0o444)
-    done = threading.Event()
+    errors = []
 
     def _acquire():
-        with mine_palace_lock(str(palace)):
-            pass
-        done.set()
+        try:
+            with mine_palace_lock(str(palace)):
+                pass
+        except BaseException as exc:  # reported below, never lost in the thread
+            errors.append(exc)
 
     worker = threading.Thread(target=_acquire, daemon=True)
     worker.start()
     worker.join(timeout=10)
-    if not done.is_set():
-        # Unblock the stuck open so the daemon thread can finish.
-        os.chmod(fifo, 0o644)
-        with open(fifo, "wb"):
-            pass
+    if worker.is_alive():
+        _release_fifo(fifo)
         worker.join(timeout=10)
         pytest.fail("a FIFO at the palace-side lock name hung the writer")
+    if errors:
+        raise errors[0]
     assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
 
 
@@ -668,12 +678,20 @@ def test_unwritable_legacy_lock_raises_instead_of_hanging(tmp_path):
     worker.start()
     worker.join(timeout=10)
     if worker.is_alive():
-        os.chmod(fifo, 0o644)
-        with open(fifo, "wb"):
-            pass
+        _release_fifo(fifo)
         worker.join(timeout=10)
         pytest.fail("an unwritable FIFO at the ~ lock name hung the open")
     assert outcome == ["PermissionError"]
+
+
+def test_holder_record_read_is_bounded(tmp_path):
+    """A huge file at the lock's name must not be read whole on contention."""
+    lock_path = tmp_path / ".palace.mempalace.lock"
+    lock_path.write_bytes(b"\0" + b"7 " + b"x" * (1024 * 1024))
+    with open(lock_path, "rb") as lock_file:
+        holder = palace_mod._read_lock_holder(lock_file)
+    assert holder.startswith("PID 7")
+    assert len(holder) <= palace_mod._LOCK_HOLDER_MAX_BYTES + 32
 
 
 @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="needs O_NOFOLLOW")
