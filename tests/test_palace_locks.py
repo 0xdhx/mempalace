@@ -449,6 +449,139 @@ def test_holder_set_not_orphaned_by_interrupt_after_mark_held(tmp_path, monkeypa
 
 
 # ---------------------------------------------------------------------------
+# The lock beside the palace — writers that do not share a HOME (#2741)
+# ---------------------------------------------------------------------------
+
+
+def _wait_for(flag: str) -> None:
+    for _ in range(500):
+        if os.path.exists(flag):
+            return
+        time.sleep(0.01)
+    raise AssertionError("holder failed to acquire lock in time")
+
+
+def _hold_legacy_lock_only(palace_path: str, ready_flag: str, release_flag: str) -> int:
+    """Hold the lock the way versions before the palace-side lock do: ``~`` only."""
+    palace_mod._palace_side_lock_path = lambda _palace_path: None
+    return _hold_lock(palace_path, ready_flag, release_flag)
+
+
+def _start_holder(target, palace: str, tmp_path):
+    ready = str(tmp_path / "ready")
+    release = str(tmp_path / "release")
+    holder = _get_mp_context().Process(target=target, args=(palace, ready, release))
+    holder.start()
+    _wait_for(ready)
+    return holder, release
+
+
+def _stop_holder(holder, release: str) -> None:
+    open(release, "w").close()
+    holder.join(timeout=5)
+    assert holder.exitcode == 0
+
+
+def test_writer_under_another_home_is_refused(tmp_path, monkeypatch):
+    """A second writer whose HOME differs from the holder's must still be refused.
+
+    The ``~/.mempalace/locks`` lock alone is per-HOME, so a process started
+    with another HOME (a service account, a container, a profile manager)
+    took its own lease on the same palace and wrote beside the holder.
+    """
+    palace = str(tmp_path / "palace")
+    os.makedirs(palace)
+    _isolate_home(monkeypatch, tmp_path / "home-a")
+    holder, release = _start_holder(_hold_lock, palace, tmp_path)
+    try:
+        _isolate_home(monkeypatch, tmp_path / "home-b")
+        with pytest.raises(MineAlreadyRunning):
+            with mine_palace_lock(palace):
+                pytest.fail("a writer under another HOME must not acquire a held palace")
+    finally:
+        _stop_holder(holder, release)
+
+
+def test_holder_of_the_legacy_lock_only_still_excludes(tmp_path, monkeypatch):
+    """During the upgrade window an older version holds only the ``~`` lock."""
+    _isolate_home(monkeypatch, tmp_path)
+    palace = str(tmp_path / "palace")
+    os.makedirs(palace)
+    holder, release = _start_holder(_hold_legacy_lock_only, palace, tmp_path)
+    try:
+        with pytest.raises(MineAlreadyRunning):
+            with mine_palace_lock(palace):
+                pytest.fail("the legacy lock alone must still exclude a new writer")
+        # The refusal released the palace-side lock it had already taken.
+        lock_path = palace_mod._palace_side_lock_path(palace)
+        with open(lock_path, "r+b") as lock_file:
+            palace_mod._lock_or_raise(lock_file, palace)
+            palace_mod._unlock(lock_file)
+    finally:
+        _stop_holder(holder, release)
+
+
+def test_palace_side_lock_sits_beside_the_palace(tmp_path, monkeypatch):
+    """The lock must not live inside the palace directory.
+
+    ``migrate`` and ``repair --in-place`` rename the palace directory while
+    holding the lock. A lock inside would leave with the old directory, and on
+    Windows its open handle would make that rename fail.
+    """
+    _isolate_home(monkeypatch, tmp_path / "home")
+    palace = tmp_path / "palace"
+    palace.mkdir()
+    aside = tmp_path / "palace.aside"
+    with mine_palace_lock(str(palace)):
+        assert (tmp_path / ".palace.mempalace.lock").is_file()
+        os.rename(palace, aside)
+        palace.mkdir()
+        assert os.listdir(aside) == []
+    assert os.listdir(palace) == []
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX directory permissions")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores modes")
+def test_unwritable_parent_falls_back_to_the_legacy_lock(tmp_path, monkeypatch, caplog):
+    _isolate_home(monkeypatch, tmp_path / "home")
+    parent = tmp_path / "ro"
+    palace = parent / "palace"
+    palace.mkdir(parents=True)
+    parent.chmod(0o555)
+    try:
+        with caplog.at_level("WARNING", logger="mempalace.palace"):
+            for _ in range(2):
+                with mine_palace_lock(str(palace)):
+                    pass
+        warnings = [r for r in caplog.records if "Cannot use the writer lock" in r.getMessage()]
+        assert len(warnings) == 1, "the fallback should warn once per palace, not per write"
+        assert not (parent / ".palace.mempalace.lock").exists()
+        assert list((tmp_path / "home" / ".mempalace" / "locks").glob("mine_palace_*.lock"))
+    finally:
+        parent.chmod(0o755)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="flock on a read-only descriptor is POSIX")
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores modes")
+def test_palace_side_lock_this_process_cannot_write_still_excludes(tmp_path, monkeypatch):
+    """A lock file created by another user is opened read-only and still contended."""
+    palace = str(tmp_path / "palace")
+    os.makedirs(palace)
+    lock_path = palace_mod._palace_side_lock_path(palace)
+    open(lock_path, "wb").close()
+    os.chmod(lock_path, 0o444)
+    _isolate_home(monkeypatch, tmp_path / "home-a")
+    holder, release = _start_holder(_hold_lock, palace, tmp_path)
+    try:
+        _isolate_home(monkeypatch, tmp_path / "home-b")
+        with pytest.raises(MineAlreadyRunning):
+            with mine_palace_lock(palace):
+                pytest.fail("a read-only palace-side lock must still exclude")
+    finally:
+        _stop_holder(holder, release)
+
+
+# ---------------------------------------------------------------------------
 # reap_stale_mine_locks — orphaned per-source-file lock garbage collection
 # ---------------------------------------------------------------------------
 #
